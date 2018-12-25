@@ -92,7 +92,7 @@ prepost receives, but expects to react to incoming packets directly. Like
 RMA and tag-matching interfaces, the active message interface provides
 separate APIs for different message types and non-contiguous data.
 
-\b Collectives: This subset of interfaces defines group com- munication and
+\b Collectives: This subset of interfaces defines group communication and
 synchronization operations. The collective operations include Barrier,
 All-to-one, All-to-all, and reduction operations. When possible, we will
 take advantage of hardware acceleration for collectives
