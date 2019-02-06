@@ -39,7 +39,7 @@ static UCS_CLASS_INIT_FUNC(uct_tcp_ep_t, uct_tcp_iface_t *iface,
 
     UCS_CLASS_CALL_SUPER_INIT(uct_base_ep_t, &iface->super)
 
-    self->buf = ucs_malloc(iface->config.buf_size, "tcp_buf");
+    self->buf = ucs_malloc(iface->config.buf_size * 2, "tcp_buf");
     if (self->buf == NULL) {
         return UCS_ERR_NO_MEMORY;
     }
@@ -195,7 +195,7 @@ unsigned uct_tcp_ep_progress_tx(uct_tcp_ep_t *ep)
     return count;
 }
 
-unsigned uct_tcp_ep_progress_rx(uct_tcp_ep_t *ep)
+static inline unsigned uct_tcp_ep_do_next_rx(uct_tcp_ep_t *ep)
 {
     uct_tcp_iface_t *iface = ucs_derived_of(ep->super.super.iface,
                                             uct_tcp_iface_t);
@@ -204,9 +204,6 @@ unsigned uct_tcp_ep_progress_rx(uct_tcp_ep_t *ep)
     size_t recv_length;
     ssize_t remainder;
 
-    ucs_trace_func("ep=%p", ep);
-
-    /* Receive next chunk of data */
     recv_length = iface->config.buf_size - ep->length;
     ucs_assertv(recv_length > 0, "ep=%p", ep);
 
@@ -224,12 +221,17 @@ unsigned uct_tcp_ep_progress_rx(uct_tcp_ep_t *ep)
     ucs_trace_data("tcp_ep %p: recvd %zu bytes", ep, recv_length);
 
     /* Parse received active messages */
-    while ((remainder = ep->length - ep->offset) >= sizeof(*hdr)) {
-        hdr = ep->buf + ep->offset;
+    while (ep->offset < ep->length) {
+        remainder = ep->length - ep->offset;
+        if (remainder < sizeof(*hdr)) {
+	    return recv_length > 0;
+        }
+
+        hdr = ep->buf + ep->offset; 
         ucs_assert(hdr->length <= (iface->config.buf_size - sizeof(uct_tcp_am_hdr_t)));
 
         if (remainder < sizeof(*hdr) + hdr->length) {
-            break;
+            return recv_length > 0;
         }
 
         /* Full message was received */
@@ -246,15 +248,90 @@ unsigned uct_tcp_ep_progress_rx(uct_tcp_ep_t *ep)
                             hdr->length, 0);
     }
 
-    /* Move the remaining data to the beginning of the buffer
-     * TODO avoid extra copy on partial receive
-     */
-    ucs_assert(remainder >= 0);
-    memmove(ep->buf, ep->buf + ep->offset, remainder);
-    ep->offset = 0;
-    ep->length = remainder;
+    ep->length = ep->offset = 0;
 
     return recv_length > 0;
+}
+
+static inline
+unsigned uct_tcp_ep_do_partial_rx(uct_tcp_ep_t *ep)
+{
+    uct_tcp_iface_t *iface = ucs_derived_of(ep->super.super.iface,
+                                            uct_tcp_iface_t);
+    ucs_status_t status;
+    uct_tcp_am_hdr_t *hdr;
+    size_t cur_recvd_length = ep->length - ep->offset;
+    size_t recv_length;
+
+    if (cur_recvd_length < sizeof(*hdr)) {
+        recv_length = sizeof(*hdr) - cur_recvd_length;
+
+        status = uct_tcp_recv(ep->fd, ep->buf + ep->length, &recv_length);
+        if (status != UCS_OK) {
+            if (status == UCS_ERR_CANCELED) {
+                ucs_debug("tcp_ep %p: remote disconnected", ep);
+                uct_tcp_ep_mod_events(ep, 0, EPOLLIN);
+                uct_tcp_ep_destroy(&ep->super.super);
+            }
+            return 0;
+        }
+
+        ep->length += recv_length;
+        ucs_trace_data("tcp_ep %p: recvd %zu bytes", ep, recv_length);
+
+        if (ep->length - ep->offset < sizeof(*hdr)) {
+	    return recv_length > 0;
+        }
+    }
+
+    hdr = ep->buf + ep->offset;
+    cur_recvd_length = ep->length - ep->offset - sizeof(*hdr);
+    recv_length = hdr->length - cur_recvd_length;
+
+    ucs_assertv(recv_length > 0, "ep=%p", ep);
+
+    status = uct_tcp_recv(ep->fd, ep->buf + ep->length, &recv_length);
+    if (status != UCS_OK) {
+        if (status == UCS_ERR_CANCELED) {
+            ucs_debug("tcp_ep %p: remote disconnected", ep);
+            uct_tcp_ep_mod_events(ep, 0, EPOLLIN);
+            uct_tcp_ep_destroy(&ep->super.super);
+        }
+        return 0;
+    }
+
+    ucs_trace_data("tcp_ep %p: recvd %zu bytes", ep, recv_length);
+
+    if (recv_length == (hdr->length - cur_recvd_length)) {
+        if (hdr->am_id >= UCT_AM_ID_MAX) {
+            ucs_error("invalid am id: %d", hdr->am_id);
+            return 0;
+        }
+
+        uct_iface_trace_am(&iface->super, UCT_AM_TRACE_TYPE_RECV, hdr->am_id,
+                           hdr + 1, hdr->length, "RECV fd %d", ep->fd);
+        uct_iface_invoke_am(&iface->super, hdr->am_id, hdr + 1,
+                            hdr->length, 0);
+
+        ep->length = ep->offset = 0;
+    } else {
+        ep->length += recv_length;
+    }
+
+    return recv_length > 0;
+}
+
+unsigned uct_tcp_ep_progress_rx(uct_tcp_ep_t *ep)
+{
+    ucs_trace_func("ep=%p", ep);
+
+    if (ep->offset == 0) {
+        /* Receive next chunk of data */
+        return uct_tcp_ep_do_next_rx(ep);
+    } else {
+        /* Receive remaining part of AM data */
+        return uct_tcp_ep_do_partial_rx(ep);
+    }
 }
 
 ssize_t uct_tcp_ep_am_bcopy(uct_ep_h uct_ep, uint8_t am_id,
