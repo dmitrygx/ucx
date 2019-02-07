@@ -27,8 +27,15 @@ static void uct_tcp_ep_epoll_ctl(uct_tcp_ep_t *ep, int op)
 
 static inline int uct_tcp_ep_can_send(uct_tcp_ep_t *ep)
 {
+    uct_tcp_iface_t *iface = ucs_derived_of(ep->super.super.iface,
+                                            uct_tcp_iface_t);
+
     ucs_assert(ep->offset <= ep->length);
-    /* TODO optimize to allow partial sends/message coalescing */
+    return ep->length <= iface->config.buf_size;
+}
+
+static inline int uct_tcp_ep_is_nothing_to_send(uct_tcp_ep_t *ep)
+{
     return ep->length == 0;
 }
 
@@ -188,7 +195,7 @@ unsigned uct_tcp_ep_progress_tx(uct_tcp_ep_t *ep)
 
     uct_pending_queue_dispatch(priv, &ep->pending_q, uct_tcp_ep_can_send(ep));
 
-    if (uct_tcp_ep_can_send(ep)) {
+    if (uct_tcp_ep_is_nothing_to_send(ep)) {
         ucs_assert(ucs_queue_is_empty(&ep->pending_q));
         uct_tcp_ep_mod_events(ep, 0, EPOLLOUT);
     }
@@ -209,7 +216,7 @@ static inline unsigned uct_tcp_ep_do_next_rx(uct_tcp_ep_t *ep)
     ucs_assertv(recv_length > 0, "ep=%p", ep);
 
     status = uct_tcp_recv(ep->fd, ep->buf + ep->length, &recv_length);
-    if (status != UCS_OK) {
+    if (ucs_unlikely(status != UCS_OK)) {
         if (status == UCS_ERR_CANCELED) {
             ucs_debug("tcp_ep %p: remote disconnected", ep);
             uct_tcp_ep_mod_events(ep, 0, EPOLLIN);
@@ -238,7 +245,7 @@ static inline unsigned uct_tcp_ep_do_next_rx(uct_tcp_ep_t *ep)
         /* Full message was received */
         ep->offset += sizeof(*hdr) + hdr->length;
 
-        if (hdr->am_id >= UCT_AM_ID_MAX) {
+        if (ucs_unlikely(hdr->am_id >= UCT_AM_ID_MAX)) {
             ucs_error("invalid am id: %d", hdr->am_id);
             continue;
         }
@@ -268,7 +275,7 @@ unsigned uct_tcp_ep_do_partial_rx(uct_tcp_ep_t *ep)
         recv_length = sizeof(*hdr) - cur_recvd_length;
 
         status = uct_tcp_recv(ep->fd, ep->buf + ep->length, &recv_length);
-        if (status != UCS_OK) {
+        if (ucs_unlikely(status != UCS_OK)) {
             if (status == UCS_ERR_CANCELED) {
                 ucs_debug("tcp_ep %p: remote disconnected", ep);
                 uct_tcp_ep_mod_events(ep, 0, EPOLLIN);
@@ -292,7 +299,7 @@ unsigned uct_tcp_ep_do_partial_rx(uct_tcp_ep_t *ep)
     ucs_assertv(recv_length > 0, "ep=%p", ep);
 
     status = uct_tcp_recv(ep->fd, ep->buf + ep->length, &recv_length);
-    if (status != UCS_OK) {
+    if (ucs_unlikely(status != UCS_OK)) {
         if (status == UCS_ERR_CANCELED) {
             ucs_debug("tcp_ep %p: remote disconnected", ep);
             uct_tcp_ep_mod_events(ep, 0, EPOLLIN);
@@ -304,7 +311,7 @@ unsigned uct_tcp_ep_do_partial_rx(uct_tcp_ep_t *ep)
     ucs_trace_data("tcp_ep %p: recvd %zu bytes", ep, recv_length);
 
     if (recv_length == (hdr->length - cur_recvd_length)) {
-        if (hdr->am_id >= UCT_AM_ID_MAX) {
+        if (ucs_unlikely(hdr->am_id >= UCT_AM_ID_MAX)) {
             ucs_error("invalid am id: %d", hdr->am_id);
             return 0;
         }
@@ -348,10 +355,10 @@ ssize_t uct_tcp_ep_am_bcopy(uct_ep_h uct_ep, uint8_t am_id,
         return UCS_ERR_NO_RESOURCE;
     }
 
-    hdr         = ep->buf;
+    hdr         = ep->buf + ep->length;
     hdr->am_id  = am_id;
     hdr->length = packed_length = pack_cb(hdr + 1, arg);
-    ep->length  = sizeof(*hdr) + packed_length;
+    ep->length  += sizeof(*hdr) + packed_length;
 
     UCT_CHECK_LENGTH(hdr->length, 0,
                      iface->config.buf_size - sizeof(uct_tcp_am_hdr_t),
