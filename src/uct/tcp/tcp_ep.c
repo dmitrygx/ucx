@@ -34,7 +34,7 @@ static inline int uct_tcp_ep_can_send(uct_tcp_ep_t *ep)
     return ep->length <= iface->config.buf_size;
 }
 
-static inline int uct_tcp_ep_is_nothing_to_send(uct_tcp_ep_t *ep)
+static inline int uct_tcp_ep_nothing_to_send(uct_tcp_ep_t *ep)
 {
     return ep->length == 0;
 }
@@ -195,7 +195,7 @@ unsigned uct_tcp_ep_progress_tx(uct_tcp_ep_t *ep)
 
     uct_pending_queue_dispatch(priv, &ep->pending_q, uct_tcp_ep_can_send(ep));
 
-    if (uct_tcp_ep_is_nothing_to_send(ep)) {
+    if (uct_tcp_ep_nothing_to_send(ep)) {
         ucs_assert(ucs_queue_is_empty(&ep->pending_q));
         uct_tcp_ep_mod_events(ep, 0, EPOLLOUT);
     }
@@ -366,7 +366,7 @@ ssize_t uct_tcp_ep_am_bcopy(uct_ep_h uct_ep, uint8_t am_id,
     UCT_TL_EP_STAT_OP(&ep->super, AM, BCOPY, hdr->length);
     uct_iface_trace_am(&iface->super, UCT_AM_TRACE_TYPE_SEND, hdr->am_id,
                        hdr + 1, hdr->length, "SEND fd %d", ep->fd);
-    iface->outstanding += ep->length;
+    iface->outstanding += sizeof(*hdr) + packed_length;
 
     uct_tcp_ep_send(ep);
     if (ep->length > 0) {
