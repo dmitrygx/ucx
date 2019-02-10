@@ -195,6 +195,18 @@ unsigned uct_tcp_ep_progress_tx(uct_tcp_ep_t *ep)
     return count;
 }
 
+static inline void
+uct_tcp_ep_complete_recv_am(uct_tcp_iface_t *iface, uct_tcp_ep_t *ep,
+                            uct_tcp_am_hdr_t *hdr)
+{
+    ucs_assertv(hdr->am_id < UCT_AM_ID_MAX, "invalid am id: %d", hdr->am_id);
+
+    uct_iface_trace_am(&iface->super, UCT_AM_TRACE_TYPE_RECV, hdr->am_id,
+                       hdr + 1, hdr->length, "RECV fd %d", ep->fd);
+    uct_iface_invoke_am(&iface->super, hdr->am_id, hdr + 1,
+                        hdr->length, 0);
+}
+
 static inline unsigned uct_tcp_ep_do_next_rx(uct_tcp_ep_t *ep)
 {
     uct_tcp_iface_t *iface = ucs_derived_of(ep->super.super.iface,
@@ -237,15 +249,7 @@ static inline unsigned uct_tcp_ep_do_next_rx(uct_tcp_ep_t *ep)
         /* Full message was received */
         ep->offset += sizeof(*hdr) + hdr->length;
 
-        if (hdr->am_id >= UCT_AM_ID_MAX) {
-            ucs_error("invalid am id: %d", hdr->am_id);
-            continue;
-        }
-
-        uct_iface_trace_am(&iface->super, UCT_AM_TRACE_TYPE_RECV, hdr->am_id,
-                           hdr + 1, hdr->length, "RECV fd %d", ep->fd);
-        uct_iface_invoke_am(&iface->super, hdr->am_id, hdr + 1,
-                            hdr->length, 0);
+        uct_tcp_ep_complete_recv_am(iface, ep, hdr);
     }
 
     ep->length = ep->offset = 0;
@@ -282,9 +286,20 @@ unsigned uct_tcp_ep_do_partial_rx(uct_tcp_ep_t *ep)
         if (ep->length - ep->offset < sizeof(*hdr)) {
 	    return recv_length > 0;
         }
+
+        hdr = ep->buf + ep->offset;
+
+        if (hdr->length == 0) {
+            uct_tcp_ep_complete_recv_am(iface, ep, hdr);
+            ep->length = ep->offset = 0;
+	    return 1;
+        }
+    } else {
+        hdr = ep->buf + ep->offset;
     }
 
-    hdr = ep->buf + ep->offset;
+    ucs_assert(hdr->length <= (iface->config.buf_size - sizeof(uct_tcp_am_hdr_t)));
+
     cur_recvd_length = ep->length - ep->offset - sizeof(*hdr);
     recv_length = hdr->length - cur_recvd_length;
 
@@ -303,16 +318,7 @@ unsigned uct_tcp_ep_do_partial_rx(uct_tcp_ep_t *ep)
     ucs_trace_data("tcp_ep %p: recvd %zu bytes", ep, recv_length);
 
     if (recv_length == (hdr->length - cur_recvd_length)) {
-        if (hdr->am_id >= UCT_AM_ID_MAX) {
-            ucs_error("invalid am id: %d", hdr->am_id);
-            return 0;
-        }
-
-        uct_iface_trace_am(&iface->super, UCT_AM_TRACE_TYPE_RECV, hdr->am_id,
-                           hdr + 1, hdr->length, "RECV fd %d", ep->fd);
-        uct_iface_invoke_am(&iface->super, hdr->am_id, hdr + 1,
-                            hdr->length, 0);
-
+        uct_tcp_ep_complete_recv_am(iface, ep, hdr);
         ep->length = ep->offset = 0;
     } else {
         ep->length += recv_length;
