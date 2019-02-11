@@ -54,6 +54,8 @@ static UCS_CLASS_INIT_FUNC(uct_tcp_ep_t, uct_tcp_iface_t *iface,
     self->events = 0;
     self->offset = 0;
     self->length = 0;
+    self->do_recv = self->do_send = 0;
+    self->total_recv = self->total_send = 0;
     ucs_queue_head_init(&self->pending_q);
 
     if (fd == -1) {
@@ -104,6 +106,14 @@ static UCS_CLASS_CLEANUP_FUNC(uct_tcp_ep_t)
     ucs_debug("tcp_ep %p: destroying", self);
 
     UCS_ASYNC_BLOCK(iface->super.worker->async);
+
+    fprintf(stderr, "%d - %d %zu vs %zu EP: %p  \n",
+            self->do_recv, self->do_send,
+	    self->length, self->offset, self);
+    fprintf(stderr, "total recv %zu, send %zu for EP %p\n",
+	    self->total_recv, self->total_send, self);
+    //ucs_assert(self->length == 0 && self->offset == 0);
+    //iface->outstanding -= (self->length - self->offset);
     ucs_list_del(&self->list);
     UCS_ASYNC_UNBLOCK(iface->super.worker->async);
 
@@ -167,6 +177,7 @@ static unsigned uct_tcp_ep_send(uct_tcp_ep_t *ep)
 
     status = uct_tcp_send(ep->fd, ep->buf + ep->offset, &send_length);
     if (status < 0) {
+      fprintf(stderr, "ERRR %u \n", status);
         return 0;
     }
 
@@ -178,6 +189,7 @@ static unsigned uct_tcp_ep_send(uct_tcp_ep_t *ep)
         ep->offset = 0;
         ep->length = 0;
     }
+    ep->total_send += send_length;
 
     return send_length > 0;
 }
@@ -188,6 +200,7 @@ unsigned uct_tcp_ep_progress_tx(uct_tcp_ep_t *ep)
     uct_pending_req_priv_queue_t *priv;
 
     ucs_trace_func("ep=%p", ep);
+    ep->do_send = 1;
 
     if (ep->length > 0) {
         count += uct_tcp_ep_send(ep);
@@ -239,6 +252,7 @@ static inline unsigned uct_tcp_ep_do_next_rx(uct_tcp_ep_t *ep)
 
     ep->length += recv_length;
     ucs_trace_data("tcp_ep %p: recvd %zu bytes", ep, recv_length);
+    ep->total_recv += recv_length;
 
     /* Parse received active messages */
     while (ep->offset < ep->length) {
@@ -290,6 +304,7 @@ unsigned uct_tcp_ep_do_partial_rx(uct_tcp_ep_t *ep)
 
         ep->length += recv_length;
         ucs_trace_data("tcp_ep %p: recvd %zu bytes", ep, recv_length);
+        ep->total_recv += recv_length;
 
         if (ep->length - ep->offset < sizeof(*hdr)) {
 	    return recv_length > 0;
@@ -314,6 +329,7 @@ unsigned uct_tcp_ep_do_partial_rx(uct_tcp_ep_t *ep)
     }
 
     ucs_trace_data("tcp_ep %p: recvd %zu bytes", ep, recv_length);
+        ep->total_recv += recv_length;
 
     if (recv_length == (hdr->length - cur_recvd_length)) {
         uct_tcp_ep_complete_recv_am(iface, ep, hdr);
@@ -328,6 +344,8 @@ unsigned uct_tcp_ep_do_partial_rx(uct_tcp_ep_t *ep)
 unsigned uct_tcp_ep_progress_rx(uct_tcp_ep_t *ep)
 {
     ucs_trace_func("ep=%p", ep);
+
+    ep->do_recv = 1;
 
     if (ep->offset == 0) {
         /* Receive next chunk of data */
@@ -381,6 +399,7 @@ ucs_status_t uct_tcp_ep_pending_add(uct_ep_h tl_ep, uct_pending_req_t *req,
     }
 
     uct_pending_req_queue_push(&ep->pending_q, req);
+
     return UCS_OK;
 }
 

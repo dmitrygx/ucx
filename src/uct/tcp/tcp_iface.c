@@ -377,6 +377,7 @@ static UCS_CLASS_CLEANUP_FUNC(uct_tcp_iface_t)
     }
 
     ucs_list_for_each_safe(ep, tmp, &self->ep_list, list) {
+      self->outstanding -= (ep->length - ep->offset);
         uct_tcp_ep_destroy(&ep->super.super);
     }
 

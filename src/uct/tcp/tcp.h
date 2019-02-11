@@ -38,6 +38,10 @@ typedef struct uct_tcp_ep {
     size_t                        length;    /* How much data in the buffer */
     size_t                        offset;    /* Next offset to send/recv */
     ucs_list_link_t               list;
+  int do_recv;
+int do_send;
+  size_t total_recv;
+  size_t total_send;
 } uct_tcp_ep_t;
 
 

@@ -587,9 +587,9 @@ UCS_TEST_P(test_ucp_wireup_1sided, disconnect_nb_onesided) {
         ASSERT_UCS_OK(UCS_PTR_STATUS(dreq));
     }
 
-    wait(dreq);
     recv_b(receiver().worker(), receiver().ep(), 1000, 1000);
 
+    wait(dreq);
     waitall(sreqs);
 }
 
