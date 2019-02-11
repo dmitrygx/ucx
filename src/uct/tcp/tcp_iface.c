@@ -40,6 +40,14 @@ static ucs_config_field_t uct_tcp_iface_config_table[] = {
    "Socket send buffer size.",
    ucs_offsetof(uct_tcp_iface_config_t, sockopt_sndbuf), UCS_CONFIG_TYPE_MEMUNITS},
 
+  {"BUF_MPOOL_ELEMS_PER_CHUNK", "8",
+   "Number of elements per chunk allocated from memory pool for TX/RX operations.",
+   ucs_offsetof(uct_tcp_iface_config_t, buf_mpool_elems_per_chunk), UCS_CONFIG_TYPE_MEMUNITS},
+
+  {"BUF_MPOOL_MAX_ELEMS", "64",
+   "How many more elements can be allocated from memory pool for TX/RX operations.",
+   ucs_offsetof(uct_tcp_iface_config_t, buf_mpool_max_elems), UCS_CONFIG_TYPE_MEMUNITS},
+
   {NULL}
 };
 
@@ -257,6 +265,13 @@ static uct_iface_ops_t uct_tcp_iface_ops = {
     .iface_is_reachable       = uct_tcp_iface_is_reachable
 };
 
+ucs_mpool_ops_t buf_mp_ops = {
+    ucs_mpool_chunk_malloc,
+    ucs_mpool_chunk_free,
+    NULL,
+    NULL,
+};
+
 static UCS_CLASS_INIT_FUNC(uct_tcp_iface_t, uct_md_h md, uct_worker_h worker,
                            const uct_iface_params_t *params,
                            const uct_iface_config_t *tl_config)
@@ -283,14 +298,34 @@ static UCS_CLASS_INIT_FUNC(uct_tcp_iface_t, uct_md_h md, uct_worker_h worker,
 
     ucs_strncpy_zero(self->if_name, params->mode.device.dev_name,
                      sizeof(self->if_name));
-    self->outstanding            = 0;
-    self->config.buf_size        = config->super.max_bcopy +
-                                   sizeof(uct_tcp_am_hdr_t);
-    self->config.prefer_default  = config->prefer_default;
-    self->config.max_poll        = config->max_poll;
-    self->sockopt.nodelay        = config->sockopt_nodelay;
-    self->sockopt.sndbuf         = config->sockopt_sndbuf;
+    self->outstanding                      = 0;
+    self->config.buf_size                  = config->super.max_bcopy +
+                                             sizeof(uct_tcp_am_hdr_t);
+    self->config.prefer_default            = config->prefer_default;
+    self->config.max_poll                  = config->max_poll;
+    self->config.buf_mpool.elems_per_chunk = config->buf_mpool_elems_per_chunk;
+    self->config.buf_mpool.max_elems       = config->buf_mpool_max_elems;
+    self->sockopt.nodelay                  = config->sockopt_nodelay;
+    self->sockopt.sndbuf                   = config->sockopt_sndbuf;
     ucs_list_head_init(&self->ep_list);
+
+    status = ucs_mpool_init(&self->tx_buf_mp, 0, self->config.buf_size,
+                            0, UCS_SYS_CACHE_LINE_SIZE,
+                            self->config.buf_mpool.elems_per_chunk,
+                            self->config.buf_mpool.max_elems,
+                            &buf_mp_ops, "uct_tcp_iface_tx_buf_mp");
+    if (status != UCS_OK) {
+        return status;
+    }
+
+    status = ucs_mpool_init(&self->rx_buf_mp, 0, self->config.buf_size * 2,
+                            0, UCS_SYS_CACHE_LINE_SIZE,
+                            self->config.buf_mpool.elems_per_chunk,
+                            self->config.buf_mpool.max_elems,
+                            &buf_mp_ops, "uct_tcp_iface_tx_buf_mp");
+    if (status != UCS_OK) {
+        goto err_cleanup_tx_mpool;
+    }
 
     if (ucs_derived_of(worker, uct_priv_worker_t)->thread_mode == UCS_THREAD_MODE_MULTI) {
         ucs_error("TCP transport does not support multi-threaded worker");
@@ -300,13 +335,13 @@ static UCS_CLASS_INIT_FUNC(uct_tcp_iface_t, uct_md_h md, uct_worker_h worker,
     status = uct_tcp_netif_inaddr(self->if_name, &self->config.ifaddr,
                                   &self->config.netmask);
     if (status != UCS_OK) {
-        goto err;
+        goto err_cleanup_rx_mpool;
     }
 
     self->epfd = epoll_create(1);
     if (self->epfd < 0) {
         ucs_error("epoll_create() failed: %m");
-        goto err;
+        goto err_cleanup_rx_mpool;
     }
 
     /* Create the server socket for accepting incoming connections */
@@ -365,7 +400,10 @@ err_close_sock:
     close(self->listen_fd);
 err_close_epfd:
     close(self->epfd);
-err:
+err_cleanup_rx_mpool:
+    ucs_mpool_cleanup(&self->rx_buf_mp, 1);
+err_cleanup_tx_mpool:
+    ucs_mpool_cleanup(&self->tx_buf_mp, 1);
     return status;
 }
 
@@ -387,6 +425,9 @@ static UCS_CLASS_CLEANUP_FUNC(uct_tcp_iface_t)
     ucs_list_for_each_safe(ep, tmp, &self->ep_list, list) {
         uct_tcp_ep_destroy(&ep->super.super);
     }
+
+    ucs_mpool_cleanup(&self->rx_buf_mp, 1);
+    ucs_mpool_cleanup(&self->tx_buf_mp, 1);
 
     uct_tcp_iface_listen_close(self);
     close(self->epfd);

@@ -51,6 +51,8 @@ typedef struct uct_tcp_iface {
     char                          if_name[IFNAMSIZ];/* Network interface name */
     int                           epfd;           /* event poll set of sockets */
     size_t                        outstanding;
+    ucs_mpool_t                   tx_buf_mp;
+    ucs_mpool_t                   rx_buf_mp;
 
     struct {
         struct sockaddr_in        ifaddr;         /* Network address */
@@ -58,6 +60,10 @@ typedef struct uct_tcp_iface {
         size_t                    buf_size;       /* Maximal bcopy size */
         int                       prefer_default; /* prefer default gateway */
         unsigned                  max_poll;       /* number of events to poll per socket*/
+        struct {
+            size_t                elems_per_chunk;
+            size_t                max_elems;
+	} buf_mpool;
     } config;
 
     struct {
@@ -77,6 +83,8 @@ typedef struct uct_tcp_iface_config {
     unsigned                      max_poll;
     int                           sockopt_nodelay;
     size_t                        sockopt_sndbuf;
+    size_t                        buf_mpool_elems_per_chunk;
+    size_t                        buf_mpool_max_elems;
 } uct_tcp_iface_config_t;
 
 

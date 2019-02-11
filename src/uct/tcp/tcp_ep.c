@@ -39,11 +39,7 @@ static UCS_CLASS_INIT_FUNC(uct_tcp_ep_t, uct_tcp_iface_t *iface,
 
     UCS_CLASS_CALL_SUPER_INIT(uct_base_ep_t, &iface->super)
 
-    self->buf = ucs_malloc(iface->config.buf_size * 2, "tcp_buf");
-    if (self->buf == NULL) {
-        return UCS_ERR_NO_MEMORY;
-    }
-
+    self->buf = NULL;
     self->events = 0;
     self->offset = 0;
     self->length = 0;
@@ -100,7 +96,9 @@ static UCS_CLASS_CLEANUP_FUNC(uct_tcp_ep_t)
     ucs_list_del(&self->list);
     UCS_ASYNC_UNBLOCK(iface->super.worker->async);
 
-    ucs_free(self->buf);
+    if (self->length != 0)
+        ucs_mpool_put(self->buf);
+
     close(self->fd);
 }
 
@@ -169,6 +167,7 @@ static unsigned uct_tcp_ep_send(uct_tcp_ep_t *ep)
     if (ep->offset == ep->length) {
         ep->offset = 0;
         ep->length = 0;
+        ucs_mpool_put_inline(ep->buf);
     }
 
     return send_length > 0;
@@ -216,14 +215,22 @@ static inline unsigned uct_tcp_ep_do_next_rx(uct_tcp_ep_t *ep)
     size_t recv_length;
     ssize_t remainder;
 
+    ucs_assertv(ep->length == 0, "ep=%p", ep);
+
+    ep->buf = ucs_mpool_get_inline(&iface->rx_buf_mp);
+    if (ucs_unlikely(!ep->buf)) {
+        return 0;
+    }
+
     recv_length = iface->config.buf_size - ep->length;
     ucs_assertv(recv_length > 0, "ep=%p", ep);
 
-    status = uct_tcp_recv(ep->fd, ep->buf + ep->length, &recv_length);
+    status = uct_tcp_recv(ep->fd, ep->buf, &recv_length);
     if (status != UCS_OK) {
         if (status == UCS_ERR_CANCELED) {
             ucs_debug("tcp_ep %p: remote disconnected", ep);
             uct_tcp_ep_mod_events(ep, 0, EPOLLIN);
+            ucs_mpool_put(ep->buf);
             uct_tcp_ep_destroy(&ep->super.super);
         }
         return 0;
@@ -253,6 +260,7 @@ static inline unsigned uct_tcp_ep_do_next_rx(uct_tcp_ep_t *ep)
     }
 
     ep->length = ep->offset = 0;
+    ucs_mpool_put_inline(ep->buf);
 
     return recv_length > 0;
 }
@@ -275,6 +283,8 @@ unsigned uct_tcp_ep_do_partial_rx(uct_tcp_ep_t *ep)
             if (status == UCS_ERR_CANCELED) {
                 ucs_debug("tcp_ep %p: remote disconnected", ep);
                 uct_tcp_ep_mod_events(ep, 0, EPOLLIN);
+                /* No need to put ep::buf to mpool, it will be done in
+		 * destroy function, because `ep::length != 0` */
                 uct_tcp_ep_destroy(&ep->super.super);
             }
             return 0;
@@ -292,6 +302,7 @@ unsigned uct_tcp_ep_do_partial_rx(uct_tcp_ep_t *ep)
         if (hdr->length == 0) {
             uct_tcp_ep_complete_recv_am(iface, ep, hdr);
             ep->length = ep->offset = 0;
+            ucs_mpool_put_inline(ep->buf);
 	    return 1;
         }
     } else {
@@ -310,6 +321,8 @@ unsigned uct_tcp_ep_do_partial_rx(uct_tcp_ep_t *ep)
         if (status == UCS_ERR_CANCELED) {
             ucs_debug("tcp_ep %p: remote disconnected", ep);
             uct_tcp_ep_mod_events(ep, 0, EPOLLIN);
+            /* No need to put ep::buf to mpool, it will be done in
+	     * destroy function, because `ep::length != 0` */
             uct_tcp_ep_destroy(&ep->super.super);
         }
         return 0;
@@ -320,6 +333,7 @@ unsigned uct_tcp_ep_do_partial_rx(uct_tcp_ep_t *ep)
     if (recv_length == (hdr->length - cur_recvd_length)) {
         uct_tcp_ep_complete_recv_am(iface, ep, hdr);
         ep->length = ep->offset = 0;
+        ucs_mpool_put_inline(ep->buf);
     } else {
         ep->length += recv_length;
     }
@@ -331,7 +345,7 @@ unsigned uct_tcp_ep_progress_rx(uct_tcp_ep_t *ep)
 {
     ucs_trace_func("ep=%p", ep);
 
-    if (ep->offset == 0) {
+    if (ep->length == 0) {
         /* Receive next chunk of data */
         return uct_tcp_ep_do_next_rx(ep);
     } else {
@@ -350,6 +364,11 @@ ssize_t uct_tcp_ep_am_bcopy(uct_ep_h uct_ep, uint8_t am_id,
     size_t packed_length;
 
     if (!uct_tcp_ep_can_send(ep)) {
+        return UCS_ERR_NO_RESOURCE;
+    }
+
+    ep->buf = ucs_mpool_get_inline(&iface->tx_buf_mp);
+    if (ucs_unlikely(!ep->buf)) {
         return UCS_ERR_NO_RESOURCE;
     }
 
