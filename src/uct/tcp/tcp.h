@@ -25,7 +25,6 @@ typedef struct uct_tcp_am_hdr {
     uint16_t                      length;
 } UCS_S_PACKED uct_tcp_am_hdr_t;
 
-
 /**
  * TCP endpoint
  */
@@ -57,6 +56,7 @@ typedef struct uct_tcp_iface {
     struct {
         struct sockaddr_in        ifaddr;         /* Network address */
         struct sockaddr_in        netmask;        /* Network address mask */
+        size_t                    short_size;     /* Maximal short size */
         size_t                    buf_size;       /* Maximal bcopy size */
         int                       prefer_default; /* prefer default gateway */
         unsigned                  max_poll;       /* number of events to poll per socket*/
@@ -105,6 +105,9 @@ ucs_status_t uct_tcp_send(int fd, const void *data, size_t *length_p);
 
 ucs_status_t uct_tcp_recv(int fd, void *data, size_t *length_p);
 
+ucs_status_t uct_tcp_sendv(int fd, const struct iovec *iov,
+                           size_t count, size_t *length_p);
+
 ucs_status_t uct_tcp_iface_set_sockopt(uct_tcp_iface_t *iface, int fd);
 
 ucs_status_t uct_tcp_ep_create(uct_tcp_iface_t *iface, int fd,
@@ -121,6 +124,9 @@ unsigned uct_tcp_ep_progress_tx(uct_tcp_ep_t *ep);
 unsigned uct_tcp_ep_progress_rx(uct_tcp_ep_t *ep);
 
 void uct_tcp_ep_mod_events(uct_tcp_ep_t *ep, uint32_t add, uint32_t remove);
+
+ucs_status_t uct_tcp_ep_am_short(uct_ep_h uct_ep, uint8_t am_id, uint64_t header,
+                                 const void *payload, unsigned length);
 
 ssize_t uct_tcp_ep_am_bcopy(uct_ep_h uct_ep, uint8_t am_id,
                             uct_pack_callback_t pack_cb, void *arg,

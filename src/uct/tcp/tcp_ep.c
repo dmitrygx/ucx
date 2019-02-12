@@ -146,6 +146,20 @@ void uct_tcp_ep_mod_events(uct_tcp_ep_t *ep, uint32_t add, uint32_t remove)
     }
 }
 
+static size_t uct_tcp_ep_sendv(uct_tcp_ep_t *ep, const struct iovec *iov,
+                               size_t count)
+{
+    size_t send_length;
+    ucs_status_t status;
+
+    status = uct_tcp_sendv(ep->fd, iov, count, &send_length);
+    if (status < 0) {
+        return 0;
+    }
+
+    return send_length;
+}
+
 static unsigned uct_tcp_ep_send(uct_tcp_ep_t *ep)
 {
     uct_tcp_iface_t *iface = ucs_derived_of(ep->super.super.iface, uct_tcp_iface_t);
@@ -352,6 +366,94 @@ unsigned uct_tcp_ep_progress_rx(uct_tcp_ep_t *ep)
         /* Receive remaining part of AM data */
         return uct_tcp_ep_do_partial_rx(ep);
     }
+}
+
+static inline size_t
+uct_tcp_ep_iov_2_buf(const struct iovec *iov, size_t iov_count, uint64_t iov_offset,
+                     void *buf, size_t buf_size)
+{
+    char *iov_buf;
+    size_t i, done = 0, len;
+
+    for (i = 0; i < iov_count && buf_size; i++) {
+        len = iov[i].iov_len;
+
+        if (iov_offset > len) {
+            iov_offset -= len;
+            continue;
+        }
+
+        iov_buf = (char *)iov[i].iov_base + iov_offset;
+        len -= iov_offset;
+
+        len = MIN(len, buf_size);
+        memcpy((char *) buf + done, iov_buf, len);
+
+        iov_offset = 0;
+        buf_size -= len;
+        done += len;
+    }
+
+    return done;
+}
+
+ucs_status_t uct_tcp_ep_am_short(uct_ep_h uct_ep, uint8_t am_id, uint64_t header,
+                                 const void *payload, unsigned length)
+{
+    uct_tcp_ep_t *ep = ucs_derived_of(uct_ep, uct_tcp_ep_t);
+    uct_tcp_iface_t *iface = ucs_derived_of(uct_ep->iface, uct_tcp_iface_t);
+    unsigned send_length, total_length;
+    uct_tcp_am_hdr_t am_hdr = {
+        .am_id  = am_id,
+        .length = length + sizeof(header),
+    };
+    struct iovec iov[3] = {
+        {
+            .iov_base = &am_hdr,
+            .iov_len  = sizeof(am_hdr),
+        },
+        {
+            .iov_base = &header,
+            .iov_len  = sizeof(header),
+        },
+        {
+	    .iov_base = (void*)payload,
+            .iov_len  = length,
+        },
+    };
+
+    if (!uct_tcp_ep_can_send(ep)) {
+        return UCS_ERR_NO_RESOURCE;
+    }
+
+    total_length = sizeof(am_hdr) + sizeof(header) + length;
+
+    UCT_CHECK_LENGTH(length + sizeof(header), 0,
+                     iface->config.short_size - sizeof(uct_tcp_am_hdr_t),
+                     "am_short");
+    UCT_TL_EP_STAT_OP(&ep->super, AM, SHORT, am_hdr.length);
+    uct_iface_trace_am(&iface->super, UCT_AM_TRACE_TYPE_SEND, am_hdr.am_id,
+                       payload, am_hdr.length, "SEND fd %d", ep->fd);
+
+    send_length = uct_tcp_ep_sendv(ep, iov, 3);
+    if (ucs_likely(send_length == total_length)) {
+        return UCS_OK;
+    }
+
+    ep->buf = ucs_mpool_get_inline(&iface->tx_buf_mp);
+    if (ucs_unlikely(!ep->buf)) {
+        return UCS_ERR_NO_RESOURCE;
+    }
+
+    ep->length = uct_tcp_ep_iov_2_buf(iov, 3, send_length, ep->buf,
+                                      iface->config.short_size);
+    iface->outstanding += ep->length;
+
+    uct_tcp_ep_send(ep);
+    if (ep->length > 0) {
+        uct_tcp_ep_mod_events(ep, EPOLLOUT, 0);
+    }
+    return UCS_OK;
 }
 
 ssize_t uct_tcp_ep_am_bcopy(uct_ep_h uct_ep, uint8_t am_id,

@@ -26,6 +26,7 @@
 
 typedef ssize_t (*uct_tcp_io_func_t)(int fd, void *data, size_t size, int flags);
 
+typedef ssize_t (*uct_tcp_iov_io_func_t)(int fd, struct msghdr *msg, int flags);
 
 ucs_status_t uct_tcp_socket_connect(int fd, const struct sockaddr_in *dest_addr)
 {
@@ -184,17 +185,14 @@ ucs_status_t uct_tcp_netif_is_default(const char *if_name, int *result_p)
     return UCS_OK;
 }
 
-static ucs_status_t uct_tcp_do_io(int fd, void *data, size_t *length_p,
-                                  uct_tcp_io_func_t io_func, const char *name)
+static inline ucs_status_t
+uct_tcp_handle_io_ret(ssize_t io_ret, int fd, void *data,
+                      size_t *length_p, const char *name)
 {
-    ssize_t ret;
-
-    ucs_assert(*length_p > 0);
-    ret = io_func(fd, data, *length_p, 0);
-    if (ret == 0) {
+    if (io_ret == 0) {
         ucs_trace("fd %d is closed", fd);
         return UCS_ERR_CANCELED; /* Connection closed */
-    } else if (ret < 0) {
+    } else if (io_ret < 0) {
         if ((errno == EINTR) || (errno == EAGAIN)) {
             *length_p = 0;
             return UCS_OK;
@@ -204,9 +202,19 @@ static ucs_status_t uct_tcp_do_io(int fd, void *data, size_t *length_p,
             return UCS_ERR_IO_ERROR;
         }
     } else {
-        *length_p = ret;
+        *length_p = io_ret;
         return UCS_OK;
     }
+}
+
+static inline ucs_status_t
+uct_tcp_do_io(int fd, void *data, size_t *length_p,
+              uct_tcp_io_func_t io_func, const char *name)
+{
+    ucs_assert(*length_p > 0);
+
+    return uct_tcp_handle_io_ret(io_func(fd, data, *length_p, MSG_NOSIGNAL),
+                                 fd, data, length_p, name);
 }
 
 ucs_status_t uct_tcp_send(int fd, const void *data, size_t *length_p)
@@ -218,4 +226,40 @@ ucs_status_t uct_tcp_send(int fd, const void *data, size_t *length_p)
 ucs_status_t uct_tcp_recv(int fd, void *data, size_t *length_p)
 {
     return uct_tcp_do_io(fd, data, length_p, recv, "recv");
+}
+
+static inline size_t
+uct_tcp_calc_iov_total_len(const struct iovec *iov, size_t count)
+{
+    size_t total_len = 0;
+
+    while (count-- != 0) {
+        total_len += iov[count].iov_len;
+    }
+
+    return total_len;
+}
+
+static inline ucs_status_t
+uct_tcp_do_iov_io(int fd, struct iovec *iov, size_t count, size_t *length_p,
+                  uct_tcp_iov_io_func_t io_func, const char *name)
+{
+    struct msghdr msg = {
+        .msg_iov = iov,
+        .msg_iovlen = count,
+    };
+
+    ucs_assert(uct_tcp_calc_iov_total_len(iov, count) > 0);
+
+    ucs_assert(length_p != NULL);
+
+    return uct_tcp_handle_io_ret(io_func(fd, &msg, MSG_NOSIGNAL),
+                                 fd, iov, length_p, name);
+}
+
+ucs_status_t uct_tcp_sendv(int fd, const struct iovec *iov,
+                           size_t count, size_t *length_p)
+{
+    return uct_tcp_do_iov_io(fd, (struct iovec*)iov, count, length_p,
+                             (uct_tcp_iov_io_func_t)sendmsg, "sendv");
 }

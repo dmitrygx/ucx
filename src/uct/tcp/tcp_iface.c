@@ -92,6 +92,7 @@ static ucs_status_t uct_tcp_iface_query(uct_iface_h tl_iface, uct_iface_attr_t *
     attr->iface_addr_len   = sizeof(in_port_t);
     attr->device_addr_len  = sizeof(struct in_addr);
     attr->cap.flags        = UCT_IFACE_FLAG_CONNECT_TO_IFACE |
+                             UCT_IFACE_FLAG_AM_SHORT         |
                              UCT_IFACE_FLAG_AM_BCOPY         |
                              UCT_IFACE_FLAG_PENDING          |
                              UCT_IFACE_FLAG_CB_SYNC          |
@@ -99,6 +100,7 @@ static ucs_status_t uct_tcp_iface_query(uct_iface_h tl_iface, uct_iface_attr_t *
                              UCT_IFACE_FLAG_EVENT_RECV;
 
     attr->cap.am.max_bcopy = iface->config.buf_size - sizeof(uct_tcp_am_hdr_t);
+    attr->cap.am.max_short = iface->config.short_size - sizeof(uct_tcp_am_hdr_t);
 
     status = uct_tcp_netif_caps(iface->if_name, &attr->latency.overhead,
                                 &attr->bandwidth);
@@ -244,6 +246,7 @@ ucs_status_t uct_tcp_iface_set_sockopt(uct_tcp_iface_t *iface, int fd)
 }
 
 static uct_iface_ops_t uct_tcp_iface_ops = {
+    .ep_am_short              = uct_tcp_ep_am_short,
     .ep_am_bcopy              = uct_tcp_ep_am_bcopy,
     .ep_pending_add           = uct_tcp_ep_pending_add,
     .ep_pending_purge         = uct_tcp_ep_pending_purge,
@@ -300,6 +303,8 @@ static UCS_CLASS_INIT_FUNC(uct_tcp_iface_t, uct_md_h md, uct_worker_h worker,
                      sizeof(self->if_name));
     self->outstanding                      = 0;
     self->config.buf_size                  = config->super.max_bcopy +
+                                             sizeof(uct_tcp_am_hdr_t);
+    self->config.short_size                = config->super.max_short +
                                              sizeof(uct_tcp_am_hdr_t);
     self->config.prefer_default            = config->prefer_default;
     self->config.max_poll                  = config->max_poll;
