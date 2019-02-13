@@ -60,6 +60,7 @@ typedef struct uct_tcp_iface {
         size_t                    buf_size;       /* Maximal bcopy size */
         int                       prefer_default; /* prefer default gateway */
         unsigned                  max_poll;       /* number of events to poll per socket*/
+        int                       am_short_sendmsg;
         struct {
             size_t                elems_per_chunk;
             size_t                max_elems;
@@ -83,6 +84,7 @@ typedef struct uct_tcp_iface_config {
     unsigned                      max_poll;
     int                           sockopt_nodelay;
     size_t                        sockopt_sndbuf;
+    int                           am_short_sendmsg;
     size_t                        buf_mpool_elems_per_chunk;
     size_t                        buf_mpool_max_elems;
 } uct_tcp_iface_config_t;

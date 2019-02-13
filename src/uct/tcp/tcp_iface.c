@@ -48,6 +48,10 @@ static ucs_config_field_t uct_tcp_iface_config_table[] = {
    "How many more elements can be allocated from memory pool for TX/RX operations.",
    ucs_offsetof(uct_tcp_iface_config_t, buf_mpool_max_elems), UCS_CONFIG_TYPE_MEMUNITS},
 
+  {"AM_SHORT_SENDMSG", "n",
+   ".",
+   ucs_offsetof(uct_tcp_iface_config_t, am_short_sendmsg), UCS_CONFIG_TYPE_BOOL},
+
   {NULL}
 };
 
@@ -312,6 +316,7 @@ static UCS_CLASS_INIT_FUNC(uct_tcp_iface_t, uct_md_h md, uct_worker_h worker,
     self->config.buf_mpool.max_elems       = config->buf_mpool_max_elems;
     self->sockopt.nodelay                  = config->sockopt_nodelay;
     self->sockopt.sndbuf                   = config->sockopt_sndbuf;
+    self->config.am_short_sendmsg          = config->am_short_sendmsg;
     ucs_list_head_init(&self->ep_list);
 
     status = ucs_mpool_init(&self->tx_buf_mp, 0, self->config.buf_size,
