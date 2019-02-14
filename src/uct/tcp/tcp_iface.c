@@ -181,6 +181,46 @@ static void uct_tcp_iface_listen_close(uct_tcp_iface_t *iface)
     }
 }
 
+uct_tcp_conn_t *
+uct_tcp_iface_get_conn(uct_tcp_iface_t *iface, const struct sockaddr_in *peer_addr)
+{
+    char str_addr[64];
+    khiter_t iter;
+    uct_tcp_conn_t *conn;
+
+    sprintf(str_addr, "%s:%d", inet_ntoa(peer_addr->sin_addr),
+            ntohs(peer_addr->sin_port));
+
+    iter = kh_get(uct_tcp_conn_hash, &iface->conn_hash, str_addr);
+    if (iter == kh_end(&iface->conn_hash)) {
+        return NULL;
+    }
+
+    conn = &kh_value(&iface->conn_hash, iter);
+
+    return conn;
+}
+
+void
+uct_tcp_iface_put_conn(uct_tcp_iface_t *iface, const struct sockaddr_in *peer_addr,
+                       uct_tcp_conn_t *conn)
+{
+    char str_addr[64];
+    khiter_t iter;
+    int ret;
+
+    sprintf(str_addr, "%s:%d", inet_ntoa(peer_addr->sin_addr),
+            ntohs(peer_addr->sin_port));
+
+    iter = kh_put(uct_tcp_conn_hash, &iface->conn_hash, str_addr, &ret);
+    if (ret != 0) {
+        kh_value(&iface->conn_hash, iter) = *conn;
+    }
+
+    fprintf(stderr, "PUT iface %s:%d\n", inet_ntoa(peer_addr->sin_addr),
+            ntohs(peer_addr->sin_port));
+}
+
 static void uct_tcp_iface_connect_handler(int listen_fd, void *arg)
 {
     uct_tcp_iface_t *iface = arg;
@@ -189,6 +229,9 @@ static void uct_tcp_iface_connect_handler(int listen_fd, void *arg)
     ucs_status_t status;
     uct_tcp_ep_t *ep;
     int fd;
+    uct_tcp_conn_t *conn = NULL;
+    uct_tcp_conn_pkt_t conn_pkt = { 0 };
+    size_t recv_len = 0;
 
     ucs_assert(listen_fd == iface->listen_fd);
 
@@ -202,7 +245,36 @@ static void uct_tcp_iface_connect_handler(int listen_fd, void *arg)
         return;
     }
 
-    ucs_debug("tcp_iface %p: accepted connection from %s:%d to fd %d", iface,
+    while (recv_len != sizeof(conn_pkt)) {
+        size_t len = sizeof(conn_pkt) - recv_len;
+
+        status = uct_tcp_recv(fd, (uint8_t*)&conn_pkt + recv_len, &len);
+        if (status != UCS_OK) {
+            return;
+        }
+        recv_len += len;
+    }
+
+    UCS_ASYNC_BLOCK(iface->super.worker->async);
+    conn = uct_tcp_iface_get_conn(iface, &conn_pkt.data.conn_req.ifaddr);
+    if (!conn) {
+      char *addr = strdup(inet_ntoa(peer_addr.sin_addr));
+      fprintf(stderr, "%d ACPTD iface - %s:%d\n", getpid(),
+                inet_ntoa(conn_pkt.data.conn_req.ifaddr.sin_addr),
+		ntohs(conn_pkt.data.conn_req.ifaddr.sin_port));
+        uct_tcp_conn_t put_conn = {
+	    .fd   = fd,
+            .addr = conn_pkt.data.conn_req.ifaddr,
+	};
+
+	free(addr);
+        uct_tcp_iface_put_conn(iface, &conn_pkt.data.conn_req.ifaddr, &put_conn);
+    } else {
+      fprintf(stderr, "FOUND ACPTD \n");
+    }
+    UCS_ASYNC_UNBLOCK(iface->super.worker->async);
+
+    fprintf(stderr, "%d tcp_iface %p: accepted connection from %s:%d to fd %d \n", getpid(), iface,
               inet_ntoa(peer_addr.sin_addr), ntohs(peer_addr.sin_port), fd);
 
     status = uct_tcp_ep_create(iface, fd, NULL, &ep);
@@ -290,7 +362,9 @@ static UCS_CLASS_INIT_FUNC(uct_tcp_iface_t, uct_md_h md, uct_worker_h worker,
     self->config.max_poll        = config->max_poll;
     self->sockopt.nodelay        = config->sockopt_nodelay;
     self->sockopt.sndbuf         = config->sockopt_sndbuf;
+
     ucs_list_head_init(&self->ep_list);
+    kh_init_inplace(uct_tcp_conn_hash, &self->conn_hash);
 
     if (ucs_derived_of(worker, uct_priv_worker_t)->thread_mode == UCS_THREAD_MODE_MULTI) {
         ucs_error("TCP transport does not support multi-threaded worker");
@@ -347,6 +421,9 @@ static UCS_CLASS_INIT_FUNC(uct_tcp_iface_t, uct_md_h md, uct_worker_h worker,
         goto err_close_sock;
     }
 
+    fprintf(stderr, "%d LISTENING on %s:%d\n", getpid(),
+            inet_ntoa(self->config.ifaddr.sin_addr), ntohs(self->config.ifaddr.sin_port));
+
     ucs_debug("tcp_iface %p: listening for connections on %s:%d", self,
               inet_ntoa(bind_addr.sin_addr), ntohs(bind_addr.sin_port));
 
@@ -387,6 +464,8 @@ static UCS_CLASS_CLEANUP_FUNC(uct_tcp_iface_t)
     ucs_list_for_each_safe(ep, tmp, &self->ep_list, list) {
         uct_tcp_ep_destroy(&ep->super.super);
     }
+
+    kh_destroy_inplace(uct_tcp_conn_hash, &self->conn_hash);
 
     uct_tcp_iface_listen_close(self);
     close(self->epfd);

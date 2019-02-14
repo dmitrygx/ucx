@@ -50,15 +50,61 @@ static UCS_CLASS_INIT_FUNC(uct_tcp_ep_t, uct_tcp_iface_t *iface,
     ucs_queue_head_init(&self->pending_q);
 
     if (fd == -1) {
+        uct_tcp_conn_pkt_t conn_pkt = {
+	    .op                   = UCT_TCP_CONN_REQ,
+            .data.conn_req.ifaddr = iface->config.ifaddr,
+        };
+        size_t sent_len = 0;
+        uct_tcp_conn_t *conn;
+
         status = ucs_tcpip_socket_create(&self->fd);
         if (status != UCS_OK) {
             goto err;
         }
 
+        char *addr = strdup(inet_ntoa(iface->config.ifaddr.sin_addr));
+
+        fprintf(stderr, "Connected to %s:%d from %s:%d\n", inet_ntoa(dest_addr->sin_addr),
+                ntohs(dest_addr->sin_port), addr,
+                ntohs(iface->config.ifaddr.sin_port));
+
+        free(addr);
+
+        UCS_ASYNC_BLOCK(iface->super.worker->async);
+        conn = uct_tcp_iface_get_conn(iface, dest_addr);
+        if (!conn) {
+          char *addr = strdup(inet_ntoa(dest_addr->sin_addr));
+	  fprintf(stderr, "%d CONN iface - %s:%d to %s:%d \n", getpid(),
+                 inet_ntoa(conn_pkt.data.conn_req.ifaddr.sin_addr),
+		ntohs(conn_pkt.data.conn_req.ifaddr.sin_port),
+		addr,
+                ntohs(dest_addr->sin_port));
+          uct_tcp_conn_t put_conn = {
+	    .fd   = self->fd,
+            .addr = *dest_addr,
+          };
+
+          free(addr);
+	  uct_tcp_iface_put_conn(iface, dest_addr, &put_conn);
+        } else {
+      fprintf(stderr, "FOUND CONN \n");
+    }
+        UCS_ASYNC_UNBLOCK(iface->super.worker->async);
+
         /* TODO use non-blocking connect */
         status = uct_tcp_socket_connect(self->fd, dest_addr);
         if (status != UCS_OK) {
             goto err_close;
+        }
+
+        while (sent_len != sizeof(conn_pkt)) {
+            size_t len = sizeof(conn_pkt) - sent_len;
+
+            status = uct_tcp_send(self->fd, (uint8_t*)&conn_pkt + sent_len, &len);
+            if (status != UCS_OK) {
+                goto err_close;
+            }
+            sent_len += len;
         }
     } else {
         self->fd = fd;

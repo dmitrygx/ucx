@@ -9,6 +9,8 @@
 #include <uct/base/uct_md.h>
 #include <ucs/sys/sys.h>
 #include <net/if.h>
+#include <ucs/datastruct/khash.h>
+#include <stdint.h>
 
 #define UCT_TCP_NAME "tcp"
 
@@ -40,6 +42,30 @@ typedef struct uct_tcp_ep {
     ucs_list_link_t               list;
 } uct_tcp_ep_t;
 
+typedef enum uct_tcp_conn_state {
+    UCT_TCP_CONN_IDLE,
+    UCT_TCP_CONN_CONN_CONNECTED,
+} uct_tcp_conn_state_t;
+
+typedef enum uct_tcp_conn_op {
+    UCT_TCP_CONN_REQ,
+} uct_tcp_conn_op_t;
+
+typedef struct uct_tcp_conn_pkt {
+    uct_tcp_conn_op_t             op;
+    union {
+        struct {
+            struct sockaddr_in        ifaddr;
+        } conn_req;
+    } data;
+} uct_tcp_conn_pkt_t;
+
+typedef struct uct_tcp_conn {
+    int                           fd;
+    struct sockaddr_in            addr;
+} uct_tcp_conn_t;
+
+KHASH_MAP_INIT_STR(uct_tcp_conn_hash, uct_tcp_conn_t);
 
 /**
  * TCP interface
@@ -51,6 +77,8 @@ typedef struct uct_tcp_iface {
     char                          if_name[IFNAMSIZ];/* Network interface name */
     int                           epfd;           /* event poll set of sockets */
     size_t                        outstanding;
+
+    khash_t(uct_tcp_conn_hash)    conn_hash;
 
     struct {
         struct sockaddr_in        ifaddr;         /* Network address */
@@ -82,6 +110,13 @@ typedef struct uct_tcp_iface_config {
 
 extern uct_md_component_t uct_tcp_md;
 extern const char *uct_tcp_address_type_names[];
+
+uct_tcp_conn_t *
+uct_tcp_iface_get_conn(uct_tcp_iface_t *iface, const struct sockaddr_in *peer_addr);
+
+void
+uct_tcp_iface_put_conn(uct_tcp_iface_t *iface, const struct sockaddr_in *peer_addr,
+                       uct_tcp_conn_t *conn);
 
 ucs_status_t uct_tcp_socket_connect(int fd, const struct sockaddr_in *dest_addr);
 
