@@ -365,6 +365,15 @@ ucs_status_t ucs_tcpip_socket_create(int *fd_p);
 
 
 /**
+ * Create two connected Unix domain sockets.
+ *
+ * @param [out]  fd1_p       Pointer to created fd #1.
+ * @param [out]  fd2_p       Pointer to created fd #2.
+ */
+ucs_status_t ucs_unix_socketpair_create(int *fd1_p, int *fd2_p);
+
+
+/**
  * Empty function which can be casted to a no-operation callback in various situations.
  */
 void ucs_empty_function();

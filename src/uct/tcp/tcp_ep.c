@@ -32,58 +32,167 @@ static inline int uct_tcp_ep_can_send(uct_tcp_ep_t *ep)
     return ep->length == 0;
 }
 
-static UCS_CLASS_INIT_FUNC(uct_tcp_ep_t, uct_tcp_iface_t *iface,
-                           int fd, const struct sockaddr_in *dest_addr)
+static ucs_status_t uct_tcp_ep_init(uct_tcp_iface_t *iface, uct_tcp_ep_t *self)
 {
     ucs_status_t status;
-
-    UCS_CLASS_CALL_SUPER_INIT(uct_base_ep_t, &iface->super)
 
     self->buf = ucs_malloc(iface->config.buf_size, "tcp_buf");
     if (self->buf == NULL) {
         return UCS_ERR_NO_MEMORY;
     }
 
+    self->peer_addr = ucs_malloc(sizeof(*self->peer_addr), "ep::peer_addr");
+    if (self->peer_addr == NULL) {
+        status = UCS_ERR_NO_MEMORY;
+        goto err_free_buf;
+    }
+
+    self->fd = -1;
+
     self->events = 0;
     self->offset = 0;
     self->length = 0;
     ucs_queue_head_init(&self->pending_q);
 
-    if (fd == -1) {
-        status = ucs_tcpip_socket_create(&self->fd);
-        if (status != UCS_OK) {
-            goto err;
-        }
+    return UCS_OK;
 
-        /* TODO use non-blocking connect */
-        status = uct_tcp_socket_connect(self->fd, dest_addr);
-        if (status != UCS_OK) {
-            goto err_close;
+err_free_buf:
+    ucs_free(self->buf);
+    return status;
+}
+
+static void uct_tcp_ep_cleanup(uct_tcp_ep_t *self)
+{
+    ucs_free(self->peer_addr);
+    ucs_free(self->buf);
+    self->fd = -1;
+}
+
+static ucs_status_t uct_tcp_ep_setup(uct_tcp_ep_t *ep)
+{
+    uct_tcp_iface_t *iface = ucs_derived_of(ep->super.super.iface,
+                                            uct_tcp_iface_t);
+    ucs_status_t status;
+
+    status = ucs_sys_fcntl_modfl(ep->fd, O_NONBLOCK, 0);
+    if (status != UCS_OK) {
+        return status;
+    }
+
+    status = uct_tcp_iface_set_sockopt(iface, ep->fd);
+    if (status != UCS_OK) {
+        return status;
+    }
+
+    return UCS_OK;
+}
+
+ucs_status_t uct_tcp_ep_connect(uct_tcp_iface_t *iface,
+                                const struct sockaddr_in *dest_addr,
+                                uct_tcp_ep_t *ep)
+{
+    ucs_status_t status;
+    uint16_t ack;
+    uct_tcp_ep_t *peer_ep;
+
+    status = ucs_tcpip_socket_create(&ep->fd);
+    if (status != UCS_OK) {
+        return status;
+    }
+
+    /* TODO use non-blocking connect */
+    status = uct_tcp_socket_connect(ep->fd, dest_addr);
+    if (status != UCS_OK) {
+        goto err_close;
+    }
+
+    status = uct_tcp_send_blocking(ep->fd, &iface->config.ifaddr,
+                                   sizeof(iface->config.ifaddr));
+    if (status != UCS_OK) {
+        ucs_error("Blocking send failed on fd %d: %m", ep->fd);
+        goto err_close;
+    }
+
+    status = uct_tcp_recv_blocking(ep->fd, &ack, sizeof(ack));
+    if (status != UCS_OK) {
+        ucs_error("Blocking send failed on fd %d: %m", ep->fd);
+        goto err_close;
+    }
+
+    if (ntohs(ack) == 0) {
+        do {
+            peer_ep = uct_tcp_iface_search_pair_ep(iface, ep);
+        } while (peer_ep == NULL);
+
+        ep->fd = dup2(peer_ep->fd, ep->fd);
+    }
+
+    return UCS_OK;
+
+err_close:
+    close(ep->fd);
+    ep->fd = -1;
+    return status;
+}
+
+static UCS_CLASS_INIT_FUNC(uct_tcp_ep_t, uct_tcp_iface_t *iface,
+                           int fd, const struct sockaddr_in *dest_addr)
+{
+    ucs_status_t status;
+    int peer_fd;
+    uct_tcp_ep_t *peer_ep;
+
+    UCS_CLASS_CALL_SUPER_INIT(uct_base_ep_t, &iface->super)
+
+    status = uct_tcp_ep_init(iface, self);
+    if (status != UCS_OK) {
+        return status;
+    }
+
+    *self->peer_addr = *dest_addr;
+
+    if (fd == -1) {
+        if (uct_tcp_sockaddr_cmp(self->peer_addr,
+                                 &iface->config.ifaddr) == 0) {
+            status = ucs_unix_socketpair_create(&self->fd, &peer_fd);
+            if (status != UCS_OK) {
+                goto err_ep_cleanup;
+            }
+
+            status = uct_tcp_ep_create(iface, peer_fd, self->peer_addr, &peer_ep);
+            if (status != UCS_OK) {
+                /* `peer_fd` has been already closed in `uct_tcp_ep_create` */
+                goto err_close;
+            }
+	} else {
+            peer_ep = uct_tcp_iface_search_pair_ep(iface, self);
+            if (peer_ep) {
+                self->fd = dup(peer_ep->fd);
+            } else {
+                status = uct_tcp_ep_connect(iface, dest_addr, self);
+                if (status != UCS_OK) {
+                    goto err_ep_cleanup;
+                }
+            }
         }
     } else {
         self->fd = fd;
     }
 
-    status = ucs_sys_fcntl_modfl(self->fd, O_NONBLOCK, 0);
+    status = uct_tcp_ep_setup(self);
     if (status != UCS_OK) {
         goto err_close;
     }
 
-    status = uct_tcp_iface_set_sockopt(iface, self->fd);
-    if (status != UCS_OK) {
-        goto err_close;
-    }
-
-    UCS_ASYNC_BLOCK(iface->super.worker->async);
-    ucs_list_add_tail(&iface->ep_list, &self->list);
-    UCS_ASYNC_UNBLOCK(iface->super.worker->async);
+    uct_tcp_iface_add_ep_to_list(iface, self);
 
     ucs_debug("tcp_ep %p: created on iface %p, fd %d", self, iface, self->fd);
     return UCS_OK;
 
 err_close:
     close(self->fd);
-err:
+err_ep_cleanup:
+    uct_tcp_ep_cleanup(self);
     return status;
 }
 
@@ -98,8 +207,8 @@ static UCS_CLASS_CLEANUP_FUNC(uct_tcp_ep_t)
     ucs_list_del(&self->list);
     UCS_ASYNC_UNBLOCK(iface->super.worker->async);
 
-    ucs_free(self->buf);
     close(self->fd);
+    uct_tcp_ep_cleanup(self);
 }
 
 UCS_CLASS_DEFINE(uct_tcp_ep_t, uct_base_ep_t);

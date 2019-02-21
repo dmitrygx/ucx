@@ -26,6 +26,16 @@
 
 typedef ssize_t (*uct_tcp_io_func_t)(int fd, void *data, size_t size, int flags);
 
+int uct_tcp_sockaddr_cmp(const struct sockaddr_in *sa1,
+                         const struct sockaddr_in *sa2)
+{
+    int cmp;
+
+    cmp = memcmp(&sa1->sin_addr, &sa2->sin_addr,
+                 sizeof(sa1->sin_addr));
+    return cmp ? cmp : memcmp(&sa1->sin_port, &sa2->sin_port,
+                              sizeof(sa1->sin_port));
+}
 
 ucs_status_t uct_tcp_socket_connect(int fd, const struct sockaddr_in *dest_addr)
 {
@@ -184,12 +194,13 @@ ucs_status_t uct_tcp_netif_is_default(const char *if_name, int *result_p)
     return UCS_OK;
 }
 
-static ucs_status_t uct_tcp_do_io(int fd, void *data, size_t *length_p,
-                                  uct_tcp_io_func_t io_func, const char *name)
+static inline ucs_status_t uct_tcp_do_io_nb(int fd, void *data, size_t *length_p,
+                                            uct_tcp_io_func_t io_func, const char *name)
 {
     ssize_t ret;
 
     ucs_assert(*length_p > 0);
+
     ret = io_func(fd, data, *length_p, MSG_NOSIGNAL);
     if (ret == 0) {
         ucs_trace("fd %d is closed", fd);
@@ -211,11 +222,42 @@ static ucs_status_t uct_tcp_do_io(int fd, void *data, size_t *length_p,
 
 ucs_status_t uct_tcp_send(int fd, const void *data, size_t *length_p)
 {
-    return uct_tcp_do_io(fd, (void*)data, length_p, (uct_tcp_io_func_t)send,
-                         "send");
+    return uct_tcp_do_io_nb(fd, (void*)data, length_p, (uct_tcp_io_func_t)send,
+                            "send");
 }
 
 ucs_status_t uct_tcp_recv(int fd, void *data, size_t *length_p)
 {
-    return uct_tcp_do_io(fd, data, length_p, recv, "recv");
+    return uct_tcp_do_io_nb(fd, data, length_p, recv, "recv");
+}
+
+static inline ucs_status_t uct_tcp_do_io_b(int fd, void *data, size_t length,
+                                           uct_tcp_io_func_t io_func, const char *name)
+{
+    ucs_status_t status;
+    size_t done_cnt = 0, cur_cnt = length;
+
+    do {
+        status = uct_tcp_do_io_nb(fd, data, &cur_cnt, io_func, name);
+        if (status == UCS_OK) {
+            done_cnt += cur_cnt;
+        } else {
+            return status;
+        }
+
+        cur_cnt = length - done_cnt;
+    } while (done_cnt < length);
+
+    return UCS_OK;
+}
+
+ucs_status_t uct_tcp_send_blocking(int fd, const void *data, size_t length)
+{
+    return uct_tcp_do_io_b(fd, (void*)data, length, (uct_tcp_io_func_t)send,
+                           "send");
+}
+
+ucs_status_t uct_tcp_recv_blocking(int fd, void *data, size_t length)
+{
+    return uct_tcp_do_io_b(fd, data, length, recv, "recv");
 }

@@ -181,14 +181,24 @@ static void uct_tcp_iface_listen_close(uct_tcp_iface_t *iface)
     }
 }
 
+/* Compare iface addresses and decide who is an active side of the
+ * connection, i.e. UCT EP that will have a priority in case of
+ * simultaneous connections with each other */
+static uint16_t uct_tcp_iface_active_conn_side(const uct_tcp_iface_t *iface,
+                                               const struct sockaddr_in *peer_addr)
+{
+    return uct_tcp_sockaddr_cmp(&iface->config.ifaddr, peer_addr) >= 0;
+}
+
 static void uct_tcp_iface_connect_handler(int listen_fd, void *arg)
 {
     uct_tcp_iface_t *iface = arg;
-    struct sockaddr_in peer_addr;
+    struct sockaddr_in peer_addr, peer_iface_addr;
     socklen_t addrlen;
     ucs_status_t status;
     uct_tcp_ep_t *ep;
     int fd;
+    uint16_t ack, accept_conn;
 
     ucs_assert(listen_fd == iface->listen_fd);
 
@@ -202,10 +212,29 @@ static void uct_tcp_iface_connect_handler(int listen_fd, void *arg)
         return;
     }
 
+    if (uct_tcp_recv_blocking(fd, &peer_iface_addr,
+                              sizeof(peer_iface_addr)) != UCS_OK) {
+        ucs_error("Blocking recv failed on fd %d: %m", fd);
+        return;
+    }
+
+    accept_conn = !uct_tcp_iface_active_conn_side(iface, &peer_iface_addr);
+    ack = htons(accept_conn);
+
+    if (uct_tcp_send_blocking(fd, &ack, sizeof(ack)) != UCS_OK) {
+        ucs_error("Blocking recv failed on fd %d: %m", fd);
+        return;
+    }
+
     ucs_debug("tcp_iface %p: accepted connection from %s:%d to fd %d", iface,
               inet_ntoa(peer_addr.sin_addr), ntohs(peer_addr.sin_port), fd);
 
-    status = uct_tcp_ep_create(iface, fd, NULL, &ep);
+    if (!accept_conn) {
+        close(fd);
+        fd = -1;
+    }
+
+    status = uct_tcp_ep_create(iface, fd, &peer_iface_addr, &ep);
     if (status != UCS_OK) {
         close(fd);
         return;
@@ -217,13 +246,6 @@ static void uct_tcp_iface_connect_handler(int listen_fd, void *arg)
 ucs_status_t uct_tcp_iface_set_sockopt(uct_tcp_iface_t *iface, int fd)
 {
     int ret;
-
-    ret = setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, (void*)&iface->sockopt.nodelay,
-                     sizeof(int));
-    if (ret < 0) {
-        ucs_error("Failed to set TCP_NODELAY on fd %d: %m", fd);
-        return UCS_ERR_IO_ERROR;
-    }
 
     ret = setsockopt(fd, SOL_SOCKET, SO_SNDBUF, (void*)&iface->sockopt.sndbuf,
                      sizeof(int));
@@ -291,6 +313,7 @@ static UCS_CLASS_INIT_FUNC(uct_tcp_iface_t, uct_md_h md, uct_worker_h worker,
     self->sockopt.nodelay        = config->sockopt_nodelay;
     self->sockopt.sndbuf         = config->sockopt_sndbuf;
     ucs_list_head_init(&self->ep_list);
+    ucs_list_head_init(&self->unpaired_ep_list);
 
     if (ucs_derived_of(worker, uct_priv_worker_t)->thread_mode == UCS_THREAD_MODE_MULTI) {
         ucs_error("TCP transport does not support multi-threaded worker");
@@ -369,6 +392,29 @@ err:
     return status;
 }
 
+uct_tcp_ep_t* uct_tcp_iface_search_pair_ep(uct_tcp_iface_t *iface, uct_tcp_ep_t *ep)
+{
+    uct_tcp_ep_t *found_ep, *cur_ep;
+
+    UCS_ASYNC_BLOCK(iface->super.worker->async);
+    ucs_list_for_each(cur_ep, &iface->ep_list, list) {
+        if (uct_tcp_sockaddr_cmp(ep->peer_addr, cur_ep->peer_addr) == 0) {
+	    found_ep = cur_ep;
+	    break;
+        }
+    }
+    UCS_ASYNC_UNBLOCK(iface->super.worker->async);
+
+    return found_ep;
+}
+
+void uct_tcp_iface_add_ep_to_list(uct_tcp_iface_t *iface, uct_tcp_ep_t *ep)
+{
+    UCS_ASYNC_BLOCK(iface->super.worker->async);
+    ucs_list_add_tail(&iface->ep_list, &ep->list);
+    UCS_ASYNC_UNBLOCK(iface->super.worker->async);
+}
+
 static UCS_CLASS_CLEANUP_FUNC(uct_tcp_iface_t)
 {
     uct_tcp_ep_t *ep, *tmp;
@@ -385,6 +431,10 @@ static UCS_CLASS_CLEANUP_FUNC(uct_tcp_iface_t)
     }
 
     ucs_list_for_each_safe(ep, tmp, &self->ep_list, list) {
+        uct_tcp_ep_destroy(&ep->super.super);
+    }
+
+    ucs_list_for_each_safe(ep, tmp, &self->unpaired_ep_list, list) {
         uct_tcp_ep_destroy(&ep->super.super);
     }
 

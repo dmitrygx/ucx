@@ -37,6 +37,7 @@ typedef struct uct_tcp_ep {
     void                          *buf;      /* Partial send/recv data */
     size_t                        length;    /* How much data in the buffer */
     size_t                        offset;    /* Next offset to send/recv */
+    struct sockaddr_in            *peer_addr;
     ucs_list_link_t               list;
 } uct_tcp_ep_t;
 
@@ -48,6 +49,7 @@ typedef struct uct_tcp_iface {
     uct_base_iface_t              super;          /* Parent class */
     int                           listen_fd;      /* Server socket */
     ucs_list_link_t               ep_list;        /* List of endpoints */
+    ucs_list_link_t               unpaired_ep_list; /* List of unpaired endpoints */
     char                          if_name[IFNAMSIZ];/* Network interface name */
     int                           epfd;           /* event poll set of sockets */
     size_t                        outstanding;
@@ -83,6 +85,9 @@ typedef struct uct_tcp_iface_config {
 extern uct_md_component_t uct_tcp_md;
 extern const char *uct_tcp_address_type_names[];
 
+int uct_tcp_sockaddr_cmp(const struct sockaddr_in *sa1,
+                         const struct sockaddr_in *sa2);
+
 ucs_status_t uct_tcp_socket_connect(int fd, const struct sockaddr_in *dest_addr);
 
 ucs_status_t uct_tcp_netif_caps(const char *if_name, double *latency_p,
@@ -96,6 +101,10 @@ ucs_status_t uct_tcp_netif_is_default(const char *if_name, int *result_p);
 ucs_status_t uct_tcp_send(int fd, const void *data, size_t *length_p);
 
 ucs_status_t uct_tcp_recv(int fd, void *data, size_t *length_p);
+
+ucs_status_t uct_tcp_send_blocking(int fd, const void *data, size_t length);
+
+ucs_status_t uct_tcp_recv_blocking(int fd, void *data, size_t length);
 
 ucs_status_t uct_tcp_iface_set_sockopt(uct_tcp_iface_t *iface, int fd);
 
@@ -126,5 +135,9 @@ void uct_tcp_ep_pending_purge(uct_ep_h tl_ep, uct_pending_purge_callback_t cb,
 
 ucs_status_t uct_tcp_ep_flush(uct_ep_h tl_ep, unsigned flags,
                               uct_completion_t *comp);
+
+uct_tcp_ep_t* uct_tcp_iface_search_pair_ep(uct_tcp_iface_t *iface, uct_tcp_ep_t *ep);
+
+void uct_tcp_iface_add_ep_to_list(uct_tcp_iface_t *iface, uct_tcp_ep_t *ep);
 
 #endif

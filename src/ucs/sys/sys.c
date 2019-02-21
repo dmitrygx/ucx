@@ -744,6 +744,22 @@ ucs_status_t ucs_tcpip_socket_create(int *fd_p)
     return UCS_OK;
 }
 
+ucs_status_t ucs_unix_socketpair_create(int *fd1_p, int *fd2_p)
+{
+    int fd[2];
+    int ret;
+
+    ret = socketpair(AF_UNIX, SOCK_STREAM, 0, fd);
+    if (ret < 0) {
+        ucs_error("socket create failed: %m");
+        return UCS_ERR_IO_ERROR;
+    }
+
+    *fd1_p = fd[0];
+    *fd2_p = fd[1];
+    return UCS_OK;
+}
+
 ucs_status_t ucs_netif_ioctl(const char *if_name, unsigned long request,
                              struct ifreq *if_req)
 {
