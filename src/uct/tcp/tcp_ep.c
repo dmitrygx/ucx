@@ -68,6 +68,7 @@ static void uct_tcp_ep_ctx_cleanup(uct_tcp_ep_ctx_t **ctx)
 }
 
 static ucs_status_t uct_tcp_ep_init(uct_tcp_iface_t *iface,
+                                    const struct sockaddr_in *dest_addr,
                                     uct_tcp_ep_t *ep)
 {
     ucs_status_t status;
@@ -87,6 +88,12 @@ static ucs_status_t uct_tcp_ep_init(uct_tcp_iface_t *iface,
     ep->peer_addr = ucs_malloc(sizeof(*ep->peer_addr), "tcp_peer_name");
     if (ep->peer_addr == NULL) {
         goto err_rx_cleanup;
+    }
+
+    if (dest_addr == NULL) {
+        memset(ep->peer_addr, 0, sizeof(*ep->peer_addr));
+    } else {
+        *ep->peer_addr = *dest_addr;
     }
 
     ucs_queue_head_init(&ep->pending_q);
@@ -116,7 +123,7 @@ static UCS_CLASS_INIT_FUNC(uct_tcp_ep_t, uct_tcp_iface_t *iface,
 
     UCS_CLASS_CALL_SUPER_INIT(uct_base_ep_t, &iface->super)
 
-    status = uct_tcp_ep_init(iface, self);
+    status = uct_tcp_ep_init(iface, dest_addr, self);
     if (status != UCS_OK) {
         return status;
     }
