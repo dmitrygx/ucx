@@ -222,6 +222,22 @@ UCS_CLASS_DEFINE_NAMED_NEW_FUNC(uct_tcp_ep_create, uct_tcp_ep_t, uct_tcp_ep_t,
                                 const struct sockaddr_in*)
 UCS_CLASS_DEFINE_NAMED_DELETE_FUNC(uct_tcp_ep_destroy, uct_tcp_ep_t, uct_ep_t)
 
+/* This function destroyes untracked (which wasn't inserted
+ * to `iface::ep_list`) EP - e.g. EP allocated when accpeting
+ * connection */
+static void uct_tcp_ep_destroy_untracked(uct_tcp_ep_t *ep)
+{
+    uct_tcp_iface_t *iface = ucs_derived_of(ep->super.super.iface,
+                                            uct_tcp_iface_t);
+
+    /* Insert to `iface::ep_list` and destroy */
+    UCS_ASYNC_BLOCK(iface->super.worker->async);
+    ucs_list_add_tail(&iface->ep_list, &ep->list);
+    UCS_ASYNC_UNBLOCK(iface->super.worker->async);
+
+    uct_tcp_ep_destroy(&ep->super.super);
+}
+
 unsigned uct_tcp_ep_connect_req_rx_progress(uct_tcp_ep_t *ep)
 {
     uct_tcp_iface_t *iface = ucs_derived_of(ep->super.super.iface,
@@ -232,12 +248,8 @@ unsigned uct_tcp_ep_connect_req_rx_progress(uct_tcp_ep_t *ep)
     if (uct_tcp_recv_blocking(ep->fd, &conn_pkt, sizeof(conn_pkt)) != UCS_OK) {
         ucs_debug("Blocking recv failed on fd %d: %m. Perhaps the peer "
                   "closed the connection. Destroy %p", ep->fd, ep);
-
         uct_tcp_ep_mod_events(ep, 0, EPOLLIN);
-        UCS_ASYNC_BLOCK(iface->super.worker->async);
-        ucs_list_add_tail(&iface->ep_list, &ep->list);
-        UCS_ASYNC_UNBLOCK(iface->super.worker->async);
-        uct_tcp_ep_destroy(&ep->super.super);
+        uct_tcp_ep_destroy_untracked(ep);
         return 0;
     }
 
@@ -272,15 +284,10 @@ unsigned uct_tcp_ep_connect_req_rx_progress(uct_tcp_ep_t *ep)
         pair_ep->fd = ep->fd;
 
         /* 2. Destroy the EP allocated during accepting connection
-         *    (set its socket `fd` to -1 prior to avoid closing this socket,
-         *     add to `iface::ep_list` to then delete it from this list
-         *     inside destroying routine) */
+         *    (set its socket `fd` to -1 prior to avoid closing this socket) */
         uct_tcp_ep_mod_events(ep, 0, EPOLLIN);
         ep->fd = -1;
-        UCS_ASYNC_BLOCK(iface->super.worker->async);
-        ucs_list_add_tail(&iface->ep_list, &ep->list);
-        UCS_ASYNC_UNBLOCK(iface->super.worker->async);
-        uct_tcp_ep_destroy(&ep->super.super);
+        uct_tcp_ep_destroy_untracked(ep);
 
         ep = pair_ep;
         pair_ep = NULL;
@@ -305,14 +312,9 @@ unsigned uct_tcp_ep_connect_req_rx_progress(uct_tcp_ep_t *ep)
                (pair_ep->conn_state == UCT_TCP_EP_CONN_CONNECTED ||
                 uct_tcp_sockaddr_cmp(pair_ep->peer_addr, &iface->config.ifaddr) > 0)) {
         /* We must live with our connection and reject this one */
-        /* 1. Destroy the EP allocated during accepting connection
-         *    (add to `iface::ep_list` to then delete it from this list
-         *     inside destroying routine) */
+        /* 1. Destroy the EP allocated during accepting connection */
         uct_tcp_ep_mod_events(ep, 0, EPOLLIN);
-        UCS_ASYNC_BLOCK(iface->super.worker->async);
-        ucs_list_add_tail(&iface->ep_list, &ep->list);
-        UCS_ASYNC_UNBLOCK(iface->super.worker->async);
-        uct_tcp_ep_destroy(&ep->super.super);
+        uct_tcp_ep_destroy_untracked(ep);
 
         ep = pair_ep;
         pair_ep = NULL;
