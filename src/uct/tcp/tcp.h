@@ -17,6 +17,10 @@
 #define UCT_TCP_MAX_EVENTS        32
 
 
+struct uct_tcp_ep;
+typedef unsigned (*uct_tcp_ep_progress_t)(struct uct_tcp_ep *ep);
+
+
 /**
  * TCP active message header
  */
@@ -30,10 +34,10 @@ typedef struct uct_tcp_am_hdr {
  * TCP endpoint communication context
  */
 typedef struct uct_tcp_ep_ctx {
+    uct_tcp_ep_progress_t         progress;
     void                          *buf;      /* Partial send/recv data */
     size_t                        length;    /* How much data in the buffer */
     size_t                        offset;    /* Next offset to send/recv */
-    uct_tcp_ep_t                  *ep;
 } uct_tcp_ep_ctx_t;
 
 

@@ -33,7 +33,6 @@ static inline int uct_tcp_ep_can_send(uct_tcp_ep_t *ep)
 }
 
 static ucs_status_t uct_tcp_ep_ctx_init(uct_tcp_iface_t *iface,
-                                        uct_tcp_ep_t *ep,
                                         uct_tcp_ep_ctx_t **ctx)
 {
     ucs_status_t status;
@@ -51,8 +50,6 @@ static ucs_status_t uct_tcp_ep_ctx_init(uct_tcp_iface_t *iface,
 
     (*ctx)->offset = 0;
     (*ctx)->length = 0;
-
-    (*ctx)->ep = ep;
 
     return UCS_OK;
 
@@ -75,15 +72,17 @@ static ucs_status_t uct_tcp_ep_init(uct_tcp_iface_t *iface,
 {
     ucs_status_t status;
 
-    status = uct_tcp_ep_ctx_init(iface, ep, &ep->tx);
+    status = uct_tcp_ep_ctx_init(iface, &ep->tx);
     if (status != UCS_OK) {
         return status;
     }
+    ep->tx->progress = uct_tcp_ep_progress_tx;
 
-    status = uct_tcp_ep_ctx_init(iface, ep, &ep->rx);
+    status = uct_tcp_ep_ctx_init(iface, &ep->rx);
     if (status != UCS_OK) {
         goto err_tx_cleanup;
     }
+    ep->rx->progress = uct_tcp_ep_progress_rx;
 
     ep->peer_addr = ucs_malloc(sizeof(*ep->peer_addr), "tcp_peer_name");
     if (ep->peer_addr == NULL) {
@@ -122,20 +121,7 @@ static UCS_CLASS_INIT_FUNC(uct_tcp_ep_t, uct_tcp_iface_t *iface,
         return status;
     }
 
-    if (fd == -1) {
-        status = ucs_tcpip_socket_create(&self->fd);
-        if (status != UCS_OK) {
-            goto err_ep_cleanup;
-        }
-
-        /* TODO use non-blocking connect */
-        status = uct_tcp_socket_connect(self->fd, dest_addr);
-        if (status != UCS_OK) {
-            goto err_close;
-        }
-    } else {
-        self->fd = fd;
-    }
+    self->fd = fd;
 
     status = ucs_sys_fcntl_modfl(self->fd, O_NONBLOCK, 0);
     if (status != UCS_OK) {
@@ -154,8 +140,6 @@ static UCS_CLASS_INIT_FUNC(uct_tcp_ep_t, uct_tcp_iface_t *iface,
     ucs_debug("tcp_ep %p: created on iface %p, fd %d", self, iface, self->fd);
     return UCS_OK;
 
-err_close:
-    close(self->fd);
 err_ep_cleanup:
     uct_tcp_ep_cleanup(self);
     return status;
@@ -191,6 +175,7 @@ ucs_status_t uct_tcp_ep_create_connected(const uct_ep_params_t *params,
     uct_tcp_ep_t *tcp_ep = NULL;
     struct sockaddr_in dest_addr;
     ucs_status_t status;
+    int fd;
 
     UCT_EP_PARAMS_CHECK_DEV_IFACE_ADDRS(params);
     memset(&dest_addr, 0, sizeof(dest_addr));
@@ -198,13 +183,31 @@ ucs_status_t uct_tcp_ep_create_connected(const uct_ep_params_t *params,
     dest_addr.sin_port   = *(in_port_t*)params->iface_addr;
     dest_addr.sin_addr   = *(struct in_addr*)params->dev_addr;
 
+    status = ucs_tcpip_socket_create(&fd);
+    if (status != UCS_OK) {
+        return status;
+    }
+
+    /* TODO use non-blocking connect */
+    status = uct_tcp_socket_connect(fd, &dest_addr);
+    if (status != UCS_OK) {
+        goto err_close_fd;
+    }
+
     /* TODO try to reuse existing connection */
-    status = uct_tcp_ep_create(iface, -1, &dest_addr, &tcp_ep);
+    status = uct_tcp_ep_create(iface, fd, &dest_addr, &tcp_ep);
     if (status == UCS_OK) {
         ucs_debug("tcp_ep %p: connected to %s:%d", tcp_ep,
                   inet_ntoa(dest_addr.sin_addr), ntohs(dest_addr.sin_port));
         *ep_p = &tcp_ep->super.super;
+    } else {
+        goto err_close_fd;
     }
+
+    return status;
+
+err_close_fd:
+    close(fd);
     return status;
 }
 
