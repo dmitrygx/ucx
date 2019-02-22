@@ -231,6 +231,23 @@ ucs_status_t uct_tcp_netif_is_default(const char *if_name, int *result_p)
     return UCS_OK;
 }
 
+int uct_tcp_get_af(int fd)
+{
+    socklen_t addr_sz;
+    struct sockaddr addr;
+    int ret;
+
+    addr_sz = sizeof(addr);
+
+    ret = getsockname(fd, &addr, &addr_sz);
+    if (ret < 0) {
+        ucs_error("getsockname for %d failed: %m", fd);
+        return -1;
+    }
+
+    return addr.sa_family;
+}
+
 static inline ucs_status_t uct_tcp_do_io_nb(int fd, void *data, size_t *length_p,
                                             uct_tcp_io_func_t io_func, const char *name)
 {
@@ -243,7 +260,7 @@ static inline ucs_status_t uct_tcp_do_io_nb(int fd, void *data, size_t *length_p
         ucs_trace("fd %d is closed", fd);
         return UCS_ERR_CANCELED; /* Connection closed */
     } else if (ret < 0) {
-        if ((errno == EINTR) || (errno == EAGAIN)) {
+        if ((errno == EINTR) || (errno == EAGAIN) || (errno == EWOULDBLOCK)) {
             *length_p = 0;
             return UCS_OK;
         } else {

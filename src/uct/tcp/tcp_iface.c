@@ -214,12 +214,6 @@ static void uct_tcp_iface_connect_handler(int listen_fd, void *arg)
     ep->tx->progress = uct_tcp_ep_empty_progress;
     ep->rx->progress = uct_tcp_ep_connect_req_rx_progress;
 
-    uct_tcp_ep_change_conn_state(ep, UCT_TCP_EP_CONN_IN_PROGRESS);
-
-    UCS_ASYNC_BLOCK(iface->super.worker->async);
-    ucs_list_add_tail(&iface->ep_list, &ep->list);
-    UCS_ASYNC_UNBLOCK(iface->super.worker->async);
-
     uct_tcp_ep_mod_events(ep, EPOLLIN, 0);
 }
 
@@ -227,11 +221,14 @@ ucs_status_t uct_tcp_iface_set_sockopt(uct_tcp_iface_t *iface, int fd)
 {
     int ret;
 
-    ret = setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, (void*)&iface->sockopt.nodelay,
-                     sizeof(int));
-    if (ret < 0) {
-        ucs_error("Failed to set TCP_NODELAY on fd %d: %m", fd);
-        return UCS_ERR_IO_ERROR;
+    if (uct_tcp_get_af(fd) != AF_UNIX ) {
+        ret = setsockopt(fd, IPPROTO_TCP, TCP_NODELAY,
+                         (void*)&iface->sockopt.nodelay,
+                         sizeof(int));
+        if (ret < 0) {
+            ucs_error("Failed to set TCP_NODELAY on fd %d: %m", fd);
+            return UCS_ERR_IO_ERROR;
+        }
     }
 
     ret = setsockopt(fd, SOL_SOCKET, SO_SNDBUF, (void*)&iface->sockopt.sndbuf,

@@ -61,6 +61,7 @@ typedef struct uct_tcp_ep_conn_pkt {
  * TCP endpoint connection state
  */
 typedef enum uct_tcp_ep_conn_state {
+    UCT_TCP_EP_CONN_CLOSED,
     UCT_TCP_EP_CONN_IN_PROGRESS,
     UCT_TCP_EP_CONN_CONNECT_ACK,
     UCT_TCP_EP_CONN_CONNECTED,
@@ -74,11 +75,11 @@ typedef enum uct_tcp_ep_conn_state {
 typedef struct uct_tcp_ep {
     uct_base_ep_t                 super;
     int                           fd;         /* Socket file descriptor */
-    uct_tcp_ep_conn_state_t       conn_state;
+    uct_tcp_ep_conn_state_t       conn_state; /* State of connection with peer */
     uint32_t                      events;     /* Current notifications */
-    uct_tcp_ep_ctx_t              *tx;        /**/
-    uct_tcp_ep_ctx_t              *rx;        /**/
-    struct sockaddr_in            *peer_addr; /**/
+    uct_tcp_ep_ctx_t              *tx;        /* TX resources */
+    uct_tcp_ep_ctx_t              *rx;        /* RX resources */
+    struct sockaddr_in            *peer_addr; /* Remote iface addr */
     ucs_queue_head_t              pending_q;  /* Pending operations */
     ucs_list_link_t               list;
 } uct_tcp_ep_t;
@@ -141,6 +142,8 @@ ucs_status_t uct_tcp_netif_inaddr(const char *if_name, struct sockaddr_in *ifadd
                                   struct sockaddr_in *netmask);
 
 ucs_status_t uct_tcp_netif_is_default(const char *if_name, int *result_p);
+
+int uct_tcp_get_af(int fd);
 
 ucs_status_t uct_tcp_send(int fd, const void *data, size_t *length_p);
 
