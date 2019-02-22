@@ -212,9 +212,9 @@ static void uct_tcp_iface_connect_handler(int listen_fd, void *arg)
     }
 
     ep->tx->progress = uct_tcp_ep_empty_progress;
-    ep->rx->progress = uct_tcp_ep_progress_rx;
+    ep->rx->progress = uct_tcp_ep_connect_req_rx_progress;
 
-    uct_tcp_ep_change_conn_state(ep, UCT_TCP_EP_CONN_CONNECTED);
+    uct_tcp_ep_change_conn_state(ep, UCT_TCP_EP_CONN_IN_PROGRESS);
 
     UCS_ASYNC_BLOCK(iface->super.worker->async);
     ucs_list_add_tail(&iface->ep_list, &ep->list);

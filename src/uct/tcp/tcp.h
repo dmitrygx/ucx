@@ -42,10 +42,27 @@ typedef struct uct_tcp_ep_ctx {
 
 
 /**
+ * TCP connection message packet
+ */
+typedef struct uct_tcp_ep_conn_pkt {
+    enum {
+        UCT_TCP_EP_CONN_REQ,
+        UCT_TCP_EP_CONN_ACK,
+    } event;
+    union {
+        struct {
+            struct sockaddr_in iface_addr;
+        } req;
+    } data;
+} UCS_S_PACKED uct_tcp_ep_conn_pkt_t;
+
+
+/**
  * TCP endpoint connection state
  */
 typedef enum uct_tcp_ep_conn_state {
     UCT_TCP_EP_CONN_IN_PROGRESS,
+    UCT_TCP_EP_CONN_CONNECT_ACK,
     UCT_TCP_EP_CONN_CONNECTED,
     UCT_TCP_EP_CONN_REFUSED,
 } uct_tcp_ep_conn_state_t;
@@ -126,6 +143,10 @@ ucs_status_t uct_tcp_send(int fd, const void *data, size_t *length_p);
 
 ucs_status_t uct_tcp_recv(int fd, void *data, size_t *length_p);
 
+ucs_status_t uct_tcp_send_blocking(int fd, const void *data, size_t length);
+
+ucs_status_t uct_tcp_recv_blocking(int fd, void *data, size_t length);
+
 ucs_status_t uct_tcp_iface_set_sockopt(uct_tcp_iface_t *iface, int fd);
 
 void uct_tcp_ep_change_conn_state(uct_tcp_ep_t *ep,
@@ -145,6 +166,8 @@ unsigned uct_tcp_ep_progress_tx(uct_tcp_ep_t *ep);
 unsigned uct_tcp_ep_progress_rx(uct_tcp_ep_t *ep);
 
 unsigned uct_tcp_ep_empty_progress(uct_tcp_ep_t *ep);
+
+unsigned uct_tcp_ep_connect_req_rx_progress(uct_tcp_ep_t *ep);
 
 void uct_tcp_ep_mod_events(uct_tcp_ep_t *ep, uint32_t add, uint32_t remove);
 

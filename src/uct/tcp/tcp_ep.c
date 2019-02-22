@@ -41,6 +41,9 @@ void uct_tcp_ep_change_conn_state(uct_tcp_ep_t *ep,
     case UCT_TCP_EP_CONN_IN_PROGRESS:
         ucs_debug("tcp_ep %p: connection in progress to %s", ep, str_addr);
         break;
+    case UCT_TCP_EP_CONN_CONNECT_ACK:
+        ucs_debug("tcp_ep %p: waiting connection ack from %s", ep, str_addr);
+        break;
     case UCT_TCP_EP_CONN_CONNECTED:
         ucs_debug("tcp_ep %p: connected to %s", ep, str_addr);
         break;
@@ -198,11 +201,81 @@ UCS_CLASS_DEFINE_NAMED_NEW_FUNC(uct_tcp_ep_create, uct_tcp_ep_t, uct_tcp_ep_t,
                                 const struct sockaddr_in*)
 UCS_CLASS_DEFINE_NAMED_DELETE_FUNC(uct_tcp_ep_destroy, uct_tcp_ep_t, uct_ep_t)
 
+unsigned uct_tcp_ep_connect_req_rx_progress(uct_tcp_ep_t *ep)
+{
+    uct_tcp_iface_t *iface = ucs_derived_of(ep->super.super.iface,
+                                            uct_tcp_iface_t);
+    uct_tcp_ep_conn_pkt_t conn_pkt;
+
+    if (uct_tcp_recv_blocking(ep->fd, &conn_pkt, sizeof(conn_pkt)) != UCS_OK) {
+        ucs_error("Blocking recv failed on fd %d: %m", ep->fd);
+        goto err;
+    }
+
+    ucs_assertv(conn_pkt.event == UCT_TCP_EP_CONN_REQ, "ep=%p", ep);
+
+    *ep->peer_addr = conn_pkt.data.req.iface_addr;
+
+    conn_pkt.event = UCT_TCP_EP_CONN_ACK;
+    if (uct_tcp_send_blocking(ep->fd, &conn_pkt, sizeof(conn_pkt)) != UCS_OK) {
+        ucs_error("Blocking send failed on fd %d: %m", ep->fd);
+        goto err;
+    }
+
+    ep->tx->progress = uct_tcp_ep_empty_progress;
+    ep->rx->progress = uct_tcp_ep_progress_rx;
+
+    uct_tcp_ep_change_conn_state(ep, UCT_TCP_EP_CONN_CONNECTED);
+
+    return 0;
+
+err:
+    uct_tcp_ep_change_conn_state(ep, UCT_TCP_EP_CONN_REFUSED);
+    uct_set_ep_failed(&UCS_CLASS_NAME(uct_tcp_ep_t),
+                      &ep->super.super, &iface->super.super,
+                      UCS_ERR_UNREACHABLE);
+    return 0;
+}
+
+static unsigned uct_tcp_ep_connect_ack_rx_progress(uct_tcp_ep_t *ep)
+{
+    uct_tcp_iface_t *iface = ucs_derived_of(ep->super.super.iface,
+                                            uct_tcp_iface_t);
+    uct_tcp_ep_conn_pkt_t conn_pkt;
+
+    if (uct_tcp_recv_blocking(ep->fd, &conn_pkt, sizeof(conn_pkt)) != UCS_OK) {
+        ucs_error("Blocking recv failed on fd %d: %m", ep->fd);
+        goto err;
+    }
+
+    ucs_assertv(conn_pkt.event == UCT_TCP_EP_CONN_ACK, "ep=%p", ep);
+
+    ep->tx->progress = uct_tcp_ep_progress_tx;
+    ep->rx->progress = uct_tcp_ep_empty_progress;
+
+    uct_tcp_ep_change_conn_state(ep, UCT_TCP_EP_CONN_CONNECTED);
+
+    uct_tcp_ep_mod_events(ep, EPOLLOUT, EPOLLIN);
+
+    return ep->tx->progress(ep);
+
+err:
+    uct_tcp_ep_change_conn_state(ep, UCT_TCP_EP_CONN_REFUSED);
+    uct_set_ep_failed(&UCS_CLASS_NAME(uct_tcp_ep_t),
+                      &ep->super.super, &iface->super.super,
+                      UCS_ERR_UNREACHABLE);
+    return 0;
+}
+
 static unsigned uct_tcp_ep_connect_progress(uct_tcp_ep_t *ep)
 {
-    uct_tcp_iface_t *iface   = ucs_derived_of(ep->super.super.iface,
-                                              uct_tcp_iface_t);
-    socklen_t conn_status_sz = sizeof(int);
+    uct_tcp_iface_t *iface           = ucs_derived_of(ep->super.super.iface,
+                                                      uct_tcp_iface_t);
+    socklen_t conn_status_sz         = sizeof(int);
+    uct_tcp_ep_conn_pkt_t conn_pkt = {
+        .event                       = UCT_TCP_EP_CONN_REQ,
+        .data.req.iface_addr         = iface->config.ifaddr,
+    };
     int ret, conn_status;
 
     ret = getsockopt(ep->fd, SOL_SOCKET, SO_ERROR,
@@ -221,20 +294,19 @@ static unsigned uct_tcp_ep_connect_progress(uct_tcp_ep_t *ep)
         goto err;
     }
 
-    //if (uct_tcp_send_blocking(ep->fd, &iface->config.ifaddr,
-    //                        sizeof(iface->config.ifaddr)) != UCS_OK) {
-    //  ucs_error("Blocking send failed on fd %d: %m", ep->fd);
-    //  goto err;
-    //}
+    if (uct_tcp_send_blocking(ep->fd, &conn_pkt, sizeof(conn_pkt)) != UCS_OK) {
+        ucs_error("Blocking send failed on fd %d: %m", ep->fd);
+        goto err;
+    }
 
-    ep->tx->progress = uct_tcp_ep_progress_tx;
-    ep->rx->progress = uct_tcp_ep_empty_progress;
+    ep->tx->progress = uct_tcp_ep_empty_progress;
+    ep->rx->progress = uct_tcp_ep_connect_ack_rx_progress;
 
-    uct_tcp_ep_change_conn_state(ep, UCT_TCP_EP_CONN_CONNECTED);
+    uct_tcp_ep_change_conn_state(ep, UCT_TCP_EP_CONN_CONNECT_ACK);
 
-    uct_tcp_ep_mod_events(ep, EPOLLOUT, 0);
+    uct_tcp_ep_mod_events(ep, EPOLLIN, EPOLLOUT);
 
-    return ep->tx->progress(ep);
+    return 0;
 
  err:
     uct_tcp_ep_change_conn_state(ep, UCT_TCP_EP_CONN_REFUSED);
