@@ -27,9 +27,60 @@ static void uct_tcp_ep_epoll_ctl(uct_tcp_ep_t *ep, int op)
 
 static inline int uct_tcp_ep_can_send(uct_tcp_ep_t *ep)
 {
-    ucs_assert(ep->offset <= ep->length);
+    ucs_assert(ep->tx.offset <= ep->tx.length);
     /* TODO optimize to allow partial sends/message coalescing */
-    return ep->length == 0;
+    return ep->tx.length == 0;
+}
+
+static ucs_status_t uct_tcp_ep_ctx_init(uct_tcp_iface_t *iface,
+                                        uct_tcp_ep_ctx_t *ctx)
+{
+    ctx->buf = ucs_malloc(iface->config.buf_size, "tcp_buf");
+    if (ctx->buf == NULL) {
+        return UCS_ERR_NO_MEMORY;
+    }
+
+    ctx->offset = 0;
+    ctx->length = 0;
+
+    return UCS_OK;
+}
+
+static void uct_tcp_ep_ctx_cleanup(uct_tcp_ep_ctx_t *ctx)
+{
+    ucs_free(ctx->buf);
+}
+
+static ucs_status_t uct_tcp_ep_init(uct_tcp_iface_t *iface,
+                                    uct_tcp_ep_t *ep)
+{
+    ucs_status_t status;
+
+    status = uct_tcp_ep_ctx_init(iface, &ep->tx);
+    if (status != UCS_OK) {
+        return status;
+    }
+
+    status = uct_tcp_ep_ctx_init(iface, &ep->rx);
+    if (status != UCS_OK) {
+        goto err_tx_cleanup;
+    }
+
+    ucs_queue_head_init(&ep->pending_q);
+    ep->events = 0;
+    ep->fd = -1;
+
+    return UCS_OK;
+
+err_tx_cleanup:
+    uct_tcp_ep_ctx_cleanup(&ep->tx);
+    return status;
+}
+
+static void uct_tcp_ep_cleanup(uct_tcp_ep_t *ep)
+{
+    uct_tcp_ep_ctx_cleanup(&ep->tx);
+    uct_tcp_ep_ctx_cleanup(&ep->rx);
 }
 
 static UCS_CLASS_INIT_FUNC(uct_tcp_ep_t, uct_tcp_iface_t *iface,
@@ -39,20 +90,15 @@ static UCS_CLASS_INIT_FUNC(uct_tcp_ep_t, uct_tcp_iface_t *iface,
 
     UCS_CLASS_CALL_SUPER_INIT(uct_base_ep_t, &iface->super)
 
-    self->buf = ucs_malloc(iface->config.buf_size, "tcp_buf");
-    if (self->buf == NULL) {
-        return UCS_ERR_NO_MEMORY;
+    status = uct_tcp_ep_init(iface, self);
+    if (status != UCS_OK) {
+        return status;
     }
-
-    self->events = 0;
-    self->offset = 0;
-    self->length = 0;
-    ucs_queue_head_init(&self->pending_q);
 
     if (fd == -1) {
         status = ucs_tcpip_socket_create(&self->fd);
         if (status != UCS_OK) {
-            goto err;
+            goto err_ep_cleanup;
         }
 
         /* TODO use non-blocking connect */
@@ -66,12 +112,12 @@ static UCS_CLASS_INIT_FUNC(uct_tcp_ep_t, uct_tcp_iface_t *iface,
 
     status = ucs_sys_fcntl_modfl(self->fd, O_NONBLOCK, 0);
     if (status != UCS_OK) {
-        goto err_close;
+        goto err_ep_cleanup;
     }
 
     status = uct_tcp_iface_set_sockopt(iface, self->fd);
     if (status != UCS_OK) {
-        goto err_close;
+        goto err_ep_cleanup;
     }
 
     UCS_ASYNC_BLOCK(iface->super.worker->async);
@@ -83,7 +129,8 @@ static UCS_CLASS_INIT_FUNC(uct_tcp_ep_t, uct_tcp_iface_t *iface,
 
 err_close:
     close(self->fd);
-err:
+err_ep_cleanup:
+    uct_tcp_ep_cleanup(self);
     return status;
 }
 
@@ -98,7 +145,8 @@ static UCS_CLASS_CLEANUP_FUNC(uct_tcp_ep_t)
     ucs_list_del(&self->list);
     UCS_ASYNC_UNBLOCK(iface->super.worker->async);
 
-    ucs_free(self->buf);
+    uct_tcp_ep_cleanup(self);
+
     close(self->fd);
 }
 
@@ -159,10 +207,10 @@ static unsigned uct_tcp_ep_send(uct_tcp_ep_t *ep)
     size_t send_length;
     ucs_status_t status;
 
-    send_length = ep->length - ep->offset;
+    send_length = ep->tx.length - ep->tx.offset;
     ucs_assert(send_length > 0);
 
-    status = uct_tcp_send(ep->fd, ep->buf + ep->offset, &send_length);
+    status = uct_tcp_send(ep->fd, ep->tx.buf + ep->tx.offset, &send_length);
     if (status < 0) {
         return 0;
     }
@@ -170,10 +218,10 @@ static unsigned uct_tcp_ep_send(uct_tcp_ep_t *ep)
     ucs_trace_data("tcp_ep %p: sent %zu bytes", ep, send_length);
 
     iface->outstanding -= send_length;
-    ep->offset         += send_length;
-    if (ep->offset == ep->length) {
-        ep->offset = 0;
-        ep->length = 0;
+    ep->tx.offset         += send_length;
+    if (ep->tx.offset == ep->tx.length) {
+        ep->tx.offset = 0;
+        ep->tx.length = 0;
     }
 
     return send_length > 0;
@@ -186,7 +234,7 @@ unsigned uct_tcp_ep_progress_tx(uct_tcp_ep_t *ep)
 
     ucs_trace_func("ep=%p", ep);
 
-    if (ep->length > 0) {
+    if (ep->tx.length > 0) {
         count += uct_tcp_ep_send(ep);
     }
 
@@ -212,10 +260,10 @@ unsigned uct_tcp_ep_progress_rx(uct_tcp_ep_t *ep)
     ucs_trace_func("ep=%p", ep);
 
     /* Receive next chunk of data */
-    recv_length = iface->config.buf_size - ep->length;
+    recv_length = iface->config.buf_size - ep->rx.length;
     ucs_assertv(recv_length > 0, "ep=%p", ep);
 
-    status = uct_tcp_recv(ep->fd, ep->buf + ep->length, &recv_length);
+    status = uct_tcp_recv(ep->fd, ep->rx.buf + ep->rx.length, &recv_length);
     if (status != UCS_OK) {
         if (status == UCS_ERR_CANCELED) {
             ucs_debug("tcp_ep %p: remote disconnected", ep);
@@ -225,12 +273,12 @@ unsigned uct_tcp_ep_progress_rx(uct_tcp_ep_t *ep)
         return 0;
     }
 
-    ep->length += recv_length;
+    ep->rx.length += recv_length;
     ucs_trace_data("tcp_ep %p: recvd %zu bytes", ep, recv_length);
 
     /* Parse received active messages */
-    while ((remainder = ep->length - ep->offset) >= sizeof(*hdr)) {
-        hdr = ep->buf + ep->offset;
+    while ((remainder = ep->rx.length - ep->rx.offset) >= sizeof(*hdr)) {
+        hdr = ep->rx.buf + ep->rx.offset;
         ucs_assert(hdr->length <= (iface->config.buf_size - sizeof(uct_tcp_am_hdr_t)));
 
         if (remainder < sizeof(*hdr) + hdr->length) {
@@ -238,7 +286,7 @@ unsigned uct_tcp_ep_progress_rx(uct_tcp_ep_t *ep)
         }
 
         /* Full message was received */
-        ep->offset += sizeof(*hdr) + hdr->length;
+        ep->rx.offset += sizeof(*hdr) + hdr->length;
 
         if (hdr->am_id >= UCT_AM_ID_MAX) {
             ucs_error("invalid am id: %d", hdr->am_id);
@@ -255,9 +303,9 @@ unsigned uct_tcp_ep_progress_rx(uct_tcp_ep_t *ep)
      * TODO avoid extra copy on partial receive
      */
     ucs_assert(remainder >= 0);
-    memmove(ep->buf, ep->buf + ep->offset, remainder);
-    ep->offset = 0;
-    ep->length = remainder;
+    memmove(ep->rx.buf, ep->rx.buf + ep->rx.offset, remainder);
+    ep->rx.offset = 0;
+    ep->rx.length = remainder;
 
     return recv_length > 0;
 }
@@ -277,10 +325,10 @@ ssize_t uct_tcp_ep_am_bcopy(uct_ep_h uct_ep, uint8_t am_id,
         return UCS_ERR_NO_RESOURCE;
     }
 
-    hdr         = ep->buf;
-    hdr->am_id  = am_id;
-    hdr->length = packed_length = pack_cb(hdr + 1, arg);
-    ep->length  = sizeof(*hdr) + packed_length;
+    hdr           = ep->tx.buf;
+    hdr->am_id    = am_id;
+    hdr->length   = packed_length = pack_cb(hdr + 1, arg);
+    ep->tx.length = sizeof(*hdr) + packed_length;
 
     UCT_CHECK_LENGTH(hdr->length, 0,
                      iface->config.buf_size - sizeof(uct_tcp_am_hdr_t),
@@ -288,10 +336,10 @@ ssize_t uct_tcp_ep_am_bcopy(uct_ep_h uct_ep, uint8_t am_id,
     UCT_TL_EP_STAT_OP(&ep->super, AM, BCOPY, hdr->length);
     uct_iface_trace_am(&iface->super, UCT_AM_TRACE_TYPE_SEND, hdr->am_id,
                        hdr + 1, hdr->length, "SEND fd %d", ep->fd);
-    iface->outstanding += ep->length;
+    iface->outstanding += ep->tx.length;
 
     uct_tcp_ep_send(ep);
-    if (ep->length > 0) {
+    if (ep->tx.length > 0) {
         uct_tcp_ep_mod_events(ep, EPOLLOUT, 0);
     }
     return packed_length;
