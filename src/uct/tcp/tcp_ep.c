@@ -471,6 +471,7 @@ ssize_t uct_tcp_ep_am_bcopy(uct_ep_h uct_ep, uint8_t am_id,
     UCT_CHECK_AM_ID(am_id);
 
     if (!uct_tcp_ep_can_send(ep)) {
+        UCS_STATS_UPDATE_COUNTER(ep->super.stats, UCT_EP_STAT_NO_RES, 1);
         return UCS_ERR_NO_RESOURCE;
     }
 
@@ -487,10 +488,22 @@ ssize_t uct_tcp_ep_am_bcopy(uct_ep_h uct_ep, uint8_t am_id,
                        hdr + 1, hdr->length, "SEND fd %d", ep->fd);
     iface->outstanding += ep->tx->length;
 
-    uct_tcp_ep_send(ep);
-    if (ep->tx->length > 0) {
-        uct_tcp_ep_mod_events(ep, EPOLLOUT, 0);
+    if (ucs_likely(ep->conn_state == UCT_TCP_EP_CONN_CONNECTED)) {
+        uct_tcp_ep_send(ep);
+        if (ep->tx->length > 0) {
+            uct_tcp_ep_mod_events(ep, EPOLLOUT, 0);
+        }
+    } else if (ep->conn_state == UCT_TCP_EP_CONN_REFUSED) {
+        ep->tx->length = 0;
+        ep->tx->offset = 0;
+
+        uct_set_ep_failed(&UCS_CLASS_NAME(uct_tcp_ep_t),
+                          &ep->super.super, &iface->super.super,
+                          UCS_ERR_UNREACHABLE);
+
+        return UCS_ERR_UNREACHABLE;
     }
+
     return packed_length;
 }
 
