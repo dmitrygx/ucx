@@ -26,6 +26,18 @@
 
 typedef ssize_t (*uct_tcp_io_func_t)(int fd, void *data, size_t size, int flags);
 
+
+int uct_tcp_sockaddr_cmp(const struct sockaddr_in *sa1,
+                         const struct sockaddr_in *sa2)
+{
+    int cmp;
+
+    cmp = memcmp(&sa1->sin_addr, &sa2->sin_addr,
+                 sizeof(sa1->sin_addr));
+    return cmp ? cmp : memcmp(&sa1->sin_port, &sa2->sin_port,
+                              sizeof(sa1->sin_port));
+}
+
 /* Caller is responsible to free memory allocated if str_addr wasn't provided */
 char *uct_tcp_sockaddr_2_string(const struct sockaddr_in *addr, char **str_addr,
                                 size_t *str_addr_len)

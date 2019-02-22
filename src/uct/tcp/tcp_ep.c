@@ -357,7 +357,7 @@ ucs_status_t uct_tcp_ep_create_connected(const uct_ep_params_t *params,
                                          uct_ep_h *ep_p)
 {
     uct_tcp_iface_t *iface = ucs_derived_of(params->iface, uct_tcp_iface_t);
-    uct_tcp_ep_t *ep = NULL;
+    uct_tcp_ep_t *ep       = NULL, *iter_ep;
     struct sockaddr_in dest_addr;
     ucs_status_t status;
     int fd;
@@ -372,6 +372,15 @@ ucs_status_t uct_tcp_ep_create_connected(const uct_ep_params_t *params,
     if (status != UCS_OK) {
         return status;
     }
+
+    UCS_ASYNC_BLOCK(iface->super.worker->async);
+    ucs_list_for_each(iter_ep, &iface->ep_list, list) {
+        if (uct_tcp_sockaddr_cmp(&iface->config.ifaddr, &dest_addr) == 0) {
+            ep = iter_ep;
+            break;
+        }
+    }
+    UCS_ASYNC_UNBLOCK(iface->super.worker->async);
 
     /* TODO try to reuse existing connection */
     status = uct_tcp_ep_create(iface, fd, &dest_addr, &ep);

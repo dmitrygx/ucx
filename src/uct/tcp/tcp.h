@@ -126,6 +126,9 @@ typedef struct uct_tcp_iface_config {
 extern uct_md_component_t uct_tcp_md;
 extern const char *uct_tcp_address_type_names[];
 
+int uct_tcp_sockaddr_cmp(const struct sockaddr_in *sa1,
+                         const struct sockaddr_in *sa2);
+
 char *uct_tcp_sockaddr_2_string(const struct sockaddr_in *addr, char **str_addr,
                                 size_t *str_addr_len);
 
