@@ -33,6 +33,7 @@ typedef struct uct_tcp_ep_ctx {
     void                          *buf;      /* Partial send/recv data */
     size_t                        length;    /* How much data in the buffer */
     size_t                        offset;    /* Next offset to send/recv */
+    uct_tcp_ep_t                  *ep;
 } uct_tcp_ep_ctx_t;
 
 
@@ -41,12 +42,13 @@ typedef struct uct_tcp_ep_ctx {
  */
 typedef struct uct_tcp_ep {
     uct_base_ep_t                 super;
-    int                           fd;        /* Socket file descriptor */
-    uint32_t                      events;    /* Current notifications */
-    ucs_queue_head_t              pending_q; /* Pending operations */
+    int                           fd;         /* Socket file descriptor */
+    uint32_t                      events;     /* Current notifications */
+    uct_tcp_ep_ctx_t              *tx;        /**/
+    uct_tcp_ep_ctx_t              *rx;        /**/
+    struct sockaddr_in            *peer_addr; /**/
+    ucs_queue_head_t              pending_q;  /* Pending operations */
     ucs_list_link_t               list;
-    uct_tcp_ep_ctx_t              tx;
-    uct_tcp_ep_ctx_t              rx;
 } uct_tcp_ep_t;
 
 
