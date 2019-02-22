@@ -25,6 +25,33 @@ static void uct_tcp_ep_epoll_ctl(uct_tcp_ep_t *ep, int op)
     }
 }
 
+void uct_tcp_ep_change_conn_state(uct_tcp_ep_t *ep,
+                                  uct_tcp_ep_conn_state_t new_conn_state)
+{
+    char *str_addr;
+
+    ep->conn_state = new_conn_state;
+
+    str_addr = uct_tcp_sockaddr_2_string(ep->peer_addr, NULL, NULL);
+    if (!str_addr) {
+        return;
+    }
+
+    switch(ep->conn_state) {
+    case UCT_TCP_EP_CONN_IN_PROGRESS:
+        ucs_debug("tcp_ep %p: connection in progress to %s", ep, str_addr);
+        break;
+    case UCT_TCP_EP_CONN_CONNECTED:
+        ucs_debug("tcp_ep %p: connected to %s", ep, str_addr);
+        break;
+    case UCT_TCP_EP_CONN_REFUSED:
+        ucs_debug("tcp_ep %p: connection refused to %s", ep, str_addr);
+        break;
+    }
+
+    ucs_free(str_addr);
+}
+
 static inline int uct_tcp_ep_can_send(uct_tcp_ep_t *ep)
 {
     ucs_assert(ep->tx->offset <= ep->tx->length);
@@ -140,10 +167,6 @@ static UCS_CLASS_INIT_FUNC(uct_tcp_ep_t, uct_tcp_iface_t *iface,
         goto err_ep_cleanup;
     }
 
-    UCS_ASYNC_BLOCK(iface->super.worker->async);
-    ucs_list_add_tail(&iface->ep_list, &self->list);
-    UCS_ASYNC_UNBLOCK(iface->super.worker->async);
-
     ucs_debug("tcp_ep %p: created on iface %p, fd %d", self, iface, self->fd);
     return UCS_OK;
 
@@ -175,11 +198,94 @@ UCS_CLASS_DEFINE_NAMED_NEW_FUNC(uct_tcp_ep_create, uct_tcp_ep_t, uct_tcp_ep_t,
                                 const struct sockaddr_in*)
 UCS_CLASS_DEFINE_NAMED_DELETE_FUNC(uct_tcp_ep_destroy, uct_tcp_ep_t, uct_ep_t)
 
+static unsigned uct_tcp_ep_connect_progress(uct_tcp_ep_t *ep)
+{
+    uct_tcp_iface_t *iface   = ucs_derived_of(ep->super.super.iface,
+                                              uct_tcp_iface_t);
+    socklen_t conn_status_sz = sizeof(int);
+    int ret, conn_status;
+
+    ret = getsockopt(ep->fd, SOL_SOCKET, SO_ERROR,
+                     &conn_status, &conn_status_sz);
+    if (ret < 0) {
+        ucs_error("Failed to get SO_ERROR on fd %d: %m", ep->fd);
+        goto err;
+    }
+
+    if (conn_status == EINPROGRESS || conn_status == EWOULDBLOCK) {
+        return 0;
+    }
+
+    if (conn_status != 0) {
+        ucs_error("SO_ERROR returns on fd %d: %d", ep->fd, conn_status);
+        goto err;
+    }
+
+    //if (uct_tcp_send_blocking(ep->fd, &iface->config.ifaddr,
+    //                        sizeof(iface->config.ifaddr)) != UCS_OK) {
+    //  ucs_error("Blocking send failed on fd %d: %m", ep->fd);
+    //  goto err;
+    //}
+
+    ep->tx->progress = uct_tcp_ep_progress_tx;
+    ep->rx->progress = uct_tcp_ep_empty_progress;
+
+    uct_tcp_ep_change_conn_state(ep, UCT_TCP_EP_CONN_CONNECTED);
+
+    uct_tcp_ep_mod_events(ep, EPOLLOUT, 0);
+
+    return ep->tx->progress(ep);
+
+ err:
+    uct_tcp_ep_change_conn_state(ep, UCT_TCP_EP_CONN_REFUSED);
+    ucs_error("Non-blocking connect(%s:%d) failed",
+              inet_ntoa(ep->peer_addr->sin_addr),
+              ntohs(ep->peer_addr->sin_port));
+    uct_set_ep_failed(&UCS_CLASS_NAME(uct_tcp_ep_t),
+                      &ep->super.super, &iface->super.super,
+                      UCS_ERR_UNREACHABLE);
+    return 0;
+}
+
+unsigned uct_tcp_ep_empty_progress(uct_tcp_ep_t *ep)
+{
+    return 0;
+}
+
+static ucs_status_t uct_tcp_ep_connect_start(uct_tcp_ep_t *ep,
+                                             const struct sockaddr_in *dest_addr)
+{
+    ucs_status_t status;
+
+    status = uct_tcp_socket_connect(ep->fd, dest_addr);
+    if (status == UCS_INPROGRESS) {
+        ep->tx->progress = uct_tcp_ep_connect_progress;
+        ep->rx->progress = uct_tcp_ep_empty_progress;
+
+        uct_tcp_ep_change_conn_state(ep, UCT_TCP_EP_CONN_IN_PROGRESS);
+
+        uct_tcp_ep_mod_events(ep, EPOLLOUT, 0);
+
+        status = UCS_OK;
+    } else if (status != UCS_OK) {
+        return status;
+    } else {
+        ep->tx->progress = uct_tcp_ep_progress_tx;
+        ep->rx->progress = uct_tcp_ep_empty_progress;
+
+        uct_tcp_ep_change_conn_state(ep, UCT_TCP_EP_CONN_CONNECTED);
+
+        uct_tcp_ep_mod_events(ep, EPOLLOUT, 0);
+    }
+
+    return status;
+}
+
 ucs_status_t uct_tcp_ep_create_connected(const uct_ep_params_t *params,
                                          uct_ep_h *ep_p)
 {
     uct_tcp_iface_t *iface = ucs_derived_of(params->iface, uct_tcp_iface_t);
-    uct_tcp_ep_t *tcp_ep = NULL;
+    uct_tcp_ep_t *ep = NULL;
     struct sockaddr_in dest_addr;
     ucs_status_t status;
     int fd;
@@ -195,24 +301,29 @@ ucs_status_t uct_tcp_ep_create_connected(const uct_ep_params_t *params,
         return status;
     }
 
-    /* TODO use non-blocking connect */
-    status = uct_tcp_socket_connect(fd, &dest_addr);
-    if (status != UCS_OK) {
-        goto err_close_fd;
-    }
-
     /* TODO try to reuse existing connection */
-    status = uct_tcp_ep_create(iface, fd, &dest_addr, &tcp_ep);
+    status = uct_tcp_ep_create(iface, fd, &dest_addr, &ep);
     if (status == UCS_OK) {
-        ucs_debug("tcp_ep %p: connected to %s:%d", tcp_ep,
+        ucs_debug("tcp_ep %p: connected to %s:%d", ep,
                   inet_ntoa(dest_addr.sin_addr), ntohs(dest_addr.sin_port));
-        *ep_p = &tcp_ep->super.super;
+        *ep_p = &ep->super.super;
     } else {
         goto err_close_fd;
     }
 
+    status = uct_tcp_ep_connect_start(ep, &dest_addr);
+    if (status != UCS_OK) {
+        goto err_ep_destroy;
+    }
+
+    UCS_ASYNC_BLOCK(iface->super.worker->async);
+    ucs_list_add_tail(&iface->ep_list, &ep->list);
+    UCS_ASYNC_UNBLOCK(iface->super.worker->async);
+
     return status;
 
+err_ep_destroy:
+    uct_tcp_ep_destroy(&ep->super.super);
 err_close_fd:
     close(fd);
     return status;

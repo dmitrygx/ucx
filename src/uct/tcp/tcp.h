@@ -42,11 +42,22 @@ typedef struct uct_tcp_ep_ctx {
 
 
 /**
+ * TCP endpoint connection state
+ */
+typedef enum uct_tcp_ep_conn_state {
+    UCT_TCP_EP_CONN_IN_PROGRESS,
+    UCT_TCP_EP_CONN_CONNECTED,
+    UCT_TCP_EP_CONN_REFUSED,
+} uct_tcp_ep_conn_state_t;
+
+
+/**
  * TCP endpoint
  */
 typedef struct uct_tcp_ep {
     uct_base_ep_t                 super;
     int                           fd;         /* Socket file descriptor */
+    uct_tcp_ep_conn_state_t       conn_state;
     uint32_t                      events;     /* Current notifications */
     uct_tcp_ep_ctx_t              *tx;        /**/
     uct_tcp_ep_ctx_t              *rx;        /**/
@@ -98,6 +109,9 @@ typedef struct uct_tcp_iface_config {
 extern uct_md_component_t uct_tcp_md;
 extern const char *uct_tcp_address_type_names[];
 
+char *uct_tcp_sockaddr_2_string(const struct sockaddr_in *addr, char **str_addr,
+                                size_t *str_addr_len);
+
 ucs_status_t uct_tcp_socket_connect(int fd, const struct sockaddr_in *dest_addr);
 
 ucs_status_t uct_tcp_netif_caps(const char *if_name, double *latency_p,
@@ -114,6 +128,9 @@ ucs_status_t uct_tcp_recv(int fd, void *data, size_t *length_p);
 
 ucs_status_t uct_tcp_iface_set_sockopt(uct_tcp_iface_t *iface, int fd);
 
+void uct_tcp_ep_change_conn_state(uct_tcp_ep_t *ep,
+                                  uct_tcp_ep_conn_state_t new_state);
+
 ucs_status_t uct_tcp_ep_create(uct_tcp_iface_t *iface, int fd,
                                const struct sockaddr_in *dest_addr,
                                uct_tcp_ep_t **ep_p);
@@ -126,6 +143,8 @@ void uct_tcp_ep_destroy(uct_ep_h tl_ep);
 unsigned uct_tcp_ep_progress_tx(uct_tcp_ep_t *ep);
 
 unsigned uct_tcp_ep_progress_rx(uct_tcp_ep_t *ep);
+
+unsigned uct_tcp_ep_empty_progress(uct_tcp_ep_t *ep);
 
 void uct_tcp_ep_mod_events(uct_tcp_ep_t *ep, uint32_t add, uint32_t remove);
 
