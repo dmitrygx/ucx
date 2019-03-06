@@ -12,6 +12,8 @@
 
 namespace ucs {
 
+const time_t test_timeout_default = 900; // 15 sec
+
 pthread_mutex_t test_base::m_logger_mutex = PTHREAD_MUTEX_INITIALIZER;
 unsigned test_base::m_total_warnings = 0;
 unsigned test_base::m_total_errors   = 0;
@@ -22,11 +24,17 @@ test_base::test_base() :
                 m_state(NEW),
                 m_initialized(false),
                 m_num_threads(1),
+                m_test_timeout(test_timeout_default),
                 m_num_valgrind_errors_before(0),
                 m_num_errors_before(0),
                 m_num_warnings_before(0),
                 m_num_log_handlers_before(0)
 {
+    m_comp_threads = new unsigned[m_num_threads];
+
+    pthread_mutex_init(&m_thread_mutex, NULL);
+    pthread_cond_init(&m_thread_cv, NULL);
+
     push_config();
 }
 
@@ -34,6 +42,12 @@ test_base::~test_base() {
     while (!m_config_stack.empty()) {
         pop_config();
     }
+
+    pthread_mutex_destroy(&m_thread_mutex);
+    pthread_cond_destroy(&m_thread_cv);
+
+    delete[] m_comp_threads;
+
     ucs_assertv_always(m_state == FINISHED ||
                        m_state == SKIPPED ||
                        m_state == NEW ||    /* can be skipped from a class constructor */
@@ -46,11 +60,31 @@ void test_base::set_num_threads(unsigned num_threads) {
         GTEST_FAIL() << "Cannot modify number of threads after test is started, "
                      << "it must be done in the constructor.";
     }
+
+    if (num_threads != m_num_threads) {
+        delete[] m_comp_threads;
+
+        m_comp_threads = new unsigned[num_threads];
+    }
+
     m_num_threads = num_threads;
 }
 
 unsigned test_base::num_threads() const {
     return m_num_threads;
+}
+
+void test_base::set_test_timeout(time_t sec) {
+    if (m_state != NEW) {
+        GTEST_FAIL() << "Cannot modify test timeout after test is started, "
+                     << "it must be done in the constructor.";
+    }
+
+    m_test_timeout = sec;
+}
+
+time_t test_base::test_timeout() const {
+    return m_test_timeout;
 }
 
 void test_base::set_config(const std::string& config_str)
@@ -257,64 +291,182 @@ void test_base::TearDownProxy() {
     }
 }
 
+void test_base::comp_thread_signal(void *arg)
+{
+    thread_info *info = reinterpret_cast<thread_info*>(arg);
+
+    pthread_mutex_lock(&info->self->m_thread_mutex);
+
+    info->self->m_comp_threads[info->my_id] = 1;
+    info->self->m_num_comp_threads++;
+    pthread_cond_signal(&info->self->m_thread_cv);
+
+    pthread_mutex_unlock(&info->self->m_thread_mutex);
+}
+    
+test_status_t test_base::wait_comp_threads(pthread_t *threads,
+                                           std::string &reason)
+{
+    test_status_t cur_status = OK;
+    int ret = 0;
+    struct timeval start, cur;
+    struct timespec timeout;
+    void *ret_val;
+    time_t time_spent_sec = 0;
+
+    gettimeofday(&start, 0);
+
+    timeout.tv_sec  = start.tv_sec + test_timeout();
+    timeout.tv_nsec = start.tv_usec * 1000;
+
+    pthread_mutex_lock(&m_thread_mutex);
+
+    while ((m_num_comp_threads != num_threads()) && !ret) {
+        ret = pthread_cond_timedwait(&m_thread_cv, &m_thread_mutex,
+                                     &timeout);
+        if (!ret) {
+            gettimeofday(&cur, 0);
+
+            time_spent_sec += cur.tv_sec - start.tv_sec;
+
+            timeout.tv_sec  = cur.tv_sec + test_timeout() - time_spent_sec;
+            timeout.tv_nsec = cur.tv_usec * 1000;
+        }
+    }
+
+    for (unsigned i = 0; i < num_threads(); i++) {
+        if (!m_comp_threads[i]) {
+            pthread_cancel(threads[i]);
+        } else {
+            pthread_join(threads[i], &ret_val);
+
+            thread_info *info = reinterpret_cast<thread_info*>(ret_val);
+
+            if (cur_status < info->status) {
+                cur_status = info->status;
+                reason     = info->reason;
+            }
+        }
+    }
+
+    cur_status = (m_num_comp_threads == num_threads() || (cur_status > TIMEOUT)) ?
+                 cur_status : TIMEOUT;
+
+    pthread_mutex_unlock(&m_thread_mutex);
+
+    return cur_status;
+}
+
 void test_base::run()
 {
+    pthread_t threads[num_threads()];
+    test_status_t status;
+    thread_info *info;
+    std::string reason;
+
     if (num_threads() == 1) {
-        test_body();
+        info = new thread_info;
+
+        info->self  = this;
+        info->my_id = 0;
+
+        m_num_comp_threads = 0;
+        m_comp_threads[0]  = 0;
+
+        pthread_create(&threads[0], NULL, thread_func, reinterpret_cast<void*>(info));
+        status = wait_comp_threads(threads, reason);
+
+        delete info;
     } else {
-        pthread_t threads[num_threads()];
+        info = new thread_info[num_threads()];
+
+        m_num_comp_threads = 0;
+
         pthread_barrier_init(&m_barrier, NULL, num_threads());
         for (unsigned i = 0; i < num_threads(); ++i) {
-            pthread_create(&threads[i], NULL, thread_func, reinterpret_cast<void*>(this));
+
+            info[i].self  = this;
+            info[i].my_id = i;
+
+            m_comp_threads[i] = 0;
+
+            pthread_create(&threads[i], NULL, thread_func, reinterpret_cast<void*>(info));
         }
-        for (unsigned i = 0; i < num_threads(); ++i) {
-            void *retval;
-            pthread_join(threads[i], &retval);
-        }
+
+        status = wait_comp_threads(threads, reason);
         pthread_barrier_destroy(&m_barrier);
+
+        delete[] info;
+    }
+
+    switch (status) {
+    case OK:
+        m_state = FINISHED;
+        break;
+    case SKIP:
+        skipped(reason);
+        break;
+    case ABORT:
+        m_state = ABORTED;
+        break;
+    case EXIT:
+        if (RUNNING_ON_VALGRIND) {
+            /* When running with valgrind, exec true/false instead of just
+             * exiting, to avoid warnings about memory leaks of objects
+             * allocated inside gtest run loop.
+             */
+            execlp(reason.c_str(), reason.c_str(), NULL);
+        }
+
+        /* If not running on valgrind / execp failed, use exit() */
+        exit(reason == "true" ? 1 : 0);
+        break;
+    case TIMEOUT:
+        m_state = ABORTED;
+        break;
+    case UNKNOWN:
+        throw;
     }
 }
 
 void *test_base::thread_func(void *arg)
 {
-    test_base *self = reinterpret_cast<test_base*>(arg);
-    self->barrier(); /* Let all threads start in the same time */
-    self->test_body();
-    return NULL;
+    thread_info *info = reinterpret_cast<thread_info*>(arg);
+
+    info->status = OK;
+
+    if (info->self->num_threads() > 1) {
+        info->self->barrier(); // Let all threads start in the same time
+    }
+
+    try {
+        info->self->test_body();
+    } catch (test_skip_exception& e) {
+        info->status = SKIP;
+        info->reason = e.what();
+    } catch (test_abort_exception&) {
+        info->status = ABORT;
+    } catch (exit_exception& e) {
+        info->status = EXIT;
+        info->reason = e.failed() ? "true" : "false";
+    } catch (...) {
+        info->status = UNKNOWN;
+    }
+
+    comp_thread_signal(reinterpret_cast<void*>(info));
+
+    return reinterpret_cast<void*>(info);
 }
 
 void test_base::TestBodyProxy() {
     if (m_state == RUNNING) {
-        try {
-            run();
-            m_state = FINISHED;
-        } catch (test_skip_exception& e) {
-            skipped(e);
-        } catch (test_abort_exception&) {
-            m_state = ABORTED;
-        } catch (exit_exception& e) {
-            if (RUNNING_ON_VALGRIND) {
-                /* When running with valgrind, exec true/false instead of just
-                 * exiting, to avoid warnings about memory leaks of objects
-                 * allocated inside gtest run loop.
-                 */
-                const char *program = e.failed() ? "false" : "true";
-                execlp(program, program, NULL);
-            }
-
-            /* If not running on valgrind / execp failed, use exit() */
-            exit(e.failed() ? 1 : 0);
-        } catch (...) {
-            m_state = ABORTED;
-            throw;
-        }
+        run();
     } else if (m_state == SKIPPED) {
     } else if (m_state == ABORTED) {
     }
 }
-
-void test_base::skipped(const test_skip_exception& e) {
-    std::string reason = e.what();
+    
+void test_base::skipped(const std::string &reason) {
     if (reason.empty()) {
         detail::message_stream("SKIP");
     } else {
@@ -323,6 +475,9 @@ void test_base::skipped(const test_skip_exception& e) {
     m_state = SKIPPED;
 }
 
+void test_base::skipped(const test_skip_exception& e) {
+    skipped(e.what());
+}
 void test_base::init() {
 }
 

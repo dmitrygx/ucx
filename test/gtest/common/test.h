@@ -19,6 +19,10 @@
 
 namespace ucs {
 
+typedef enum {
+    OK = 0, SKIP = 1, TIMEOUT = 2, ABORT = 3, EXIT = 4, UNKNOWN = 5
+} test_status_t;
+
 /**
  * Base class for tests
  */
@@ -29,6 +33,9 @@ public:
 
     void set_num_threads(unsigned num_threads);
     unsigned num_threads() const;
+
+    void set_test_timeout(time_t sec);
+    time_t test_timeout() const;
 
     void get_config(const std::string& name, std::string& value,
                             size_t max);
@@ -85,6 +92,7 @@ protected:
     state_t                         m_state;
     bool                            m_initialized;
     unsigned                        m_num_threads;
+    time_t                          m_test_timeout; // seconds
     config_stack_t                  m_config_stack;
     ptr_vector<scoped_setenv>       m_env_stack;
     int                             m_num_valgrind_errors_before;
@@ -99,11 +107,25 @@ protected:
     static std::vector<std::string> m_warnings;
 
 private:
+    struct thread_info {
+        test_base *self;
+        unsigned my_id;
+        test_status_t status;
+        std::string reason;
+    };
+
+    void skipped(const std::string &reason);
     void skipped(const test_skip_exception& e);
     void run();
     static void *thread_func(void *arg);
+    static void comp_thread_signal(void *arg);
+    test_status_t wait_comp_threads(pthread_t *threads, std::string &reason);
 
     pthread_barrier_t    m_barrier;
+    unsigned             *m_comp_threads;
+    unsigned             m_num_comp_threads;
+    pthread_mutex_t      m_thread_mutex;
+    pthread_cond_t       m_thread_cv;
 };
 
 #define UCS_TEST_BASE_IMPL \
