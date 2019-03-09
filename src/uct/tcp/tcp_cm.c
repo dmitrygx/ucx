@@ -35,16 +35,8 @@ void uct_tcp_cm_change_conn_state(uct_tcp_ep_t *ep,
         ucs_debug("[%s -> %s] tcp_ep %p: closed connection ([%s]<->[%s])",
                   old_state_str, new_state_str, ep, str_local_addr, str_remote_addr);
         break;
-    case UCT_TCP_EP_CONN_ACCEPTING: /* here we don't know exact remote iface addr */
-        ucs_debug("[%s -> %s] tcp_ep %p: accepting connection [%s]",
-                  old_state_str, new_state_str, ep, str_local_addr);
-        break;
     case UCT_TCP_EP_CONN_CONNECTING:
         ucs_debug("[%s -> %s] tcp_ep %p: connection in progress ([%s]<->[%s])",
-                  old_state_str, new_state_str, ep, str_local_addr, str_remote_addr);
-        break;
-    case UCT_TCP_EP_CONN_CONNECT_ACK:
-        ucs_debug("[%s -> %s] tcp_ep %p: waiting connection ack ([%s]<->[%s])",
                   old_state_str, new_state_str, ep, str_local_addr, str_remote_addr);
         break;
     case UCT_TCP_EP_CONN_CONNECTED:
@@ -81,7 +73,6 @@ static unsigned uct_tcp_cm_conn_progress(uct_tcp_ep_t *ep)
 
 ucs_status_t uct_tcp_cm_conn_start(uct_tcp_ep_t *ep)
 {
-    char str_remote_addr[UCS_SOCKADDR_STRING_LEN];
     uct_tcp_ep_conn_state_t new_conn_state;
     ucs_status_t status;
 
@@ -93,6 +84,8 @@ ucs_status_t uct_tcp_cm_conn_start(uct_tcp_ep_t *ep)
     } else if (status == UCS_OK) {
         ep->tx.progress = uct_tcp_ep_progress_tx;
         new_conn_state  = UCT_TCP_EP_CONN_CONNECTED;
+    } else {
+        return status;
     }
 
     uct_tcp_cm_change_conn_state(ep, new_conn_state);
@@ -111,19 +104,9 @@ ucs_status_t uct_tcp_cm_handle_incoming_conn(uct_tcp_iface_t *iface, int fd)
         return status;
     }
 
-    status = uct_tcp_ep_ctx_init(iface, &ep->rx);
-    if (status != UCS_OK) {
-        ucs_error("tcp_ep %p: unable to allocated RX resources", ep);
-        goto err;
-    }
-
-    ep->rx.progress = uct_tcp_cm_conn_req_rx_progress;
+    ep->rx.progress = uct_tcp_ep_progress_rx;
     uct_tcp_cm_change_conn_state(ep, UCT_TCP_EP_CONN_CONNECTED);
     uct_tcp_ep_mod_events(ep, EPOLLIN, 0);
 
     return UCS_OK;
-
- err:
-    uct_tcp_ep_destroy(&ep->super.super);
-    return 0;
 }

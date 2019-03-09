@@ -22,6 +22,7 @@
 #include <net/if_arp.h>
 #include <net/if.h>
 #include <netdb.h>
+#include <poll.h>
 
 
 typedef ssize_t (*uct_tcp_io_func_t)(int fd, void *data, size_t size, int flags);
@@ -127,7 +128,7 @@ ucs_status_t uct_tcp_netif_inaddr(const char *if_name, struct sockaddr_in *ifadd
         }
     }
 
-    if ((ifra.ifr_addr.sa_family  != AF_INET) ) {
+    if ((ifra.ifr_addr.sa_family != AF_INET) ) {
         ucs_error("%s address is not INET", if_name);
         return UCS_ERR_INVALID_ADDR;
     }
@@ -172,6 +173,26 @@ ucs_status_t uct_tcp_netif_is_default(const char *if_name, int *result_p)
     *result_p = 0;
     fclose(f);
     return UCS_OK;
+}
+
+uint32_t uct_tcp_epoll_2_poll_events(uint32_t epoll_events)
+{
+    uint32_t poll_events = 0;
+
+    poll_events |= epoll_events & EPOLLIN  ? POLLIN  : 0;
+    poll_events |= epoll_events & EPOLLOUT ? POLLOUT : 0;
+
+    return poll_events;
+}
+
+uint32_t uct_tcp_poll_2_epoll_events(uint32_t poll_events)
+{
+    uint32_t epoll_events = 0;
+
+    epoll_events |= poll_events & POLLIN  ? EPOLLIN  : 0;
+    epoll_events |= poll_events & POLLOUT ? EPOLLOUT : 0;
+
+    return epoll_events;
 }
 
 static ucs_status_t uct_tcp_do_io(int fd, void *data, size_t *length_p,

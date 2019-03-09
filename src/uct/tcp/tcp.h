@@ -137,8 +137,9 @@ ucs_status_t uct_tcp_netif_inaddr(const char *if_name, struct sockaddr_in *ifadd
 
 ucs_status_t uct_tcp_netif_is_default(const char *if_name, int *result_p);
 
-int uct_tcp_sockaddr_cmp(const struct sockaddr *sa1,
-                         const struct sockaddr *sa2);
+uint32_t uct_tcp_epoll_2_poll_events(uint32_t epoll_events);
+
+uint32_t uct_tcp_poll_2_epoll_events(uint32_t poll_events);
 
 ucs_status_t uct_tcp_send(int fd, const void *data, size_t *length_p);
 
@@ -150,9 +151,7 @@ ucs_status_t uct_tcp_recv_blocking(int fd, void *data, size_t length);
 
 ucs_status_t uct_tcp_iface_set_sockopt(uct_tcp_iface_t *iface, int fd);
 
-ucs_status_t uct_tcp_ep_create(uct_tcp_iface_t *iface, int fd,
-                               const struct sockaddr *dest_addr,
-                               uct_tcp_ep_t **ep_p);
+unsigned uct_tcp_iface_progress_ep(uct_tcp_ep_t *ep);
 
 ucs_status_t uct_tcp_ep_init(uct_tcp_iface_t *iface, int fd,
                              const struct sockaddr *dest_addr,
@@ -167,10 +166,10 @@ void uct_tcp_ep_destroy(uct_ep_h tl_ep);
 
 void uct_tcp_ep_set_failed(uct_tcp_ep_t *ep);
 
-ucs_status_t uct_tcp_ep_ctx_init(uct_tcp_iface_t *iface,
-                                 uct_tcp_ep_ctx_t *ctx);
+ucs_status_t uct_tcp_ep_addr_init(ucs_sock_addr_t *sock_addr,
+                                  const struct sockaddr *addr);
 
-void uct_tcp_ep_ctx_cleanup(uct_tcp_ep_ctx_t *ctx);
+void uct_tcp_ep_addr_cleanup(ucs_sock_addr_t *sock_addr);
 
 unsigned uct_tcp_ep_progress_tx(uct_tcp_ep_t *ep);
 
