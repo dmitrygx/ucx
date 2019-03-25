@@ -25,6 +25,22 @@ const uct_tcp_cm_state_t uct_tcp_ep_cm_state[] = {
             [UCT_TCP_EP_CTX_TYPE_RX] = (uct_tcp_ep_progress_t)ucs_empty_function_return_zero
         },
     },
+    [UCT_TCP_EP_CONN_WAIT_ACK] = {
+        .name        = "WAIT_ACK",
+        .description = "waiting for connection acknowledgment",
+        .progress    = {
+            [UCT_TCP_EP_CTX_TYPE_TX] = (uct_tcp_ep_progress_t)ucs_empty_function_return_zero,
+            [UCT_TCP_EP_CTX_TYPE_RX] = uct_tcp_cm_conn_ack_rx_progress,
+        },
+    },
+    [UCT_TCP_EP_CONN_ACCEPTING] = {
+        .name        = "ACCEPTING",
+        .description = "connection accepting in progress",
+        .progress    = {
+            [UCT_TCP_EP_CTX_TYPE_TX] = (uct_tcp_ep_progress_t)ucs_empty_function_return_zero,
+            [UCT_TCP_EP_CTX_TYPE_RX] = uct_tcp_cm_conn_req_rx_progress
+        },
+    },
     [UCT_TCP_EP_CONN_CONNECTED] = {
         .name        = "CONNECTED",
         .description = "connection established",
@@ -73,7 +89,8 @@ static inline ucs_status_t uct_tcp_ep_check_tx_res(uct_tcp_ep_t *ep)
             return UCS_ERR_UNREACHABLE;
         }
 
-        ucs_assertv(ep->conn_state == UCT_TCP_EP_CONN_CONNECTING,
+        ucs_assertv((ep->conn_state == UCT_TCP_EP_CONN_CONNECTING) ||
+                    (ep->conn_state == UCT_TCP_EP_CONN_WAIT_ACK),
                     "ep=%p", ep);
         return UCS_ERR_NO_RESOURCE;
     }
@@ -87,7 +104,7 @@ static inline void uct_tcp_ep_ctx_rewind(uct_tcp_ep_ctx_t *ctx)
     ctx->length = 0;
 }
 
-static void uct_tcp_ep_ctx_init(uct_tcp_ep_ctx_t *ctx)
+void uct_tcp_ep_ctx_init(uct_tcp_ep_ctx_t *ctx)
 {
     ctx->buf = NULL;
     uct_tcp_ep_ctx_rewind(ctx);
@@ -214,10 +231,6 @@ static UCS_CLASS_INIT_FUNC(uct_tcp_ep_t, uct_tcp_iface_t *iface,
         goto err_cleanup;
     }
 
-    UCS_ASYNC_BLOCK(iface->super.worker->async);
-    uct_tcp_ep_add_to_iface(iface, self);
-    UCS_ASYNC_UNBLOCK(iface->super.worker->async);
-
     ucs_debug("tcp_ep %p: created on iface %p, fd %d", self, iface, self->fd);
     return UCS_OK;
 
@@ -280,6 +293,10 @@ static ucs_status_t uct_tcp_ep_create_connected(uct_tcp_iface_t *iface,
     if (status != UCS_OK) {
         goto err_close_fd;
     }
+
+    UCS_ASYNC_BLOCK(iface->super.worker->async);
+    uct_tcp_ep_add_to_iface(iface, ep);
+    UCS_ASYNC_UNBLOCK(iface->super.worker->async);
 
     status = uct_tcp_cm_conn_start(ep);
     if (status != UCS_OK) {

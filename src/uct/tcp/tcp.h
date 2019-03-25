@@ -43,6 +43,8 @@ typedef enum uct_tcp_ep_ctx_type {
 typedef enum uct_tcp_ep_conn_state {
     UCT_TCP_EP_CONN_CLOSED,
     UCT_TCP_EP_CONN_CONNECTING,
+    UCT_TCP_EP_CONN_ACCEPTING,
+    UCT_TCP_EP_CONN_WAIT_ACK,
     UCT_TCP_EP_CONN_CONNECTED
 } uct_tcp_ep_conn_state_t;
 
@@ -60,6 +62,23 @@ typedef struct uct_tcp_cm_state {
     const char            *description;                       /* CM state description */
     uct_tcp_ep_progress_t progress[UCT_TCP_EP_CTX_TYPE_LAST]; /* TX and RX progress functions */
 } uct_tcp_cm_state_t;
+
+
+/**
+ * TCP connection message packet
+ */
+typedef struct uct_tcp_ep_conn_pkt {
+    enum {
+        UCT_TCP_EP_CONN_REQ,
+        UCT_TCP_EP_CONN_ACK,
+    } event;
+    union {
+        struct {
+            struct sockaddr iface_addr;
+        } req;
+    } data;
+} UCS_S_PACKED uct_tcp_ep_conn_pkt_t;
+
 
 /**
  * TCP active message header
@@ -180,6 +199,8 @@ void uct_tcp_ep_destroy(uct_ep_h tl_ep);
 
 void uct_tcp_ep_set_failed(uct_tcp_ep_t *ep, uct_tcp_ep_ctx_type_t ctx_type);
 
+void uct_tcp_ep_ctx_init(uct_tcp_ep_ctx_t *ctx);
+
 ucs_status_t uct_tcp_ep_addr_init(ucs_sock_addr_t *sock_addr,
                                   const struct sockaddr *addr);
 
@@ -208,6 +229,10 @@ ucs_status_t uct_tcp_ep_flush(uct_ep_h tl_ep, unsigned flags,
                               uct_completion_t *comp);
 
 unsigned uct_tcp_cm_conn_progress(uct_tcp_ep_t *ep);
+
+unsigned uct_tcp_cm_conn_ack_rx_progress(uct_tcp_ep_t *ep);
+
+unsigned uct_tcp_cm_conn_req_rx_progress(uct_tcp_ep_t *ep);
 
 void uct_tcp_cm_change_conn_state(uct_tcp_ep_t *ep, uct_tcp_ep_ctx_type_t ctx_type,
                                   uct_tcp_ep_conn_state_t new_conn_state);
