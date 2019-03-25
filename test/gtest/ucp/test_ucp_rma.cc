@@ -19,7 +19,7 @@ public:
         // TODO: need to investigate the slowness of the disabled tests
         if ((GetParam().transports.front().compare("dc_x") == 0) &&
             (GetParam().variant == UCP_MEM_MAP_NONBLOCK)) {
-            UCS_TEST_SKIP_R("skipping this test until the slowness is resolved");
+            //UCS_TEST_SKIP_R("skipping this test until the slowness is resolved");
         }
     }
 
