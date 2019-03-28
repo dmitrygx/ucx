@@ -167,16 +167,12 @@ UCS_TEST_P(test_ucp_rma, nb_med) {
 }
 
 UCS_TEST_P(test_ucp_rma, nb_large) {
-    size_t sizes[] = { 1 * MEG, 3 * MEG, 9 * MEG, 17 * MEG, 32 * MEG, 0};
-
     if (RUNNING_ON_VALGRIND) {
         UCS_TEST_SKIP_R("skipping on valgrind");
     }
 
-    test_message_sizes(static_cast<blocking_send_func_t>(&test_ucp_rma::nonblocking_put_nb),
-                       sizes, 3, 1);
-    test_message_sizes(static_cast<blocking_send_func_t>(&test_ucp_rma::nonblocking_get_nb),
-                       sizes, 3, 1);
+    test_nonblocking_implicit_stream_xfer(static_cast<nonblocking_send_func_t>(&test_ucp_rma::nonblocking_put_nb),
+                                          2 * MEG, 300, 1, false, false);
 }
 
 UCS_TEST_P(test_ucp_rma, nonblocking_put_nbi_flush_worker) {

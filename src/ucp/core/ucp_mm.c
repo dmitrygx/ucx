@@ -40,6 +40,8 @@ ucs_status_t ucp_mem_rereg_mds(ucp_context_h context, ucp_md_map_t reg_md_map,
     ucs_status_t status;
     int level;
 
+    
+
     if (reg_md_map == *md_map_p) {
         return UCS_OK; /* shortcut - no changes required */
     }
