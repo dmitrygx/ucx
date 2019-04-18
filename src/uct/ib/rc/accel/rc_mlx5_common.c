@@ -673,7 +673,7 @@ fallback:
 void uct_rc_mlx5_iface_common_dm_cleanup(uct_rc_mlx5_iface_common_t *iface)
 {
 #if HAVE_IBV_DM
-    if (iface->dm.dm) {
+    if (iface->dm.dm != NULL) {
         uct_worker_tl_data_put(iface->dm.dm, uct_rc_mlx5_iface_common_dm_tl_cleanup);
     }
 #endif

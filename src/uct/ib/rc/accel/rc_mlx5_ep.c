@@ -148,16 +148,18 @@ uct_rc_mlx5_ep_put_short(uct_ep_h tl_ep, const void *buffer, unsigned length,
                          uint64_t remote_addr, uct_rkey_t rkey)
 {
 #if HAVE_IBV_DM
-    uct_rc_mlx5_iface_common_t *iface = ucs_derived_of(tl_ep->iface, uct_rc_mlx5_iface_common_t);
+    UCT_RC_MLX5_EP_DECL(tl_ep, iface, ep);
     uct_rc_iface_t *rc_iface          = &iface->super;
-    uct_rc_mlx5_ep_t *ep              = ucs_derived_of(tl_ep, uct_rc_mlx5_ep_t);
     ucs_status_t status;
 
-    if (ucs_likely((length <= UCT_IB_MLX5_PUT_MAX_SHORT(0)) || !iface->dm.dm)) {
+    if (ucs_likely(length <= UCT_IB_MLX5_PUT_MAX_SHORT(0))) {
 #endif
-        return uct_rc_mlx5_ep_put_short_inline(tl_ep, buffer, length, remote_addr, rkey);
+        return uct_rc_mlx5_ep_put_short_inline(tl_ep, buffer, length,
+                                               remote_addr, rkey);
 #if HAVE_IBV_DM
     }
+
+    ucs_assert(iface->dm.dm != NULL);
 
     UCT_CHECK_LENGTH(length, 0, iface->dm.seg_len, "put_short");
     UCT_RC_CHECK_RES(rc_iface, &ep->super);
@@ -262,14 +264,13 @@ uct_rc_mlx5_ep_am_short(uct_ep_h tl_ep, uint8_t id, uint64_t hdr,
                         const void *payload, unsigned length)
 {
 #if HAVE_IBV_DM
-    uct_rc_mlx5_iface_common_t *iface = ucs_derived_of(tl_ep->iface, uct_rc_mlx5_iface_common_t);
-    uct_rc_iface_t *rc_iface          = &iface->super;
-    uct_rc_mlx5_ep_t *ep              = ucs_derived_of(tl_ep, uct_rc_mlx5_ep_t);
+    UCT_RC_MLX5_EP_DECL(tl_ep, iface, ep);
+    uct_rc_iface_t *rc_iface = &iface->super;
     ucs_status_t status;
     uct_rc_mlx5_dm_copy_data_t cache;
 
-    if (ucs_likely((sizeof(uct_rc_mlx5_am_short_hdr_t) + length <= UCT_IB_MLX5_AM_MAX_SHORT(0)) ||
-                   !iface->dm.dm)) {
+    if (ucs_likely(sizeof(uct_rc_mlx5_am_short_hdr_t) +
+                   length <= UCT_IB_MLX5_AM_MAX_SHORT(0) || !dm.dm)) {
 #endif
         return uct_rc_mlx5_ep_am_short_inline(tl_ep, id, hdr, payload, length);
 #if HAVE_IBV_DM
@@ -284,10 +285,10 @@ uct_rc_mlx5_ep_am_short(uct_ep_h tl_ep, uint8_t id, uint64_t hdr,
     uct_rc_mlx5_am_hdr_fill(&cache.am_hdr.rc_hdr, id);
     cache.am_hdr.am_hdr = hdr;
 
-    status = uct_rc_mlx5_ep_short_dm(ep, &cache, sizeof(cache.am_hdr), payload, length,
-                                     MLX5_OPCODE_SEND,
-                                     MLX5_WQE_CTRL_SOLICITED | MLX5_WQE_CTRL_CQ_UPDATE,
-                                     0, 0);
+    status = uct_rc_mlx5_ep_short_dm(ep, &cache, sizeof(cache.am_hdr),
+                                     payload, length, MLX5_OPCODE_SEND,
+                                     MLX5_WQE_CTRL_SOLICITED |
+                                     MLX5_WQE_CTRL_CQ_UPDATE, 0, 0);
     if (UCS_STATUS_IS_ERR(status)) {
         return status;
     }
@@ -694,8 +695,8 @@ ucs_status_t uct_rc_mlx5_ep_tag_eager_short(uct_ep_h tl_ep, uct_tag_t tag,
     uct_rc_mlx5_dm_copy_data_t cache;
     ucs_status_t status;
 
-    if (ucs_likely((sizeof(struct ibv_tmh) + length <= UCT_IB_MLX5_AM_MAX_SHORT(0)) ||
-                   !iface->dm.dm)) {
+    if (ucs_likely(sizeof(struct ibv_tmh) + length <=
+                   UCT_IB_MLX5_AM_MAX_SHORT(0))) {
 #endif
         return uct_rc_mlx5_ep_tag_eager_short_inline(tl_ep, tag, data, length);
 #if HAVE_IBV_DM
@@ -705,12 +706,13 @@ ucs_status_t uct_rc_mlx5_ep_tag_eager_short(uct_ep_h tl_ep, uct_tag_t tag,
                      iface->dm.seg_len, "tag_short");
     UCT_RC_CHECK_RES(&iface->super, &ep->super);
 
-    uct_rc_mlx5_fill_tmh(ucs_unaligned_ptr(&cache.tm_hdr), tag, 0, IBV_TMH_EAGER);
+    uct_rc_mlx5_fill_tmh(ucs_unaligned_ptr(&cache.tm_hdr),
+                         tag, 0, IBV_TMH_EAGER);
 
-    status = uct_rc_mlx5_ep_short_dm(ep, &cache, sizeof(cache.tm_hdr), data, length,
-                                   MLX5_OPCODE_SEND,
-                                   MLX5_WQE_CTRL_SOLICITED | MLX5_WQE_CTRL_CQ_UPDATE,
-                                   0, 0);
+    status = uct_rc_mlx5_ep_short_dm(ep, &cache, sizeof(cache.tm_hdr),
+                                     data, length, MLX5_OPCODE_SEND,
+                                     MLX5_WQE_CTRL_SOLICITED |
+                                     MLX5_WQE_CTRL_CQ_UPDATE, 0, 0);
     if (!UCS_STATUS_IS_ERR(status)) {
         UCT_TL_EP_STAT_OP(&ep->super.super, TAG, SHORT, length);
     }
