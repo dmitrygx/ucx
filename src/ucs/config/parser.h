@@ -86,6 +86,12 @@ typedef struct ucs_config_bw_spec {
     double bw;
 } ucs_config_bw_spec_t;
 
+typedef struct ucs_config_table_arg {
+    ucs_config_field_t       *fields;
+    void                     *root_opts;
+    ucs_config_field_t       *root_fields;
+} ucs_config_table_arg_t;
+
 
 #define UCS_CONFIG_REGISTER_TABLE(_fields, _name, _prefix, _type) \
     UCS_STATIC_INIT { \

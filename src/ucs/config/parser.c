@@ -729,6 +729,7 @@ void ucs_config_help_array(char *buf, size_t max, const void *arg)
 
 int ucs_config_sscanf_table(const char *buf, void *dest, const void *arg)
 {
+    ucs_config_table_arg_t *table_arg = (ucs_config_table_arg_t*)arg;
     char *tokens;
     char *token, *saveptr1;
     char *name, *value, *saveptr2;
@@ -751,7 +752,7 @@ int ucs_config_sscanf_table(const char *buf, void *dest, const void *arg)
             return 0;
         }
 
-        status = ucs_config_parser_set_value_internal(dest, (ucs_config_field_t*)arg,
+        status = ucs_config_parser_set_value_internal(dest, table_arg->fields,
                                                      name, value, NULL, 1);
         if (status != UCS_OK) {
             if (status == UCS_ERR_NO_ELEM) {
@@ -773,12 +774,14 @@ int ucs_config_sscanf_table(const char *buf, void *dest, const void *arg)
 
 ucs_status_t ucs_config_clone_table(void *src, void *dst, const void *arg)
 {
-    return ucs_config_parser_clone_opts(src, dst, (ucs_config_field_t*)arg);
+    ucs_config_table_arg_t *table_arg = (ucs_config_table_arg_t*)arg;
+    return ucs_config_parser_clone_opts(src, dst, table_arg->fields);
 }
 
 void ucs_config_release_table(void *ptr, const void *arg)
 {
-    ucs_config_parser_release_opts(ptr, (ucs_config_field_t*)arg);
+    ucs_config_table_arg_t *table_arg = (ucs_config_table_arg_t*)arg;
+    ucs_config_parser_release_opts(ptr, table_arg->fields);
 }
 
 void ucs_config_help_table(char *buf, size_t max, const void *arg)
@@ -851,6 +854,53 @@ ucs_config_parser_parse_field(ucs_config_field_t *field, const char *value, void
 static void ucs_config_parser_release_field(ucs_config_field_t *field, void *var)
 {
     field->parser.release(var, field->parser.arg);
+}
+
+static ucs_status_t
+ucs_config_parser_adjust_fields(void *root_opts, ucs_config_field_t *root_fields,
+                                void *opts, ucs_config_field_t *fields)
+{
+    ucs_config_field_t *field, *sub_fields, *err_field;
+    ucs_status_t status;
+    ucs_config_table_arg_t *arg;
+    void *var;
+
+    for (field = fields; field->name; ++field) {
+        var = (char*)opts + field->offset;
+
+        if (ucs_config_is_table_field(field)) {
+            sub_fields = (ucs_config_field_t*)field->parser.arg;
+
+            arg = ucs_malloc(sizeof(*arg), "table arg");
+            if (arg == NULL) {
+                err_field = field;
+                goto err;
+            }
+
+            arg->fields      = sub_fields;
+            arg->root_opts   = root_opts;
+            arg->root_fields = root_fields;
+
+            field->parser.arg = arg;
+
+            status = ucs_config_parser_adjust_fields(root_opts, root_fields,
+                                                     var, arg->fields);
+            if (status != UCS_OK) {
+                err_field = field;
+                goto err;
+            }
+        }
+    }
+
+    return UCS_OK;
+
+err:
+    for (field = fields; field->name && (field != err_field); ++field) {
+        if (ucs_config_is_table_field(field)) {
+            ucs_free(field);
+        }
+    }
+    return UCS_ERR_NO_MEMORY;
 }
 
 ucs_status_t
@@ -1051,6 +1101,11 @@ ucs_status_t ucs_config_parser_fill_opts(void *opts, ucs_config_field_t *fields,
     ucs_status_t status;
     char prefix[128];
 
+    status = ucs_config_parser_adjust_fields(opts, opts, fields, fields);
+    if (opts != UCS_OK) {
+        goto err;
+    }
+
     /* Set default values */
     status = ucs_config_parser_set_default_values(opts, fields);
     if (status != UCS_OK) {
@@ -1166,6 +1221,9 @@ void ucs_config_parser_release_opts(void *opts, ucs_config_field_t *fields)
         }
 
         ucs_config_parser_release_field(field, (char*)opts + field->offset);
+        if (ucs_config_is_table_field(field)) {
+            ucs_free((void*)field->parser.arg);
+        }
     }
 }
 
