@@ -670,6 +670,7 @@ void uct_ud_iface_add_ep(uct_ud_iface_t *iface, uct_ud_ep_t *ep)
 {
     uint32_t prev_gen;
     ep->ep_id = ucs_ptr_array_insert(&iface->eps, ep, &prev_gen);
+    ucs_trace("iface(%p) add ep: %p id %d", iface, ep, ep->ep_id);OB
 }
 
 void uct_ud_iface_remove_ep(uct_ud_iface_t *iface, uct_ud_ep_t *ep)

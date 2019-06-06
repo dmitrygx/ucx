@@ -650,13 +650,14 @@ void uct_ud_ep_process_rx(uct_ud_iface_t *iface, uct_ud_neth_t *neth, unsigned b
         uct_ud_ep_rx_creq(iface, neth);
         goto out;
     } else if (ucs_unlikely(!ucs_ptr_array_lookup(&iface->eps, dest_id, ep) ||
-               ep->ep_id != dest_id))
+                            ep->ep_id != dest_id))
     {
         /* Drop the packet because it is
          * allowed to do disconnect without flush/barrier. So it
          * is possible to get packet for the ep that has been destroyed
          */
-        ucs_trace("RX: failed to find ep %d, dropping packet", dest_id);
+        ucs_trace("iface(%p) RX: failed to find ep %d, dropping packet",
+                  iface, dest_id);
         goto out;
     }
 
