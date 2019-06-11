@@ -163,7 +163,7 @@ static void uct_ud_ep_slow_timer(ucs_wtimer_t *self)
         iface->super.ops->handle_failure(&iface->super, ep,
                                          UCS_ERR_ENDPOINT_TIMEOUT);
         return;
-    } else if (diff > 3*iface->async.slow_tick) {
+    } else if (diff > 3 * iface->async.slow_tick) {
         ucs_trace("scheduling resend now: %lu send_time: %lu diff: %lu tick: %lu",
                   now, ep->tx.send_time, now - ep->tx.send_time,
                   ep->tx.slow_tick);

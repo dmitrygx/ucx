@@ -120,6 +120,7 @@ void test_ucp_peer_failure::set_timeouts() {
     m_env.push_back(new ucs::scoped_setenv("UCX_RC_RETRY_COUNT", "2"));
     std::string ud_timeout = ucs::to_string<int>(3 * ucs::test_time_multiplier()) + "s";
     m_env.push_back(new ucs::scoped_setenv("UCX_UD_TIMEOUT", ud_timeout.c_str()));
+    m_env.push_back(new ucs::scoped_setenv("UCX_UD_SLOW_TIMER_TICK", "10ms"));
 }
 
 void test_ucp_peer_failure::err_cb(void *arg, ucp_ep_h ep, ucs_status_t status) {
