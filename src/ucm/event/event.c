@@ -30,6 +30,8 @@
 
 UCS_LIST_HEAD(ucm_event_installer_list);
 
+static ucs_init_once_t event_install_init_once = UCS_INIT_ONCE_INIITIALIZER;
+
 static pthread_spinlock_t ucm_kh_lock;
 #define ucm_ptr_hash(_ptr)  kh_int64_hash_func((uintptr_t)(_ptr))
 KHASH_INIT(ucm_ptr_size, const void*, size_t, 1, ucm_ptr_hash, kh_int64_hash_equal)
@@ -477,14 +479,12 @@ static int ucm_events_to_native_events(int events)
 
 static ucs_status_t ucm_event_install(int events)
 {
-    static ucs_init_once_t init_once = UCS_INIT_ONCE_INIITIALIZER;
     UCS_MODULE_FRAMEWORK_DECLARE(ucm);
     ucm_event_installer_t *event_installer;
     int native_events, malloc_events;
     ucs_status_t status;
 
-    /* coverity[double_unlock] */
-    UCS_INIT_ONCE(&init_once) {
+    UCS_INIT_ONCE(&event_install_init_once) {
         ucm_prevent_dl_unload();
     }
 
