@@ -77,7 +77,9 @@ UCS_TEST_P(test_uct_mm, open_for_posix) {
         }
 
         initialize();
-        check_caps(UCT_IFACE_FLAG_AM_SHORT | UCT_IFACE_FLAG_CB_SYNC);
+        if (check_caps(UCT_IFACE_FLAG_AM_SHORT | UCT_IFACE_FLAG_CB_SYNC)) {
+            UCS_TEST_SKIP_R("AM_SHORT or CB_SYNC are unsupported");
+        }
 
         recv_buffer = (recv_desc_t *) malloc(sizeof(*recv_buffer) + sizeof(uint64_t));
         recv_buffer->length = 0; /* Initialize length to 0 */

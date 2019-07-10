@@ -47,7 +47,9 @@ void test_uct_ib::send_recv_short() {
     recv_desc_t *recv_buffer;
     ucs_status_t status;
 
-    check_caps(UCT_IFACE_FLAG_AM_SHORT);
+    if (check_caps(UCT_IFACE_FLAG_AM_SHORT)) {
+        UCS_TEST_SKIP_R("lmc is set to zero on an IB port");
+    }
 
     recv_buffer = (recv_desc_t *) malloc(sizeof(*recv_buffer) + sizeof(uint64_t));
     recv_buffer->length = 0; /* Initialize length to 0 */
@@ -372,13 +374,11 @@ public:
 
         test_uct_ib::init();
 
-        try {
-            check_caps(UCT_IFACE_FLAG_PUT_SHORT | UCT_IFACE_FLAG_CB_SYNC |
+        if (check_caps(UCT_IFACE_FLAG_PUT_SHORT | UCT_IFACE_FLAG_CB_SYNC |
                        UCT_IFACE_FLAG_EVENT_SEND_COMP |
-                       UCT_IFACE_FLAG_EVENT_RECV);
-        } catch (...) {
+                       UCT_IFACE_FLAG_EVENT_RECV)) {
             test_uct_ib::cleanup();
-            throw;
+            UCS_TEST_SKIP_R("unsupported");
         }
 
         /* create receiver wakeup */

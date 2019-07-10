@@ -103,8 +103,10 @@ UCS_TEST_P(test_many2one_am, am_bcopy)
     entity *receiver = create_entity(sizeof(receive_desc_t));
     m_entities.push_back(receiver);
 
-    check_caps(UCT_IFACE_FLAG_AM_BCOPY);
-    check_caps(UCT_IFACE_FLAG_CB_SYNC);
+    if (check_caps(UCT_IFACE_FLAG_AM_BCOPY) ||
+        check_caps(UCT_IFACE_FLAG_CB_SYNC)) {
+        UCS_TEST_SKIP_R("AM_BCOPY or CB_SYNC are unsupported");
+    }
 
     ucs::ptr_vector<mapped_buffer> buffers;
     for (unsigned i = 0; i < NUM_SENDERS; ++i) {

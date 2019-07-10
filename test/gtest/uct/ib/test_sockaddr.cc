@@ -97,6 +97,13 @@ public:
 
         /* initiate the client's private data callback argument */
         client->client_cb_arg = server->iface_attr().max_conn_priv;
+
+        try {
+            check_skip_test();
+        } catch (...) {
+            cleanup();
+            throw;
+        }
     }
 
     static void conn_request_cb(uct_iface_h iface, void *arg,
@@ -263,9 +270,9 @@ UCS_TEST_P(test_uct_sockaddr, many_conns_on_client)
     EXPECT_EQ(0, err_count);
 }
 
-UCS_TEST_P(test_uct_sockaddr, err_handle)
+UCS_TEST_SKIP_COND_P(test_uct_sockaddr, err_handle,
+                     check_caps(UCT_IFACE_FLAG_ERRHANDLE_PEER_FAILURE))
 {
-    check_caps(UCT_IFACE_FLAG_ERRHANDLE_PEER_FAILURE);
     UCS_TEST_MESSAGE << "Testing "     << m_listen_addr
                      << " Interface: " << GetParam()->dev_name;
 
@@ -285,10 +292,9 @@ UCS_TEST_P(test_uct_sockaddr, err_handle)
     }
 }
 
-UCS_TEST_P(test_uct_sockaddr, conn_to_non_exist_server)
+UCS_TEST_SKIP_COND_P(test_uct_sockaddr, conn_to_non_exist_server,
+                     check_caps(UCT_IFACE_FLAG_ERRHANDLE_PEER_FAILURE))
 {
-    check_caps(UCT_IFACE_FLAG_ERRHANDLE_PEER_FAILURE);
-
     UCS_TEST_MESSAGE << "Testing "     << m_listen_addr
                      << " Interface: " << GetParam()->dev_name;
 

@@ -103,7 +103,9 @@ public:
 
     void set_am_handlers()
     {
-        check_caps(UCT_IFACE_FLAG_CB_SYNC);
+        if (check_caps(UCT_IFACE_FLAG_CB_SYNC)) {
+            UCS_TEST_SKIP_R("CB_SYNC is unsupported");
+        }
         std::for_each(m_receivers.begin(), m_receivers.end(),
                       am_handler_setter(this));
     }
@@ -203,15 +205,21 @@ void test_uct_peer_failure::init()
         new_receiver();
     }
 
+    try {
+        check_skip_test();
+    } catch (...) {
+        cleanup();
+        throw;
+    }
+
     m_err_count = 0;
     m_req_count = 0;
     m_am_count  = 0;
 }
 
-UCS_TEST_P(test_uct_peer_failure, peer_failure)
+UCS_TEST_SKIP_COND_P(test_uct_peer_failure, peer_failure,
+                     check_caps(UCT_IFACE_FLAG_PUT_SHORT))
 {
-    check_caps(UCT_IFACE_FLAG_PUT_SHORT);
-
     {
         scoped_log_handler slh(wrap_errors_logger);
 
@@ -254,10 +262,10 @@ UCS_TEST_P(test_uct_peer_failure, peer_failure)
     EXPECT_GT(m_err_count, 0ul);
 }
 
-UCS_TEST_P(test_uct_peer_failure, purge_failed_peer)
+UCS_TEST_SKIP_COND_P(test_uct_peer_failure, purge_failed_peer,
+                     check_caps(UCT_IFACE_FLAG_AM_SHORT |
+                                UCT_IFACE_FLAG_PENDING))
 {
-    check_caps(UCT_IFACE_FLAG_AM_SHORT | UCT_IFACE_FLAG_PENDING);
-
     set_am_handlers();
 
     send_recv_am(0);
@@ -290,10 +298,10 @@ UCS_TEST_P(test_uct_peer_failure, purge_failed_peer)
     EXPECT_GE(m_err_count, 0ul);
 }
 
-UCS_TEST_P(test_uct_peer_failure, two_pairs_send)
+UCS_TEST_SKIP_COND_P(test_uct_peer_failure, two_pairs_send,
+                     check_caps(UCT_IFACE_FLAG_AM_SHORT |
+                                UCT_IFACE_FLAG_PENDING))
 {
-    check_caps(UCT_IFACE_FLAG_AM_SHORT | UCT_IFACE_FLAG_PENDING);
-
     set_am_handlers();
 
     /* queue sends on 1st pair */
@@ -324,10 +332,10 @@ UCS_TEST_P(test_uct_peer_failure, two_pairs_send)
 }
 
 
-UCS_TEST_P(test_uct_peer_failure, two_pairs_send_after)
+UCS_TEST_SKIP_COND_P(test_uct_peer_failure, two_pairs_send_after,
+                     check_caps(UCT_IFACE_FLAG_AM_SHORT |
+                                UCT_IFACE_FLAG_PENDING))
 {
-    check_caps(UCT_IFACE_FLAG_AM_SHORT | UCT_IFACE_FLAG_PENDING);
-
     set_am_handlers();
 
     {
@@ -366,10 +374,9 @@ public:
     }
 };
 
-UCS_TEST_P(test_uct_peer_failure_cb, desproy_ep_cb)
+UCS_TEST_SKIP_COND_P(test_uct_peer_failure_cb, desproy_ep_cb,
+                     check_caps(UCT_IFACE_FLAG_PUT_SHORT))
 {
-    check_caps(UCT_IFACE_FLAG_PUT_SHORT);
-
     scoped_log_handler slh(wrap_errors_logger);
     kill_receiver();
     EXPECT_EQ(uct_ep_put_short(ep0(), NULL, 0, 0, 0), UCS_OK);
