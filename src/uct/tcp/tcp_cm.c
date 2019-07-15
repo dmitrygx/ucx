@@ -307,10 +307,12 @@ uct_tcp_cm_simult_conn_accept_remote_conn(uct_tcp_ep_t *accept_ep,
     /* 4. Send ACK to the peer */
     event = UCT_TCP_CM_CONN_ACK;
 
-    /* 5. If found EP is still connecting, tie REQ with ACK and send
-     *    it to the peer using new socket fd to ensure that the peer
-     *    will be able to receive the data from us */
-    if (connect_ep->conn_state == UCT_TCP_EP_CONN_STATE_CONNECTING) {
+    /* 5. If found EP is still connecting or waiting ACK message,
+     *    tie REQ with ACK and send it to the peer using new socket
+     *    fd to ensure that the peer will be able to receive
+     *    the data from us */
+    if ((connect_ep->conn_state == UCT_TCP_EP_CONN_STATE_CONNECTING) ||
+        (connect_ep->conn_state == UCT_TCP_EP_CONN_STATE_WAITING_ACK)) {
         event |= UCT_TCP_CM_CONN_REQ;
     }
 
