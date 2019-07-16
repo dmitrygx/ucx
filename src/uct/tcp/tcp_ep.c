@@ -80,8 +80,7 @@ static inline void uct_tcp_ep_ctx_init(uct_tcp_ep_ctx_t *ctx)
 static inline void uct_tcp_ep_ctx_reset(uct_tcp_ep_ctx_t *ctx)
 {
     ucs_mpool_put_inline(ctx->buf);
-    ctx->buf = NULL;
-    uct_tcp_ep_ctx_rewind(ctx);
+    uct_tcp_ep_ctx_init(ctx);
 }
 
 static void uct_tcp_ep_addr_cleanup(struct sockaddr_in *sock_addr)
@@ -219,8 +218,9 @@ ucs_status_t uct_tcp_ep_add_ctx_cap(uct_tcp_ep_t *ep,
     if (!uct_tcp_ep_is_self(ep) && (prev_caps != ep->ctx_caps)) {
         if (!prev_caps) {
             return uct_tcp_cm_add_ep(iface, ep);
-        } else if (ep->ctx_caps == (UCS_BIT(UCT_TCP_EP_CTX_TYPE_RX) |
-                                    UCS_BIT(UCT_TCP_EP_CTX_TYPE_TX))) {
+        } else if (ucs_test_all_flags(ep->ctx_caps,
+                                      (UCS_BIT(UCT_TCP_EP_CTX_TYPE_RX) |
+                                       UCS_BIT(UCT_TCP_EP_CTX_TYPE_TX)))) {
             uct_tcp_cm_remove_ep(iface, ep);
         }
     }
@@ -237,8 +237,9 @@ ucs_status_t uct_tcp_ep_remove_ctx_cap(uct_tcp_ep_t *ep,
 
     uct_tcp_ep_change_ctx_caps(ep, ep->ctx_caps & ~UCS_BIT(cap));
     if (!uct_tcp_ep_is_self(ep)) {
-        if (ucs_test_all_flags(prev_caps, (UCS_BIT(UCT_TCP_EP_CTX_TYPE_RX) |
-                                           UCS_BIT(UCT_TCP_EP_CTX_TYPE_TX)))) {
+        if (ucs_test_all_flags(prev_caps,
+                               (UCS_BIT(UCT_TCP_EP_CTX_TYPE_RX) |
+                                UCS_BIT(UCT_TCP_EP_CTX_TYPE_TX)))) {
             return uct_tcp_cm_add_ep(iface, ep);
         } else if (!ep->ctx_caps) {
             uct_tcp_cm_remove_ep(iface, ep);
@@ -265,6 +266,8 @@ static UCS_CLASS_CLEANUP_FUNC(uct_tcp_ep_t)
 {
     uct_tcp_iface_t UCS_V_UNUSED *iface =
         ucs_derived_of(self->super.super.iface, uct_tcp_iface_t);
+
+    uct_tcp_ep_mod_events(self, 0, self->events);
 
     if (self->ctx_caps & UCS_BIT(UCT_TCP_EP_CTX_TYPE_TX)) {
         uct_tcp_ep_remove_ctx_cap(self, UCT_TCP_EP_CTX_TYPE_TX);
@@ -316,6 +319,7 @@ void uct_tcp_ep_set_failed(uct_tcp_ep_t *ep)
                                             uct_tcp_iface_t);
 
     if (ep->conn_state != UCT_TCP_EP_CONN_STATE_CLOSED) {
+        uct_tcp_ep_remove_ctx_cap(ep, UCT_TCP_EP_CTX_TYPE_TX);
         uct_tcp_cm_change_conn_state(ep, UCT_TCP_EP_CONN_STATE_CLOSED);
     }
 
@@ -456,13 +460,13 @@ static void uct_tcp_ep_handle_disconnected(uct_tcp_ep_t *ep,
 {
     ucs_debug("tcp_ep %p: remote disconnected", ep);
 
-    uct_tcp_ep_mod_events(ep, 0, UCS_EVENT_SET_EVREAD);
+    uct_tcp_cm_change_conn_state(ep, UCT_TCP_EP_CONN_STATE_CLOSED);
+    uct_tcp_ep_mod_events(ep, 0, ep->events);
     uct_tcp_ep_ctx_reset(ctx);
 
     if (ep->ctx_caps & UCS_BIT(UCT_TCP_EP_CTX_TYPE_RX)) {
         if (ep->ctx_caps & UCS_BIT(UCT_TCP_EP_CTX_TYPE_TX)) {
             uct_tcp_ep_remove_ctx_cap(ep, UCT_TCP_EP_CTX_TYPE_RX);
-            uct_tcp_ep_mod_events(ep, 0, UCS_EVENT_SET_EVREAD);
         } else {
             /* If the EP supports RX only, destroy it */
             uct_tcp_ep_destroy_internal(&ep->super.super);
@@ -673,6 +677,10 @@ uct_tcp_ep_am_prepare(uct_tcp_iface_t *iface, uct_tcp_ep_t *ep,
     status = uct_tcp_ep_check_tx_res(ep);
     if (ucs_unlikely(status != UCS_OK)) {
         if (ucs_likely(status == UCS_ERR_NO_RESOURCE)) {
+            goto err_no_res_mod_ev;
+        } else if ((status == UCS_ERR_UNREACHABLE) &&
+                   (uct_tcp_cm_simult_conn_closed_conn(ep->conn_state,
+                                                       ep->ctx_caps))) {
             goto err_no_res;
         }
         return status;
@@ -682,7 +690,7 @@ uct_tcp_ep_am_prepare(uct_tcp_iface_t *iface, uct_tcp_ep_t *ep,
 
     ep->tx.buf = ucs_mpool_get_inline(&iface->tx_mpool);
     if (ucs_unlikely(ep->tx.buf == NULL)) {
-        goto err_no_res;
+        goto err_no_res_mod_ev;
     }
 
     *hdr          = ep->tx.buf;
@@ -690,8 +698,9 @@ uct_tcp_ep_am_prepare(uct_tcp_iface_t *iface, uct_tcp_ep_t *ep,
 
     return UCS_OK;
 
-err_no_res:
+err_no_res_mod_ev:
     uct_tcp_ep_mod_events(ep, UCS_EVENT_SET_EVWRITE, 0);
+err_no_res:
     UCS_STATS_UPDATE_COUNTER(ep->super.stats, UCT_EP_STAT_NO_RES, 1);
     return UCS_ERR_NO_RESOURCE;
 }

@@ -35,9 +35,11 @@ void uct_tcp_cm_change_conn_state(uct_tcp_ep_t *ep,
     case UCT_TCP_EP_CONN_STATE_CONNECTED:
         ucs_assert((old_conn_state == UCT_TCP_EP_CONN_STATE_CONNECTING) ||
                    (old_conn_state == UCT_TCP_EP_CONN_STATE_WAITING_ACK) ||
-                   (old_conn_state == UCT_TCP_EP_CONN_STATE_ACCEPTING));
+                   (old_conn_state == UCT_TCP_EP_CONN_STATE_ACCEPTING) ||
+                   uct_tcp_cm_simult_conn_closed_conn(old_conn_state,
+                                                      ep->ctx_caps));
         if ((old_conn_state == UCT_TCP_EP_CONN_STATE_WAITING_ACK) ||
-            /* it may happen when a peer is going to use this EP with socket
+            /* It may happen when a peer is going to use this EP with socket
              * from accepted connection in case of handling simultaneous
              * connection establishment */
             (old_conn_state == UCT_TCP_EP_CONN_STATE_CONNECTING)) {
@@ -271,12 +273,20 @@ void uct_tcp_cm_purge_ep(uct_tcp_ep_t *ep)
     uct_tcp_iface_add_ep(ep);
 }
 
+/* Check whetern our connection establishment attempt
+ * wasn't accepted and it detected hangup on a socket */
+int uct_tcp_cm_simult_conn_closed_conn(uct_tcp_ep_conn_state_t conn_state,
+                                       uint8_t ctx_caps)
+{
+    return ((conn_state == UCT_TCP_EP_CONN_STATE_CLOSED) &&
+            (ctx_caps & UCS_BIT(UCT_TCP_EP_CTX_TYPE_TX)));
+}
+
 static ucs_status_t
 uct_tcp_cm_simult_conn_accept_remote_conn(uct_tcp_ep_t *accept_ep,
                                           uct_tcp_ep_t *connect_ep,
                                           unsigned *progress_count)
 {
-    uct_tcp_cm_conn_event_t event;
     ucs_status_t status;
 
     /* 1. Close the allocated socket `fd` to avoid reading any
@@ -304,19 +314,9 @@ uct_tcp_cm_simult_conn_accept_remote_conn(uct_tcp_ep_t *accept_ep,
     uct_tcp_ep_destroy_internal(&accept_ep->super.super);
     accept_ep = NULL;
 
-    /* 4. Send ACK to the peer */
-    event = UCT_TCP_CM_CONN_ACK;
-
-    /* 5. If found EP is still connecting or waiting ACK message,
-     *    tie REQ with ACK and send it to the peer using new socket
-     *    fd to ensure that the peer will be able to receive
-     *    the data from us */
-    if ((connect_ep->conn_state == UCT_TCP_EP_CONN_STATE_CONNECTING) ||
-        (connect_ep->conn_state == UCT_TCP_EP_CONN_STATE_WAITING_ACK)) {
-        event |= UCT_TCP_CM_CONN_REQ;
-    }
-
-    status = uct_tcp_cm_send_event(connect_ep, event);
+    /* 4. Send ACK along with REQ to the peer using new socket fd to ensure
+     *     that the peer will be able to receive the data from us */
+    status = uct_tcp_cm_send_event(connect_ep, UCT_TCP_CM_CONN_ACK_WITH_REQ);
     if (status != UCS_OK) {
         return status;
     }
@@ -347,22 +347,25 @@ static ucs_status_t uct_tcp_cm_handle_simult_conn(uct_tcp_iface_t *iface,
         if (status != UCS_OK) {
             return status;
         }
-        accept_conn = (cmp < 0);
+        accept_conn = ((cmp < 0) ||
+                       (connect_ep->conn_state == UCT_TCP_EP_CONN_STATE_CLOSED));
     }
+
+    ucs_debug("tcp_iface %p: replaces tcp_ep %p from accept by tcp_ep %p "
+              "considering connection as %s",
+              iface, accept_ep, connect_ep,
+              (accept_conn ? "accepted" : "not accepted"));
 
     if (!accept_conn) {
         /* Migrate RX from the EP allocated during accepting connection to
-         * the found EP. Don't set anything if != CONNECTED, because we need
-         * to handle a connection data */
+         * the found EP */
         status = uct_tcp_ep_move_ctx_cap(accept_ep, connect_ep,
                                          UCT_TCP_EP_CTX_TYPE_RX);
         if (status != UCS_OK) {
             return status;
         }
 
-        if (connect_ep->conn_state == UCT_TCP_EP_CONN_STATE_CONNECTED) {
-            uct_tcp_ep_mod_events(connect_ep, UCS_EVENT_SET_EVREAD, 0);
-        }
+        uct_tcp_ep_mod_events(connect_ep, UCS_EVENT_SET_EVREAD, 0);
         /* Destroy the EP allocated during accepting connection */
         uct_tcp_ep_destroy_internal(&accept_ep->super.super);
     } else /* our iface address less than remote && we are not connected */ {
@@ -531,6 +534,7 @@ ucs_status_t uct_tcp_cm_conn_start(uct_tcp_ep_t *ep)
         new_conn_state  = UCT_TCP_EP_CONN_STATE_WAITING_ACK;
         req_events      = UCS_EVENT_SET_EVREAD;
     } else {
+        uct_tcp_ep_remove_ctx_cap(ep, UCT_TCP_EP_CTX_TYPE_TX);
         new_conn_state  = UCT_TCP_EP_CONN_STATE_CLOSED;
         req_events      = 0;
     }

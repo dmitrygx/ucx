@@ -735,7 +735,7 @@ UCS_TEST_P(test_ucp_wireup_2sided, connect_disconnect) {
 }
 
 UCS_TEST_P(test_ucp_wireup_2sided, multi_ep_2sided) {
-    const unsigned count = 10;
+    const unsigned count = 2;
 
     for (unsigned j = 0; j < 4; ++j) {
 

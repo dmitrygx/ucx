@@ -292,6 +292,9 @@ uct_tcp_ep_t *uct_tcp_cm_search_ep(uct_tcp_iface_t *iface,
 
 void uct_tcp_cm_purge_ep(uct_tcp_ep_t *ep);
 
+int uct_tcp_cm_simult_conn_closed_conn(uct_tcp_ep_conn_state_t conn_state,
+                                       uint8_t ctx_caps);
+
 ucs_status_t uct_tcp_cm_handle_incoming_conn(uct_tcp_iface_t *iface,
                                              const struct sockaddr_in *peer_addr,
                                              int fd);
