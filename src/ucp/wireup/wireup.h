@@ -15,6 +15,10 @@
 #include <ucs/arch/bitops.h>
 
 
+#define UCP_WIREUP_SCORE_FMT "score (perf %.2f, scale %.4f)"
+#define UCP_WIREUP_SCORE_ARG(_score) (_score).perf, (_score).scale
+
+
 /**
  * Wireup message types
  */
@@ -47,10 +51,10 @@ typedef struct {
      *
      * @return Transport score, the higher the better.
      */
-    double      (*calc_score)(ucp_context_h context,
-                              const uct_md_attr_t *md_attr,
-                              const uct_iface_attr_t *iface_attr,
-                              const ucp_address_iface_attr_t *remote_iface_attr);
+    double      (*calc_perf_score)(ucp_context_h context,
+                                   const uct_md_attr_t *md_attr,
+                                   const uct_iface_attr_t *iface_attr,
+                                   const ucp_address_iface_attr_t *remote_iface_attr);
     /**
      * Calculates scalability score of a potential transport.
      *
@@ -58,7 +62,8 @@ typedef struct {
      * @param [in]  iface_attr   Local interface attributes.
      *
      * @return Transport scalability score, the higher is better.
-     *         Score > 1.0 means that a transport scalable enough.
+     *         score > (1.0 - epsilon) means that a transport is
+     *         considered as scalable.
      */
     double      (*calc_scale_score)(ucp_context_h context,
                                     const uct_iface_attr_t *iface_attr);
@@ -89,10 +94,15 @@ typedef struct ucp_wireup_msg {
 
 
 typedef struct {
-    ucp_rsc_index_t rsc_index;
-    unsigned        addr_index;
-    double          score;
-    double          scale_score;
+    double perf;
+    double scale;
+} ucp_wireup_score_t;
+
+
+typedef struct {
+    ucp_rsc_index_t    rsc_index;
+    unsigned           addr_index;
+    ucp_wireup_score_t score;
 } ucp_wireup_select_info_t;
 
 
@@ -112,10 +122,10 @@ ucs_status_t ucp_wireup_select_sockaddr_transport(ucp_ep_h ep,
                                                   const ucp_ep_params_t *params,
                                                   ucp_rsc_index_t *rsc_index_p);
 
-double ucp_wireup_amo_score_func(ucp_context_h context,
-                                 const uct_md_attr_t *md_attr,
-                                 const uct_iface_attr_t *iface_attr,
-                                 const ucp_address_iface_attr_t *remote_iface_attr);
+double ucp_wireup_amo_perf_score_func(ucp_context_h context,
+                                      const uct_md_attr_t *md_attr,
+                                      const uct_iface_attr_t *iface_attr,
+                                      const ucp_address_iface_attr_t *remote_iface_attr);
 
 ucs_status_t ucp_wireup_msg_progress(uct_pending_req_t *self);
 
@@ -132,8 +142,7 @@ ucs_status_t ucp_wireup_init_lanes(ucp_ep_h ep, const ucp_ep_params_t *params,
 ucs_status_t ucp_wireup_select_lanes(ucp_ep_h ep, const ucp_ep_params_t *params,
                                      unsigned ep_init_flags, unsigned address_count,
                                      const ucp_address_entry_t *address_list,
-                                     uint8_t *addr_indices,
-                                     ucp_ep_config_key_t *key);
+                                     uint8_t *addr_indices, ucp_ep_config_key_t *key);
 
 ucs_status_t ucp_signaling_ep_create(ucp_ep_h ucp_ep, uct_ep_h uct_ep,
                                      int is_owner, uct_ep_h *signaling_ep);
