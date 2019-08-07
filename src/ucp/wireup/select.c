@@ -650,7 +650,7 @@ ucp_wireup_add_memaccess_lanes(ucp_ep_h ep, unsigned address_count,
     ucp_wireup_criteria_t mem_criteria   = *criteria;
     ucp_wireup_select_info_t select_info = {0};
     int show_error                       = !allow_am;
-    int memaccess_selected               = 0;
+    int num_memaccess_lanes              = 0;
     ucp_address_entry_t *address_list_copy;
     ucp_rsc_index_t dst_md_index;
     size_t address_list_size;
@@ -658,6 +658,15 @@ ucp_wireup_add_memaccess_lanes(ucp_ep_h ep, unsigned address_count,
     uint64_t remote_md_map;
     ucs_status_t status;
     char title[64];
+    double am_scale_score;
+
+    if (!allow_am) {
+        /* If emulateion over AM isn't allowed, make AM
+         * transport a loser of all comparisons */
+        am_scale_score = 0.0;
+    } else {
+        am_scale_score = am_info->score.scale;
+    }
 
     remote_md_map = -1;
 
@@ -689,15 +698,15 @@ ucp_wireup_add_memaccess_lanes(ucp_ep_h ep, unsigned address_count,
     if (!allow_am ||
         ucp_wireup_is_scalable_transport(select_info.score.scale) ||
         (ucp_wireup_score_cmp(select_info.score.scale,
-                              am_info->score.scale) > 0)) {
-        dst_md_index        = address_list_copy[select_info.addr_index].md_index;
+                              am_scale_score) > 0)) {
+        dst_md_index   = address_list_copy[select_info.addr_index].md_index;
         ucp_wireup_add_lane_desc(lane_descs, num_lanes_p, &select_info,
                                  dst_md_index, usage, 0);
-        remote_md_map      &= ~UCS_BIT(dst_md_index);
-        tl_bitmap           = ucp_wireup_unset_tl_by_md(ep, tl_bitmap,
+        remote_md_map &= ~UCS_BIT(dst_md_index);
+        tl_bitmap      = ucp_wireup_unset_tl_by_md(ep, tl_bitmap,
                                                         select_info.rsc_index);
-        scale_score         = select_info.score.scale;
-        memaccess_selected  = 1;
+        scale_score    = select_info.score.scale;
+        num_memaccess_lanes++;
     } else {
         /* Set the scalability score of the AM lane to the "reg_score".
          * This will participate in a selection of RMA transport with
@@ -705,8 +714,8 @@ ucp_wireup_add_memaccess_lanes(ucp_ep_h ep, unsigned address_count,
          * "calc_scale_score" functions requires that a returned score
          * is comparable with a value reported from selection of other
          * lanes). */
-        scale_score        = am_info->score.scale;
-        memaccess_selected = 0;
+        scale_score    = am_scale_score;
+        reg_score      = 0;
     }
 
     /* Select additional transports which can access allocated memory, but
@@ -733,22 +742,20 @@ ucp_wireup_add_memaccess_lanes(ucp_ep_h ep, unsigned address_count,
             (!ucp_wireup_is_scalable_transport(select_info.score.scale) &&
              (ucp_wireup_score_cmp(select_info.score.scale,
                                    scale_score) < 0)) ||
-            /* - the selected transport is worse than the RMA/AMO
-             *   transport selected above (we shouldn't compare
-             *   with a score of the AM transport) */
-            (memaccess_selected &&
-             (ucp_wireup_score_cmp(select_info.score.perf, reg_score) <= 0))) {
+            /* - the selected transport is the same or worse than
+             *   the RMA/AMO transport selected above */
+            (ucp_wireup_score_cmp(select_info.score.perf, reg_score) <= 0)) {
             break;
         }
 
         /* Add lane description and remove all occurrences of the remote md. */
-        dst_md_index        = address_list_copy[select_info.addr_index].md_index;
+        dst_md_index   = address_list_copy[select_info.addr_index].md_index;
         ucp_wireup_add_lane_desc(lane_descs, num_lanes_p, &select_info,
                                  dst_md_index, usage, 0);
-        remote_md_map      &= ~UCS_BIT(dst_md_index);
-        tl_bitmap           = ucp_wireup_unset_tl_by_md(ep, tl_bitmap,
-                                                        select_info.rsc_index);
-        memaccess_selected  = 1;
+        remote_md_map &= ~UCS_BIT(dst_md_index);
+        tl_bitmap      = ucp_wireup_unset_tl_by_md(ep, tl_bitmap,
+                                                   select_info.rsc_index);
+        num_memaccess_lanes++;
     }
 
     status = UCS_OK;
@@ -759,7 +766,7 @@ out:
     /* We use RMA/AMO emulation over AM only if it's allowed,
      * selection of RMA/AMO transport wasn't successful,
      * and RMA/AMO wasn't selected during scoring */
-    if (allow_am && ((status != UCS_OK) || !memaccess_selected)) {
+    if (allow_am && ((status != UCS_OK) || !num_memaccess_lanes)) {
         *need_am = 1; /* using emulation over active messages */
         status = UCS_OK;
     }
@@ -1088,13 +1095,13 @@ static int ucp_wireup_is_ep_single_lane(ucp_ep_h ep, ucp_rsc_index_t rsc_index)
            (ep->worker->context->tl_rscs[rsc_index].tl_rsc.dev_type == UCT_DEVICE_TYPE_SELF);
 }
 
-static ucs_status_t ucp_wireup_add_bw_lanes(ucp_ep_h ep, unsigned address_count,
-                                            const ucp_address_entry_t *address_list,
-                                            const ucp_wireup_select_bw_info_t *bw_info,
-                                            int allow_proxy, uint64_t tl_bitmap,
-                                            ucp_wireup_lane_desc_t *lane_descs,
-                                            ucp_lane_index_t *num_lanes_p,
-                                            const ucp_wireup_select_info_t *am_info)
+static ucs_status_t
+ucp_wireup_add_bw_lanes(ucp_ep_h ep, unsigned address_count,
+                        const ucp_address_entry_t *address_list,
+                        const ucp_wireup_select_bw_info_t *bw_info,
+                        int allow_proxy, uint64_t tl_bitmap,
+                        ucp_wireup_lane_desc_t *lane_descs,
+                        ucp_lane_index_t *num_lanes_p, double am_scale_score)
 {
     ucp_context_h context                = ep->worker->context;
     ucp_wireup_select_info_t select_info = {0};
@@ -1128,7 +1135,7 @@ static ucs_status_t ucp_wireup_add_bw_lanes(ucp_ep_h ep, unsigned address_count,
              *   AM transport */
             (!ucp_wireup_is_scalable_transport(select_info.score.scale) &&
              (ucp_wireup_score_cmp(select_info.score.scale,
-                                   am_info->score.scale) < 0))) {
+                                   am_scale_score) < 0))) {
             break;
         }
 
@@ -1218,8 +1225,8 @@ static ucs_status_t ucp_wireup_add_am_bw_lanes(ucp_ep_h ep, const ucp_ep_params_
         }
     }
 
-    return ucp_wireup_add_bw_lanes(ep, address_count, address_list, &bw_info, 1,
-                                   -1, lane_descs, num_lanes_p, am_info);
+    return ucp_wireup_add_bw_lanes(ep, address_count, address_list, &bw_info, 1, -1,
+                                   lane_descs, num_lanes_p, am_info->score.scale);
 }
 
 static ucs_status_t ucp_wireup_add_rma_bw_lanes(ucp_ep_h ep, const ucp_ep_params_t *params,
@@ -1231,6 +1238,7 @@ static ucs_status_t ucp_wireup_add_rma_bw_lanes(ucp_ep_h ep, const ucp_ep_params
 {
     ucp_wireup_select_bw_info_t bw_info;
     ucs_memory_type_t mem_type;
+    double am_scale_score;
 
     if (ep_init_flags & UCP_EP_INIT_FLAG_MEM_TYPE) {
         bw_info.criteria.remote_md_flags = 0;
@@ -1265,6 +1273,14 @@ static ucs_status_t ucp_wireup_add_rma_bw_lanes(ucp_ep_h ep, const ucp_ep_params
     bw_info.max_lanes         = ep->worker->context->config.ext.max_rndv_lanes;
     bw_info.usage             = UCP_WIREUP_LANE_USAGE_RMA_BW;
 
+    if (ucp_wireup_allow_am_emulation_layer(params, ep_init_flags)) {
+        am_scale_score = am_info->score.scale;
+    } else {
+        /* If emulateion over AM isn't allowed, make AM
+         * transport a loser of all comparisons */
+        am_scale_score = 0.0;
+    }
+
     for (mem_type = 0; mem_type < UCS_MEMORY_TYPE_LAST; mem_type++) {
         if (!ep->worker->context->mem_type_access_tls[mem_type]) {
             continue;
@@ -1272,7 +1288,7 @@ static ucs_status_t ucp_wireup_add_rma_bw_lanes(ucp_ep_h ep, const ucp_ep_params
 
         ucp_wireup_add_bw_lanes(ep, address_count, address_list, &bw_info, 0,
                                 ep->worker->context->mem_type_access_tls[mem_type],
-                                lane_descs, num_lanes_p, am_info);
+                                lane_descs, num_lanes_p, am_scale_score);
     }
 
     return UCS_OK;
