@@ -146,10 +146,12 @@ out:
 
 ucs_status_t ucs_socket_connect_nb_get_status(int fd)
 {
-    socklen_t conn_status_sz;
+    socklen_t conn_status_sz, sock_addr_len;
+    struct sockaddr sock_addr;
     int ret, conn_status;
 
     conn_status_sz = sizeof(conn_status);
+    sock_addr_len  = sizeof(sock_addr);
 
     ret = getsockopt(fd, SOL_SOCKET, SO_ERROR,
                      &conn_status, &conn_status_sz);
@@ -165,6 +167,13 @@ ucs_status_t ucs_socket_connect_nb_get_status(int fd)
     if (conn_status != 0) {
         ucs_error("SOL_SOCKET(SO_ERROR) status on fd %d: %s",
                   fd, strerror(conn_status));
+        return UCS_ERR_UNREACHABLE;
+    }
+
+    /* Double check that the connection was established */
+    ret = getpeername(fd, &sock_addr, &sock_addr_len);
+    if (ret < 0) {
+        ucs_error("getpeername(fd=%d) failed: %m", fd);
         return UCS_ERR_UNREACHABLE;
     }
 
