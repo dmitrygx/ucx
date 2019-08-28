@@ -11,9 +11,10 @@
 #include <uct/ib/mlx5/ib_mlx5_log.h>
 
 #define UCT_RC_MLX5_EP_DECL(_tl_ep, _iface, _ep) \
-    uct_rc_mlx5_ep_t *_ep = ucs_derived_of(_tl_ep, uct_rc_mlx5_ep_t); \
-    uct_rc_mlx5_iface_common_t *_iface = ucs_derived_of(_tl_ep->iface, \
-                                                        uct_rc_mlx5_iface_common_t)
+    uct_rc_mlx5_ep_t UCS_V_UNUSED *_ep = \
+        ucs_derived_of(_tl_ep, uct_rc_mlx5_ep_t); \
+    uct_rc_mlx5_iface_common_t UCS_V_UNUSED *_iface = \
+        ucs_derived_of(_tl_ep->iface, uct_rc_mlx5_iface_common_t)
 
 static UCS_F_ALWAYS_INLINE void
 uct_rc_mlx5_common_update_tx_res(uct_rc_iface_t *rc_iface, uct_ib_mlx5_txwq_t *txwq,
