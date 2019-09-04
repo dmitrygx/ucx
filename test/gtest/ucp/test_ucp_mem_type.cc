@@ -87,6 +87,10 @@ public:
     virtual void init() {
         m_send_buffer.reset(new mem_buffer(m_size, mem_type()));
         m_recv_buffer.reset(new mem_buffer(m_size, mem_type()));
+
+        memset(m_send_buffer->ptr(), 0, m_size);
+        memset(m_recv_buffer->ptr(), 0, m_size);
+
         test_ucp_mem_type::init();
     }
 
