@@ -164,6 +164,7 @@ ucs_status_t uct_tcp_cm_send_event(uct_tcp_ep_t *ep, uct_tcp_cm_conn_event_t eve
                             UCT_TCP_CM_CONN_ACK |
                             UCT_TCP_CM_CONN_WAIT_REQ)),
                 "ep=%p", ep);
+    ucs_assertv(uct_tcp_ep_ctx_buf_empty(&ep->tx), "ep=%p", ep);
 
     pkt_length        = sizeof(*pkt_hdr);
     if (event == UCT_TCP_CM_CONN_REQ) {
@@ -403,6 +404,38 @@ static ucs_status_t uct_tcp_cm_handle_simult_conn(uct_tcp_iface_t *iface,
     return status;
 }
 
+static ucs_status_t uct_tcp_cm_handle_pending(uct_pending_req_t *self)
+{
+    uct_tcp_cm_pending_req_t *req =
+        ucs_derived_of(self, uct_tcp_cm_pending_req_t);
+    ucs_status_t status;
+
+    if (uct_tcp_ep_ctx_buf_empty(&req->ep->tx)) {
+        status = uct_tcp_cm_send_event(req->ep, req->event);
+        ucs_free(req);
+        return status;
+    }
+
+    return UCS_ERR_NO_RESOURCE;
+}
+
+static ucs_status_t
+uct_tcp_cm_pending_add(uct_tcp_ep_t *ep, uct_tcp_cm_conn_event_t event)
+{
+    uct_tcp_cm_pending_req_t *req;
+
+    req = ucs_calloc(1, sizeof(*req), "uct_tcp_cm_pending_req_t");
+    if (req == NULL) {
+        return UCS_ERR_NO_MEMORY;
+    }
+
+    req->super.func = uct_tcp_cm_handle_pending;
+    req->ep         = ep;
+    req->event      = event;
+
+    return uct_tcp_ep_pending_add(&ep->super.super, &req->super, 0);
+}
+
 static unsigned
 uct_tcp_cm_handle_conn_req(uct_tcp_ep_t **ep_p,
                            const uct_tcp_cm_conn_req_pkt_t *cm_req_pkt)
@@ -424,11 +457,21 @@ uct_tcp_cm_handle_conn_req(uct_tcp_ep_t **ep_p,
     }
 
     if (ep->conn_state == UCT_TCP_EP_CONN_STATE_CONNECTED) {
-        status = uct_tcp_cm_send_event(ep, UCT_TCP_CM_CONN_ACK);
-        if (status != UCS_OK) {
-            goto err;
+        if (uct_tcp_ep_ctx_buf_empty(&ep->tx)) {
+            status = uct_tcp_cm_send_event(ep, UCT_TCP_CM_CONN_ACK);
+            if (status != UCS_OK) {
+                goto err;
+            }
+
+            return 1;
+        } else {
+            status = uct_tcp_cm_pending_add(ep, UCT_TCP_CM_CONN_ACK);
+            if (status != UCS_OK) {
+                goto err;
+            }
+
+            return 0;
         }
-        return 1;
     }
 
     ucs_assertv(!(ep->ctx_caps & UCS_BIT(UCT_TCP_EP_CTX_TYPE_TX)),

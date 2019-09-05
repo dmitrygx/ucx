@@ -169,6 +169,16 @@ typedef struct uct_tcp_cm_conn_req_pkt {
 
 
 /**
+ * TCP connection data pending request
+ */
+typedef struct uct_tcp_cm_pending_req {
+    uct_pending_req_t             super;
+    uct_tcp_ep_t                  *ep;
+    uct_tcp_cm_conn_event_t       event;
+} uct_tcp_cm_pending_req_t;
+
+
+/**
  * TCP active message header
  */
 typedef struct uct_tcp_am_hdr {
@@ -401,6 +411,12 @@ static inline unsigned uct_tcp_ep_progress_tx(uct_tcp_ep_t *ep)
     return uct_tcp_ep_cm_state[ep->conn_state].tx_progress(ep);
 }
 
+static inline int uct_tcp_ep_ctx_buf_empty(uct_tcp_ep_ctx_t *ctx)
+{
+    ucs_assert((ctx->length == 0) || (ctx->buf != NULL));
+
+    return ctx->length == 0;
+}
 
 /**
  * Query for active network devices under /sys/class/net, as determined by

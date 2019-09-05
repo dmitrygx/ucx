@@ -43,13 +43,6 @@ const uct_tcp_cm_state_t uct_tcp_ep_cm_state[] = {
     }
 };
 
-static inline int uct_tcp_ep_ctx_buf_empty(uct_tcp_ep_ctx_t *ctx)
-{
-    ucs_assert((ctx->length == 0) || (ctx->buf != NULL));
-
-    return ctx->length == 0;
-}
-
 static inline int uct_tcp_ep_ctx_buf_need_progress(uct_tcp_ep_ctx_t *ctx)
 {
     ucs_assert(ctx->offset <= ctx->length);
