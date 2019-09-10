@@ -257,6 +257,8 @@ typedef struct uct_tcp_iface {
         size_t                    sndbuf;            /* SO_SNDBUF */
         size_t                    rcvbuf;            /* SO_RCVBUF */
     } sockopt;
+
+    size_t connected;
 } uct_tcp_iface_t;
 
 

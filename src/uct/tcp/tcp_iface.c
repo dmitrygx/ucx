@@ -434,6 +434,7 @@ static UCS_CLASS_INIT_FUNC(uct_tcp_iface_t, uct_md_h md, uct_worker_h worker,
 
     ucs_strncpy_zero(self->if_name, params->mode.device.dev_name,
                      sizeof(self->if_name));
+    self->connected          = 0;
     self->outstanding        = 0;
     self->config.tx_seg_size = config->tx_seg_size +
                                sizeof(uct_tcp_am_hdr_t);
@@ -596,6 +597,8 @@ static UCS_CLASS_CLEANUP_FUNC(uct_tcp_iface_t)
 
     uct_tcp_iface_listen_close(self);
     ucs_event_set_cleanup(self->event_set);
+
+    fprintf(stderr, "%d: CONNECTED: %zu\n", getpid(), self->connected);
 }
 
 UCS_CLASS_DEFINE(uct_tcp_iface_t, uct_base_iface_t);
