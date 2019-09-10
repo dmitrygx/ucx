@@ -19,6 +19,9 @@ void uct_tcp_cm_change_conn_state(uct_tcp_ep_t *ep,
     char str_ctx_caps[UCT_TCP_EP_CTX_CAPS_STR_MAX];
     uct_tcp_ep_conn_state_t old_conn_state;
 
+    char hostname_val[UCS_SOCKADDR_STRING_LEN];
+    gethostname(hostname_val, UCS_SOCKADDR_STRING_LEN);
+
     old_conn_state = ep->conn_state;
     ep->conn_state = new_conn_state;
 
@@ -49,7 +52,7 @@ void uct_tcp_cm_change_conn_state(uct_tcp_ep_t *ep,
             uct_tcp_iface_outstanding_dec(iface);
         }
         iface->connected++;
-        fprintf(stderr, "%d: INC_CONN: %zu\n", getpid(), iface->connected);
+        fprintf(stderr, "%s_%d: INC_CONN: %zu\n", hostname_val, getpid(), iface->connected);
         if (ep->ctx_caps & UCS_BIT(UCT_TCP_EP_CTX_TYPE_TX)) {
             /* Progress possibly pending TX operations */
             uct_tcp_ep_pending_queue_dispatch(ep);
