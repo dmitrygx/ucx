@@ -159,6 +159,8 @@ static UCS_CLASS_INIT_FUNC(uct_tcp_ep_t, uct_tcp_iface_t *iface,
     UCS_CLASS_CALL_SUPER_INIT(uct_base_ep_t, &iface->super)
 
     uct_tcp_ep_addr_init(&self->peer_addr, dest_addr);
+    ucs_sockaddr_str((const struct sockaddr *)&self->peer_addr, self->peer_addr_str,
+                     UCS_SOCKADDR_STRING_LEN);
 
     uct_tcp_ep_ctx_init(&self->tx);
     uct_tcp_ep_ctx_init(&self->rx);
