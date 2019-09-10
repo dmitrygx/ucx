@@ -212,6 +212,7 @@ struct uct_tcp_ep {
     uct_tcp_ep_ctx_t              tx;          /* TX resources */
     uct_tcp_ep_ctx_t              rx;          /* RX resources */
     struct sockaddr_in            peer_addr;   /* Remote iface addr */
+    char                          peer_addr_str[UCS_SOCKADDR_STRING_LEN];
     ucs_queue_head_t              pending_q;   /* Pending operations */
     ucs_list_link_t               list;
 };
