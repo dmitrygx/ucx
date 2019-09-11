@@ -32,7 +32,8 @@ void uct_tcp_cm_change_conn_state(uct_tcp_ep_t *ep,
             uct_tcp_iface_outstanding_inc(iface);
         } else {
             ucs_assert((ep->conn_state == UCT_TCP_EP_CONN_STATE_CONNECTING) ||
-                       (old_conn_state == UCT_TCP_EP_CONN_STATE_CONNECTING));
+                       (old_conn_state == UCT_TCP_EP_CONN_STATE_CONNECTING) ||
+                       (old_conn_state == UCT_TCP_EP_CONN_STATE_ACCEPTING));
         }
         break;
     case UCT_TCP_EP_CONN_STATE_WAITING_REQ:
@@ -425,6 +426,8 @@ uct_tcp_cm_handle_conn_req(uct_tcp_ep_t **ep_p,
                      UCS_SOCKADDR_STRING_LEN);
     uct_tcp_cm_trace_conn_pkt(ep, UCS_LOG_LEVEL_TRACE,
                               "%s received from", UCT_TCP_CM_CONN_REQ);
+    uct_tcp_cm_change_conn_state(ep, UCT_TCP_EP_CONN_STATE_CONNECTING);
+
 
     status = uct_tcp_ep_add_ctx_cap(ep, UCT_TCP_EP_CTX_TYPE_RX);
     if (status != UCS_OK) {
