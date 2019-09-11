@@ -278,6 +278,9 @@ static UCS_CLASS_CLEANUP_FUNC(uct_tcp_ep_t)
     uct_tcp_iface_t UCS_V_UNUSED *iface =
         ucs_derived_of(self->super.super.iface, uct_tcp_iface_t);
 
+    ucs_assertv(self->conn_state != UCT_TCP_EP_CONN_STATE_ACCEPTING,
+                "ep=%p", self);
+
     uct_tcp_ep_mod_events(self, 0, self->events);
 
     if (self->ctx_caps & UCS_BIT(UCT_TCP_EP_CTX_TYPE_TX)) {
