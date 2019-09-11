@@ -30,10 +30,11 @@ void uct_tcp_cm_change_conn_state(uct_tcp_ep_t *ep,
     case UCT_TCP_EP_CONN_STATE_WAITING_ACK:
         if (old_conn_state == UCT_TCP_EP_CONN_STATE_CLOSED) {
             uct_tcp_iface_outstanding_inc(iface);
+        } else if (old_conn_state == UCT_TCP_EP_CONN_STATE_ACCEPTING) {
+            uct_tcp_iface_outstanding_inc(iface);
         } else {
             ucs_assert((ep->conn_state == UCT_TCP_EP_CONN_STATE_CONNECTING) ||
-                       (old_conn_state == UCT_TCP_EP_CONN_STATE_CONNECTING) ||
-                       (old_conn_state == UCT_TCP_EP_CONN_STATE_ACCEPTING));
+                       (old_conn_state == UCT_TCP_EP_CONN_STATE_CONNECTING));
         }
         break;
     case UCT_TCP_EP_CONN_STATE_WAITING_REQ:
