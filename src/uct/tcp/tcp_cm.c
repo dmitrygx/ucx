@@ -32,6 +32,9 @@ void uct_tcp_cm_change_conn_state(uct_tcp_ep_t *ep,
             uct_tcp_iface_outstanding_inc(iface);
         } else if (old_conn_state == UCT_TCP_EP_CONN_STATE_ACCEPTING) {
             uct_tcp_iface_outstanding_inc(iface);
+        } else if ((ep->conn_state == UCT_TCP_EP_CONN_STATE_CONNECTING) &&
+                   (old_conn_state == UCT_TCP_EP_CONN_STATE_CONNECTING)) {
+            uct_tcp_iface_outstanding_inc(iface);
         } else {
             ucs_assert((ep->conn_state == UCT_TCP_EP_CONN_STATE_CONNECTING) ||
                        (old_conn_state == UCT_TCP_EP_CONN_STATE_CONNECTING));
