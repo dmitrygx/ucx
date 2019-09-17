@@ -54,6 +54,9 @@ static ucs_config_field_t uct_tcp_iface_config_table[] = {
    "option usually provides better performance",
    ucs_offsetof(uct_tcp_iface_config_t, sockopt_nodelay), UCS_CONFIG_TYPE_BOOL},
 
+  {"CONN_QUOTA", "32", "",
+   ucs_offsetof(uct_tcp_iface_config_t, conn_quota), UCS_CONFIG_TYPE_ULUNITS},
+
   {"SNDBUF", "auto",
    "Socket send buffer size",
    ucs_offsetof(uct_tcp_iface_config_t, sockopt_sndbuf), UCS_CONFIG_TYPE_MEMUNITS},
@@ -230,6 +233,44 @@ void uct_tcp_iface_outstanding_dec(uct_tcp_iface_t *iface)
 {
     ucs_assert(iface->outstanding > 0);
     iface->outstanding--;
+}
+
+void uct_tcp_iface_conn_quota_release(uct_tcp_iface_t *iface)
+{
+    uct_tcp_ep_pending_list_elem_t *pending_ep;
+
+    iface->conn_quota++;
+    ucs_assert(iface->conn_quota <= iface->config.max_conn_quota);
+
+    if (!ucs_list_is_empty(&iface->pending_ep_list)) {
+        pending_ep = ucs_list_extract_head(&iface->pending_ep_list,
+                                           uct_tcp_ep_pending_list_elem_t,
+                                           list);
+        uct_tcp_cm_conn_start(pending_ep->ep);
+        ucs_free(pending_ep);
+    }
+}
+
+ucs_status_t uct_tcp_iface_conn_quota_acquire(uct_tcp_iface_t *iface,
+                                              uct_tcp_ep_t *ep)
+{
+    uct_tcp_ep_pending_list_elem_t *pending_ep;
+
+    if (!iface->conn_quota) {
+        pending_ep = ucs_calloc(1, sizeof(*pending_ep), "pending ep");
+        if (pending_ep == NULL) {
+            return UCS_ERR_NO_MEMORY;
+        }
+
+        pending_ep->ep = ep;
+        ucs_list_add_tail(&iface->pending_ep_list, &ep->list);
+
+        return UCS_ERR_NO_RESOURCE;
+    }
+
+    iface->conn_quota--;
+
+    return UCS_OK;
 }
 
 static void uct_tcp_iface_listen_close(uct_tcp_iface_t *iface)
@@ -445,12 +486,14 @@ static UCS_CLASS_INIT_FUNC(uct_tcp_iface_t, uct_md_h md, uct_worker_h worker,
 
     ucs_strncpy_zero(self->if_name, params->mode.device.dev_name,
                      sizeof(self->if_name));
-    self->connected          = 0;
-    self->outstanding        = 0;
-    self->config.tx_seg_size = config->tx_seg_size +
-                               sizeof(uct_tcp_am_hdr_t);
-    self->config.rx_seg_size = config->rx_seg_size +
-                               sizeof(uct_tcp_am_hdr_t);
+    self->connected             = 0;
+    self->outstanding           = 0;
+    self->conn_quota            = config->conn_quota;
+    self->config.max_conn_quota = config->conn_quota;
+    self->config.tx_seg_size    = config->tx_seg_size +
+                                  sizeof(uct_tcp_am_hdr_t);
+    self->config.rx_seg_size    = config->rx_seg_size +
+                                  sizeof(uct_tcp_am_hdr_t);
 
     if (ucs_iov_get_max() >= UCT_TCP_EP_AM_SHORTV_IOV_COUNT) {
         self->config.sendv_thresh = config->sendv_thresh;
@@ -486,6 +529,7 @@ static UCS_CLASS_INIT_FUNC(uct_tcp_iface_t, uct_md_h md, uct_worker_h worker,
     self->sockopt.sndbuf        = config->sockopt_sndbuf;
     self->sockopt.rcvbuf        = config->sockopt_rcvbuf;
     ucs_list_head_init(&self->ep_list);
+    ucs_list_head_init(&self->pending_ep_list);
     kh_init_inplace(uct_tcp_cm_eps, &self->ep_cm_map);
 
     if (self->config.tx_seg_size > self->config.rx_seg_size) {

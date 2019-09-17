@@ -217,6 +217,11 @@ struct uct_tcp_ep {
     ucs_list_link_t               list;
 };
 
+typedef struct uct_tcp_ep_pending_list_elem {
+    uct_tcp_ep_t                  *ep;
+    ucs_list_link_t               list;
+} uct_tcp_ep_pending_list_elem_t;
+
 
 /**
  * TCP interface
@@ -231,6 +236,8 @@ typedef struct uct_tcp_iface {
     ucs_sys_event_set_t           *event_set;        /* Event set identifier */
     ucs_mpool_t                   tx_mpool;          /* TX memory pool */
     ucs_mpool_t                   rx_mpool;          /* RX memory pool */
+    ucs_list_link_t               pending_ep_list;
+    size_t                        conn_quota;
     size_t                        outstanding;       /* How much data in the EP send buffers
                                                       * + how many non-blocking connections
                                                       * are in progress */
@@ -251,6 +258,7 @@ typedef struct uct_tcp_iface {
         struct sockaddr_in        netmask;           /* Network address mask */
         int                       prefer_default;    /* Prefer default gateway */
         unsigned                  max_poll;          /* Number of events to poll per socket*/
+        size_t                    max_conn_quota;
     } config;
 
     struct {
@@ -274,6 +282,7 @@ typedef struct uct_tcp_iface_config {
     size_t                        sendv_thresh;
     int                           prefer_default;
     unsigned                      max_poll;
+    size_t                        conn_quota;
     int                           sockopt_nodelay;
     size_t                        sockopt_sndbuf;
     size_t                        sockopt_rcvbuf;
@@ -306,6 +315,11 @@ size_t uct_tcp_iface_get_max_zcopy_header(const uct_tcp_iface_t *iface);
 void uct_tcp_iface_outstanding_inc(uct_tcp_iface_t *iface);
 
 void uct_tcp_iface_outstanding_dec(uct_tcp_iface_t *iface);
+
+void uct_tcp_iface_conn_quota_release(uct_tcp_iface_t *iface);
+
+ucs_status_t uct_tcp_iface_conn_quota_acquire(uct_tcp_iface_t *iface,
+                                              uct_tcp_ep_t *ep);
 
 void uct_tcp_iface_add_ep(uct_tcp_ep_t *ep);
 

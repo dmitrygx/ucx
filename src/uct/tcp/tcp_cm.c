@@ -526,7 +526,11 @@ unsigned uct_tcp_cm_handle_conn_pkt(uct_tcp_ep_t **ep, void *pkt, uint32_t lengt
 
 unsigned uct_tcp_cm_conn_progress(uct_tcp_ep_t *ep)
 {
+    uct_tcp_iface_t *iface = ucs_derived_of(ep->super.super.iface,
+                                            uct_tcp_iface_t);
     ucs_status_t status;
+
+    uct_tcp_iface_conn_quota_release(iface);
 
     if (!ucs_socket_is_connected(ep->fd)) {
         ucs_error("tcp_ep %p: connection establishment for "
@@ -553,30 +557,34 @@ err:
 
 ucs_status_t uct_tcp_cm_conn_start(uct_tcp_ep_t *ep)
 {
-    uct_tcp_ep_conn_state_t new_conn_state;
-    uint32_t req_events;
+    uct_tcp_iface_t *iface = ucs_derived_of(ep->super.super.iface,
+                                            uct_tcp_iface_t);
     ucs_status_t status;
+
+    status = uct_tcp_iface_conn_quota_acquire(iface, ep);
+    if (status != UCS_OK) {
+        uct_tcp_cm_change_conn_state(ep, UCT_TCP_EP_CONN_STATE_CONNECTING);
+        return (status == UCS_ERR_NO_RESOURCE) ? UCS_OK : status;
+    }
 
     status = ucs_socket_connect(ep->fd, (const struct sockaddr*)&ep->peer_addr);
     if (status == UCS_INPROGRESS) {
-        new_conn_state  = UCT_TCP_EP_CONN_STATE_CONNECTING;
-        req_events      = UCS_EVENT_SET_EVWRITE;
-        status          = UCS_OK;
+        uct_tcp_cm_change_conn_state(ep, UCT_TCP_EP_CONN_STATE_CONNECTING);
+        uct_tcp_ep_mod_events(ep, UCS_EVENT_SET_EVWRITE, 0);
+
+        return UCS_OK;
     } else if (status == UCS_OK) {
         status = uct_tcp_cm_send_event(ep, UCT_TCP_CM_CONN_REQ);
         if (status != UCS_OK) {
-            return status;
+            goto out;
         }
 
-        new_conn_state  = UCT_TCP_EP_CONN_STATE_WAITING_ACK;
-        req_events      = UCS_EVENT_SET_EVREAD;
-    } else {
-        new_conn_state  = UCT_TCP_EP_CONN_STATE_CLOSED;
-        req_events      = 0;
+        uct_tcp_cm_change_conn_state(ep, UCT_TCP_EP_CONN_STATE_WAITING_ACK);
+        uct_tcp_ep_mod_events(ep, UCS_EVENT_SET_EVREAD, 0);
     }
 
-    uct_tcp_cm_change_conn_state(ep, new_conn_state);
-    uct_tcp_ep_mod_events(ep, req_events, 0);
+out:
+    uct_tcp_iface_conn_quota_release(iface);
     return status;
 }
 
