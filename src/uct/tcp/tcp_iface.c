@@ -238,7 +238,6 @@ void uct_tcp_iface_outstanding_dec(uct_tcp_iface_t *iface)
 void uct_tcp_iface_conn_quota_release(uct_tcp_iface_t *iface)
 {
     uct_tcp_ep_pending_list_elem_t *pending_ep;
-    ucs_status_t status;
 
     iface->conn_quota++;
     ucs_assert(iface->conn_quota <= iface->config.max_conn_quota);
@@ -247,12 +246,6 @@ void uct_tcp_iface_conn_quota_release(uct_tcp_iface_t *iface)
         pending_ep = ucs_list_extract_head(&iface->pending_ep_list,
                                            uct_tcp_ep_pending_list_elem_t,
                                            list);
-
-        status = uct_tcp_iface_conn_quota_acquire(iface, pending_ep->ep);
-        if (status != UCS_OK) {
-            return;
-        }
-
         uct_tcp_cm_conn_start(pending_ep->ep);
         ucs_free(pending_ep);
     }
@@ -270,7 +263,7 @@ ucs_status_t uct_tcp_iface_conn_quota_acquire(uct_tcp_iface_t *iface,
         }
 
         pending_ep->ep = ep;
-        ucs_list_add_tail(&iface->pending_ep_list, &ep->list);
+        ucs_list_add_tail(&iface->pending_ep_list, &pending_ep->list);
 
         return UCS_ERR_NO_RESOURCE;
     }
