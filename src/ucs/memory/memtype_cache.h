@@ -11,6 +11,7 @@
 
 #include <ucs/datastruct/pgtable.h>
 #include <ucs/datastruct/list.h>
+#include <ucs/sys/iovec.h>
 #include <ucs/stats/stats_fwd.h>
 #include <ucs/sys/compiler_def.h>
 
@@ -20,17 +21,16 @@ BEGIN_C_DECLS
 typedef struct ucs_memtype_cache         ucs_memtype_cache_t;
 typedef struct ucs_memtype_cache_region  ucs_memtype_cache_region_t;
 
-
 struct ucs_memtype_cache_region {
-    ucs_pgt_region_t    super;    /**< Base class - page table region */
-    ucs_list_link_t     list;     /**< List element */
+    struct iovec        iov;
     ucs_memory_type_t   mem_type; /**< Memory type the address belongs to */
+    ucs_list_link_t     list;
 };
 
 
 struct ucs_memtype_cache {
-    pthread_rwlock_t      lock;       /**< protests the page table */
-    ucs_pgtable_t         pgtable;    /**< Page table to hold the regions */
+    pthread_rwlock_t    lock;       /**< protests the page table */
+    void                *tree;
 };
 
 
@@ -48,6 +48,9 @@ ucs_status_t ucs_memtype_cache_create(ucs_memtype_cache_t **memtype_cache_p);
  * @param [in]  memtype_cache       Memtype cache to destroy.
  */
 void ucs_memtype_cache_destroy(ucs_memtype_cache_t *memtype_cache);
+
+
+int ucs_memtype_cache_is_empty(ucs_memtype_cache_t *memtype_cache);
 
 
 /**

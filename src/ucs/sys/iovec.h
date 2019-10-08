@@ -59,6 +59,30 @@ void ucs_iov_advance(struct iovec *iov, size_t iov_cnt,
  */
 size_t ucs_iov_get_max();
 
+
+/**
+ * Check if starting address of iov1 is less than starting address of iov2
+ *
+ * @param [in] iov1               Pointer to first iovec element
+ * @param [in] iov2               Pointer to second iovec element
+ *
+ * @return Retunrs 1 if starting address of iov1 is less than starting
+ *         address of iov2, otherwise 0 is returned
+ */
+int ucs_iov_left(const struct iovec *iov1, const struct iovec *iov2);
+
+
+/**
+ * Check if starting address of iov2 is less than starting address of iov1
+ *
+ * @param [in] iov1               Pointer to first iovec element
+ * @param [in] iov2               Pointer to second iovec element
+ *
+ * @return Retunrs 1 if starting address of iov2 is less than starting
+ *         address of iov1, otherwise 0 is returned
+ */
+int ucs_iov_right(const struct iovec *iov1, const struct iovec *iov2);
+
 END_C_DECLS
 
 #endif

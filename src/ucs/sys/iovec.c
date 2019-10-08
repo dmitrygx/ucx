@@ -104,3 +104,13 @@ size_t ucs_iov_get_max()
 
     return max_iov;
 }
+
+int ucs_iov_left(const struct iovec *iov1, const struct iovec *iov2)
+{
+    return (UCS_PTR_BYTE_OFFSET(iov1->iov_base, iov1->iov_len) <= iov2->iov_base);
+}
+
+int ucs_iov_right(const struct iovec *iov1, const struct iovec *iov2)
+{
+    return (iov1->iov_base >= UCS_PTR_BYTE_OFFSET(iov2->iov_base, iov2->iov_len));
+}
