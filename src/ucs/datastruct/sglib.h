@@ -738,6 +738,7 @@
   int _pathi_;\
   type *iteratedVariable;\
   _cn_ = (tree);\
+  (void)iteratedVariable;\
   _pathi_ = 0;\
   while (_cn_!=NULL) {\
     /* push down to leftmost innermost element */\
@@ -1444,6 +1445,7 @@ http://www.cis.ohio-state.edu/~gurari/course/cis680/cis680Ch11.html
 
 #define SGLIB___RBTREE_FIX_INSERTION_DISCREPANCY(type, tree, leftt, rightt, bits, RED, BLACK) {\
   type *t, *tl, *a, *b, *c, *ar, *bl, *br, *cl, *cr;\
+  (void)bl;\
   t = *tree;\
   tl = t->leftt;\
   if (t->rightt!=NULL && SGLIB___GET_VALUE(t->rightt->bits)==RED) {\
@@ -1479,6 +1481,7 @@ http://www.cis.ohio-state.edu/~gurari/course/cis680/cis680Ch11.html
       }\
     }\
   }\
+  (void)ar;\
 }
 
 #define SGLIB___RBTREE_FIX_DELETION_DISCREPANCY(type, tree, leftt, rightt, bits, RED, BLACK, res) {\
@@ -1599,6 +1602,7 @@ http://www.cis.ohio-state.edu/~gurari/course/cis680/cis680Ch11.html
       }\
     }\
   }\
+  (void)ar;\
 }
 
 
@@ -1764,6 +1768,7 @@ int sglib_##type##_len(type *t) {\
     type  *e;\
     n = 0;\
     SGLIB_BIN_TREE_MAP_ON_ELEMENTS(type, t, e, left, right, n++);\
+    (void)e;\
     return(n);\
 }\
 \
@@ -1771,6 +1776,7 @@ void sglib__##type##_it_compute_current_elem(struct sglib_##type##_iterator *it)
     int   i,j,cmp;\
     type  *s, *eqt;\
     int   (*subcomparator)(type *, type *);\
+    (void)cmp;\
     eqt = it->equalto;\
     subcomparator = it->subcomparator;\
     it->currentelem = NULL;\
