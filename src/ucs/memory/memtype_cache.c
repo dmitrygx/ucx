@@ -12,7 +12,7 @@
 
 #include <ucs/arch/atomic.h>
 #include <ucs/type/class.h>
-#include <ucs/datastruct/rbtree.h>
+#include <ucs/datastruct/sglib.h>
 #include <ucs/debug/log.h>
 #include <ucs/profile/profile.h>
 #include <ucs/debug/memtrack.h>
@@ -28,7 +28,25 @@
     UCS_PTR_BYTE_OFFSET((_region)->iov.iov_base, \
                         (_region)->iov.iov_len), \
     (_region)->mem_type
-                                              
+
+#define UCS_MEMTYPE_CACHE_RBTREE_CMP(_elem1, _elem2) \
+    (ucs_iov_left(&(_elem1)->iov, &(_elem2)->iov) ? -1 : \
+     (ucs_iov_right(&(_elem1)->iov, &(_elem2)->iov) ? 1 : 0))
+
+#define ucs_memtype_cache_add       sglib_ucs_memtype_cache_region_t_add
+#define ucs_memtype_cache_delete    sglib_ucs_memtype_cache_region_t_delete
+#define ucs_memtype_cache_find      sglib_ucs_memtype_cache_region_t_find_member
+#define ucs_memtype_cache_iter_init sglib_ucs_memtype_cache_region_t_it_init
+#define ucs_memtype_cache_iter_next sglib_ucs_memtype_cache_region_t_it_next
+
+
+SGLIB_DEFINE_RBTREE_PROTOTYPES(ucs_memtype_cache_region_t,
+                               left, right, color, UCS_MEMTYPE_CACHE_RBTREE_CMP)
+SGLIB_DEFINE_RBTREE_FUNCTIONS(ucs_memtype_cache_region_t,
+                              left, right, color, UCS_MEMTYPE_CACHE_RBTREE_CMP)
+
+     
+typedef struct sglib_ucs_memtype_cache_region_t_iterator ucs_memtype_cache_iter;
 
 
 typedef enum {
@@ -37,22 +55,9 @@ typedef enum {
 } ucs_memtype_cache_action_t;
 
 
-static int ucs_memtype_cache_find_overlapped(void *key1, void *key2)
-{
-    struct iovec *iov1 = key1, *iov2 = key2;
-
-    if (ucs_iov_left(iov1, iov2)) {
-        return -1;
-    } else if (ucs_iov_right(iov1, iov2)) {
-        return 1;
-    } else {
-        return 0;
-    }
-}
-
 int ucs_memtype_cache_is_empty(ucs_memtype_cache_t *memtype_cache)
 {
-    return (rbtBegin(memtype_cache->tree) == NULL);
+    return (memtype_cache->rbtree == NULL);
 }
 
 /* Lock must be held in write mode */
@@ -61,7 +66,6 @@ static void ucs_memtype_cache_insert(ucs_memtype_cache_t *memtype_cache,
                                      ucs_memory_type_t mem_type)
 {
     ucs_memtype_cache_region_t *region;
-    RbtStatus status;
 
     /* Allocate structure for new region */
     region = ucs_malloc(sizeof(ucs_memtype_cache_region_t),
@@ -75,14 +79,7 @@ static void ucs_memtype_cache_insert(ucs_memtype_cache_t *memtype_cache,
     region->iov.iov_len  = size;
     region->mem_type     = mem_type;
 
-    status = rbtInsert(memtype_cache->tree, &region->iov, region);
-    if (status != RBT_STATUS_OK) {
-        ucs_error("failed to insert "UCS_MEMTYPE_CACHE_REGION_FMT
-                  "from RB tree : %d",
-                  UCS_MEMTYPE_CACHE_REGION_ARG(region), status);
-        ucs_free(region);
-        return;
-    }
+    ucs_memtype_cache_add(&memtype_cache->rbtree, region);
 
     ucs_trace("inserted "UCS_MEMTYPE_CACHE_REGION_FMT" to RB tree",
               UCS_MEMTYPE_CACHE_REGION_ARG(region));
@@ -90,23 +87,16 @@ static void ucs_memtype_cache_insert(ucs_memtype_cache_t *memtype_cache,
 
 static ucs_memtype_cache_region_t*
 ucs_memtype_cache_find_region(ucs_memtype_cache_t *memtype_cache,
-                              void *address, size_t size, RbtIterator *iter)
+                              void *address, size_t size)
 {
-    struct iovec iov = {
-        .iov_base = address,
-        .iov_len  = size
+    ucs_memtype_cache_region_t key = {
+        .iov = {
+            .iov_base = address,
+            .iov_len  = size
+        }
     };
-    struct iovec *key;
-    ucs_memtype_cache_region_t *region;
 
-    *iter = rbtFind(memtype_cache->tree, &iov);
-    if (*iter == NULL) {
-        return NULL;
-    }
-
-    rbtKeyValue(memtype_cache->tree, *iter, (void**)&key, (void**)&region);
-
-    return region;
+    return ucs_memtype_cache_find(memtype_cache->rbtree, &key);
 }
 
 /* find and remove all regions which intersect with specified one */
@@ -116,22 +106,14 @@ ucs_memtype_cache_remove_matched_regions(ucs_memtype_cache_t *memtype_cache,
                                          ucs_list_link_t *found_regions)
 {
     ucs_memtype_cache_region_t *region;
-    RbtStatus rbt_status;
-    RbtIterator iter;
 
     while (1) {
-        region = ucs_memtype_cache_find_region(memtype_cache, address,
-                                               size, &iter);
+        region = ucs_memtype_cache_find_region(memtype_cache, address, size);
         if (region == NULL) {
             break;
         }
 
-        rbt_status = rbtErase(memtype_cache->tree, iter);
-        if (rbt_status != RBT_STATUS_OK) {
-            ucs_error("failed to remove "UCS_MEMTYPE_CACHE_REGION_FMT" from RB tree",
-                      UCS_MEMTYPE_CACHE_REGION_ARG(region));
-            continue;
-        }
+        ucs_memtype_cache_delete(&memtype_cache->rbtree, region);
 
         ucs_trace("removed "UCS_MEMTYPE_CACHE_REGION_FMT" from RB tree",
                   UCS_MEMTYPE_CACHE_REGION_ARG(region));
@@ -217,13 +199,12 @@ UCS_PROFILE_FUNC(ucs_status_t, ucs_memtype_cache_lookup,
                  size_t size, ucs_memory_type_t *mem_type_p)
 {
     ucs_memtype_cache_region_t *region;
-    RbtIterator iter;
     ucs_status_t status;
 
     pthread_rwlock_rdlock(&memtype_cache->lock);
 
     region = UCS_PROFILE_CALL(ucs_memtype_cache_find_region,
-                              memtype_cache, address, size, &iter);
+                              memtype_cache, address, size);
     if ((region == NULL) ||
         (UCS_PTR_BYTE_OFFSET(address, size) >
          UCS_PTR_BYTE_OFFSET(region->iov.iov_base,
@@ -255,11 +236,7 @@ static UCS_CLASS_INIT_FUNC(ucs_memtype_cache_t)
         goto err;
     }
 
-    self->tree = rbtNew(ucs_memtype_cache_find_overlapped);
-    if (self->tree == NULL) {
-        ucs_error("failed to create RB tree");
-        goto err_destroy_rwlock;
-    }
+    self->rbtree = NULL;
 
     status = ucm_set_event_handler(UCM_EVENT_MEM_TYPE_ALLOC |
                                    UCM_EVENT_MEM_TYPE_FREE |
@@ -269,13 +246,11 @@ static UCS_CLASS_INIT_FUNC(ucs_memtype_cache_t)
     if (status != UCS_OK) {
         ucs_error("failed to set UCM memtype event handler: %s",
                   ucs_status_string(status));
-        goto err_delete_tree;
+        goto err_destroy_rwlock;
     }
 
     return UCS_OK;
 
-err_delete_tree:
-    rbtDelete(self->tree);
 err_destroy_rwlock:
     pthread_rwlock_destroy(&self->lock);
 err:
@@ -284,9 +259,18 @@ err:
 
 static UCS_CLASS_CLEANUP_FUNC(ucs_memtype_cache_t)
 {
+    ucs_memtype_cache_region_t *region;
+    ucs_memtype_cache_iter iter;
+
     ucm_unset_event_handler((UCM_EVENT_MEM_TYPE_ALLOC | UCM_EVENT_MEM_TYPE_FREE),
                             ucs_memtype_cache_event_callback, self);
-    rbtDelete(self->tree);
+
+    for (region = ucs_memtype_cache_iter_init(&iter, self->rbtree);
+         ucs_memtype_cache_is_empty(self);
+         region = ucs_memtype_cache_iter_next(&iter)) {
+        ucs_free(region);
+    }
+
     pthread_rwlock_destroy(&self->lock);
 }
 

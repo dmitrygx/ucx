@@ -18,19 +18,22 @@
 
 BEGIN_C_DECLS
 
-typedef struct ucs_memtype_cache         ucs_memtype_cache_t;
-typedef struct ucs_memtype_cache_region  ucs_memtype_cache_region_t;
+typedef struct ucs_memtype_cache_region ucs_memtype_cache_region_t;
+typedef struct ucs_memtype_cache        ucs_memtype_cache_t;
 
 struct ucs_memtype_cache_region {
-    struct iovec        iov;
-    ucs_memory_type_t   mem_type; /**< Memory type the address belongs to */
-    ucs_list_link_t     list;
+    ucs_memory_type_t               mem_type; /**< Memory type the address belongs to */
+    struct iovec                    iov;      /**< Address and length of region */
+    ucs_list_link_t                 list;     /**< List element to insert into list of regions */
+    char                            color;  /**< Color field */
+    struct ucs_memtype_cache_region *left;  /**< Left successor */
+    struct ucs_memtype_cache_region *right; /**< Right successor */
 };
 
 
 struct ucs_memtype_cache {
-    pthread_rwlock_t    lock;       /**< protests the page table */
-    void                *tree;
+    pthread_rwlock_t           lock;  /**< Protects the page table */
+    ucs_memtype_cache_region_t *rbtree; /**< RB tree to hold the regions */
 };
 
 
