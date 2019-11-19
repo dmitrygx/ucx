@@ -19,6 +19,7 @@
 #include <ucs/stats/stats.h>
 #include <ucs/sys/sys.h>
 #include <ucs/sys/math.h>
+#include <ucs/sys/string.h>
 #include <ucm/api/ucm.h>
 
 
@@ -48,9 +49,9 @@ static void ucs_memtype_cache_pgt_dir_release(const ucs_pgtable_t *pgtable,
  * - Lock must be held in write mode
  * - start, end must be aligned to page size
  */
-static void ucs_memtype_cache_insert(ucs_memtype_cache_t *memtype_cache,
-                                     ucs_pgt_addr_t start, ucs_pgt_addr_t end,
-                                     ucs_memory_type_t mem_type)
+static ucs_status_t ucs_memtype_cache_insert(ucs_memtype_cache_t *memtype_cache,
+                                             ucs_pgt_addr_t start, ucs_pgt_addr_t end,
+                                             ucs_memory_type_t mem_type)
 {
     ucs_memtype_cache_region_t *region;
     ucs_status_t status;
@@ -66,7 +67,7 @@ static void ucs_memtype_cache_insert(ucs_memtype_cache_t *memtype_cache,
                              "memtype_cache_region");
     if (ret != 0) {
         ucs_warn("failed to allocate memtype_cache region");
-        return;
+        return UCS_ERR_NO_MEMORY;
     }
 
     ucs_assert((start % UCS_PGT_ADDR_ALIGN) == 0);
@@ -79,10 +80,15 @@ static void ucs_memtype_cache_insert(ucs_memtype_cache_t *memtype_cache,
     status = UCS_PROFILE_CALL(ucs_pgtable_insert, &memtype_cache->pgtable,
                               &region->super);
     if (status != UCS_OK) {
-        ucs_error("failed to insert region " UCS_PGT_REGION_FMT ": %s",
-                  UCS_PGT_REGION_ARG(&region->super), ucs_status_string(status));
+        ucs_error("failed to insert region " UCS_PGT_REGION_FMT
+                  " mem_type %s: %s", UCS_PGT_REGION_ARG(&region->super),
+                  ucs_memory_type_names[region->mem_type],
+                  ucs_status_string(status));
         ucs_free(region);
+        return status;
     }
+
+    return UCS_OK;
 }
 
 static void ucs_memtype_cache_region_collect_callback(const ucs_pgtable_t *pgtable,
@@ -95,6 +101,44 @@ static void ucs_memtype_cache_region_collect_callback(const ucs_pgtable_t *pgtab
     ucs_list_add_tail(list, &region->list);
 }
 
+/* access to the function must be protected by lock */
+static const char*
+ucs_memtype_cache_get_update_info_str(ucs_pgt_addr_t start, ucs_pgt_addr_t end,
+                                      ucs_memory_type_t mem_type,
+                                      ucs_memtype_cache_action_t action)
+{
+    static char str_buf[1024];
+    ucs_snprintf_zero(str_buf, 1024, "%s: [0x%lx..0x%lx] mem_type %s",
+                      ((action == UCS_MEMTYPE_CACHE_ACTION_SET_MEMTYPE) ?
+                       "update" : "remove"),
+                      start , end, ucs_memory_type_names[mem_type]);
+    return str_buf;
+}
+
+static void
+ucs_nmemtype_cache_print_error(ucs_list_link_t *region_list,
+                               ucs_list_link_t *del_region_list,
+                               ucs_pgt_addr_t start, ucs_pgt_addr_t end,
+                               ucs_memory_type_t mem_type,
+                               ucs_memtype_cache_action_t action)
+{
+    ucs_memtype_cache_region_t *region, *tmp;
+    ucs_error("error occured for {%s}",
+              ucs_memtype_cache_get_update_info_str(start, end,
+                                                    mem_type, action));
+    ucs_list_for_each_safe(region, tmp, region_list, list) {
+        ucs_error("found region: " UCS_PGT_REGION_FMT ", mem_type %s",
+                  UCS_PGT_REGION_ARG(&region->super),
+                  ucs_memory_type_names[region->mem_type]);
+    }
+
+    ucs_list_for_each_safe(region, tmp, del_region_list, list) {
+        ucs_error("found del region: " UCS_PGT_REGION_FMT ", mem_type %s",
+                  UCS_PGT_REGION_ARG(&region->super),
+                  ucs_memory_type_names[region->mem_type]);
+    }
+}
+
 UCS_PROFILE_FUNC_VOID(ucs_memtype_cache_update_internal,
                       (memtype_cache, address, size, mem_type, action),
                       ucs_memtype_cache_t *memtype_cache, const void *address,
@@ -103,6 +147,7 @@ UCS_PROFILE_FUNC_VOID(ucs_memtype_cache_update_internal,
 {
     ucs_memtype_cache_region_t *region, *tmp;
     UCS_LIST_HEAD(region_list);
+    UCS_LIST_HEAD(del_region_list);
     ucs_pgt_addr_t start, end, search_start, search_end;
     ucs_status_t status;
 
@@ -142,6 +187,7 @@ UCS_PROFILE_FUNC_VOID(ucs_memtype_cache_update_internal,
                 /* ignore regions which are not really overlapping and can't
                  * be merged because of different memory types */
                 ucs_list_del(&region->list);
+                ucs_list_add_tail(&del_region_list, &region->list);
                 continue;
             }
         }
@@ -152,13 +198,18 @@ UCS_PROFILE_FUNC_VOID(ucs_memtype_cache_update_internal,
             goto out_unlock;
         }
 
-        ucs_trace("memtype_cache: removed 0x%lx..0x%lx mem_type %s",
-                  region->super.start, region->super.end,
+        ucs_trace("memtype_cache: removed " UCS_PGT_REGION_FMT " mem_type %s",
+                  UCS_PGT_REGION_ARG(&region->super),
                   ucs_memory_type_names[region->mem_type]);
     }
 
     if (action == UCS_MEMTYPE_CACHE_ACTION_SET_MEMTYPE) {
-        ucs_memtype_cache_insert(memtype_cache, start, end, mem_type);
+        status = ucs_memtype_cache_insert(memtype_cache, start, end, mem_type);
+        if (status != UCS_OK) {
+            ucs_nmemtype_cache_print_error(&region_list, &del_region_list,
+                                           search_start, search_end,
+                                           mem_type, action);
+        }
     }
 
     /* slice old regions by the new region, to preserve the previous memory type
@@ -167,13 +218,24 @@ UCS_PROFILE_FUNC_VOID(ucs_memtype_cache_update_internal,
     ucs_list_for_each_safe(region, tmp, &region_list, list) {
         if (start > region->super.start) {
             /* create previous region */
-            ucs_memtype_cache_insert(memtype_cache, region->super.start, start,
-                                     region->mem_type);
+            status = ucs_memtype_cache_insert(memtype_cache, region->super.start,
+                                              start, region->mem_type);
+            if (status != UCS_OK) {
+                ucs_nmemtype_cache_print_error(&region_list, &del_region_list,
+                                               search_start, search_end,
+                                               mem_type, action);
+            }
         }
         if (end < region->super.end) {
             /* create next region */
-            ucs_memtype_cache_insert(memtype_cache, end, region->super.end,
-                                     region->mem_type);
+            status = ucs_memtype_cache_insert(memtype_cache, end,
+                                              region->super.end,
+                                              region->mem_type);
+            if (status != UCS_OK) {
+                ucs_nmemtype_cache_print_error(&region_list, &del_region_list,
+                                               search_start, search_end,
+                                               mem_type, action);
+            }
         }
 
         ucs_free(region);
@@ -189,6 +251,14 @@ void ucs_memtype_cache_update(ucs_memtype_cache_t *memtype_cache,
 {
     ucs_memtype_cache_update_internal(memtype_cache, address, size, mem_type,
                                       UCS_MEMTYPE_CACHE_ACTION_SET_MEMTYPE);
+}
+
+void ucs_memtype_cache_remove(ucs_memtype_cache_t *memtype_cache,
+                              const void *address, size_t size)
+{
+    ucs_memtype_cache_update_internal(memtype_cache, address, size,
+                                      UCS_MEMORY_TYPE_LAST,
+                                      UCS_MEMTYPE_CACHE_ACTION_REMOVE);
 }
 
 static void ucs_memtype_cache_event_callback(ucm_event_type_t event_type,

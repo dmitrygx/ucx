@@ -54,9 +54,9 @@ void ucs_memtype_cache_destroy(ucs_memtype_cache_t *memtype_cache);
 /**
  * Find if address range is in memtype cache.
  *
- * @param [in]  memtype_cache   Memtype cache to search
- * @param [in]  address         Address to lookup
- * @param [in]  size            Length of the memory
+ * @param [in]  memtype_cache   Memtype cache to search.
+ * @param [in]  address         Address to lookup.
+ * @param [in]  size            Length of the memory.
  * @param [out] mem_type_p      Set to the memory type of the address range.
  *                              UCS_MEMORY_TYPE_LAST is a special value which
  *                              means the memory type is an unknown non-host
@@ -82,6 +82,17 @@ ucs_memtype_cache_lookup(ucs_memtype_cache_t *memtype_cache, const void *address
 void ucs_memtype_cache_update(ucs_memtype_cache_t *memtype_cache,
                               const void *address, size_t size,
                               ucs_memory_type_t mem_type);
+
+
+/**
+ * Remove the memory region from a memtype cache.
+ *
+ * @param [in]  memtype_cache   Memtype cache to search.
+ * @param [in]  address         Address to lookup.
+ * @param [in]  size            Length of the memory.
+ */
+void ucs_memtype_cache_remove(ucs_memtype_cache_t *memtype_cache,
+                              const void *address, size_t size);
 
 END_C_DECLS
 

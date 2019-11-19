@@ -56,6 +56,14 @@ protected:
         }
     }
 
+    void update_ptr(const void *ptr, size_t size, ucs_memory_type_t mem_type) {
+        ucs_memtype_cache_update(m_memtype_cache, ptr, size, mem_type);
+    }
+
+    void remove_ptr(const void *ptr, size_t size) {
+        ucs_memtype_cache_remove(m_memtype_cache, ptr, size);
+    }
+
     void test_lookup_found(const void *ptr, size_t size,
                            ucs_memory_type_t expected_type) const {
         check_lookup(ptr, size, true, expected_type);
@@ -274,6 +282,12 @@ UCS_TEST_P(test_memtype_cache, shared_page_regions) {
     }
 }
 
+UCS_TEST_P(test_memtype_cache, insert_all_vm_space) {
+    update_ptr(reinterpret_cast<void*>(0x100), 128, UCS_MEMORY_TYPE_LAST); // [0x100, 0x200]
+    update_ptr(reinterpret_cast<void*>(0x202), 256, UCS_MEMORY_TYPE_CUDA); // [0x200, 0x300]
+    remove_ptr(reinterpret_cast<void*>(0x100), 300);
+}
+
 UCS_TEST_P(test_memtype_cache, diff_mem_types_same_bufs) {
     test_memtype_cache_alloc_diff_mem_types(false, true);
 }
@@ -351,8 +365,7 @@ UCS_TEST_P(test_memtype_cache_deferred_create, lookup_adjacent_regions) {
 }
 
 UCS_TEST_P(test_memtype_cache_deferred_create, lookup_overlapped_regions) {
-    test_alloc_before_init(1000000, true, 1);
-    
+    test_alloc_before_init(1000000, true, 1);    
 }
 
 INSTANTIATE_TEST_CASE_P(mem_type, test_memtype_cache_deferred_create,
