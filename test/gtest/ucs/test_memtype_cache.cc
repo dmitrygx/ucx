@@ -33,7 +33,7 @@ protected:
     }
 
     void check_lookup(const void *ptr, size_t size,
-                      bool expect_found, 
+                      bool expect_found,
                       ucs_memory_type_t expected_type = UCS_MEMORY_TYPE_LAST) const {
         if (!size) {
             return;
@@ -164,7 +164,7 @@ protected:
         std::vector<mem_buffer*> allocated_buffers;
 
         const std::vector<ucs_memory_type_t> supported_mem_types =
-            mem_buffer::supported_mem_types();    
+            mem_buffer::supported_mem_types();
 
         /* The tests try to allocate two buffers with different memory types */
         for (std::vector<ucs_memory_type_t>::const_iterator iter =
@@ -211,6 +211,10 @@ protected:
         memtype_cache_update(b.ptr(), b.size(), b.mem_type());
     }
 
+    void memtype_cache_remove(const void *ptr, size_t size) {
+        ucs_memtype_cache_remove(m_memtype_cache, ptr, size);
+    }
+
 private:
     ucs_memtype_cache_t *m_memtype_cache;
 };
@@ -231,6 +235,61 @@ UCS_TEST_P(test_memtype_cache, basic) {
     /* buffer is released */
     test_ptr_released(ptr, size);
     test_ptr_not_found(ptr, size);
+}
+
+UCS_TEST_P(test_memtype_cache, update_and_remove_subintervals) {
+    // insert [0x7f6ef0000000 .. 0x7f6f00000000]
+    const void *start1 = reinterpret_cast<void*>(0x7f6ef0000000);
+    const void *end1   = reinterpret_cast<void*>(0x7f6f00000000);
+    const size_t size1 = UCS_PTR_BYTE_DIFF(start1, end1);
+    memtype_cache_update(start1, size1, GetParam());
+    test_ptr_found(start1, size1, GetParam());
+
+    // insert [0x7f6f2c021000 .. 0x7f6f2c021000]
+    const void *start2 = reinterpret_cast<void*>(0x7f6f2c021000);
+    const void *end2   = reinterpret_cast<void*>(0x7f6f40000000);
+    const size_t size2 = UCS_PTR_BYTE_DIFF(start2, end2);
+    memtype_cache_update(start2, size2, UCS_MEMORY_TYPE_LAST);
+    test_ptr_found(start2, size2, UCS_MEMORY_TYPE_LAST);
+
+    // insert [0x7f6f42000000 .. 0x7f6f48000000]
+    const void *start3 = reinterpret_cast<void*>(0x7f6f42000000);
+    const void *end3   = reinterpret_cast<void*>(0x7f6f48000000);
+    const size_t size3 = UCS_PTR_BYTE_DIFF(start3, end3);
+    memtype_cache_update(start3, size3, UCS_MEMORY_TYPE_LAST);
+    test_ptr_found(start3, size3, UCS_MEMORY_TYPE_LAST);
+
+    // remove subintervals
+    // remove [0x7f6ef8000000 .. 0x7f6f00000000]
+    const void *remove_start1 = reinterpret_cast<void*>(0x7f6ef8000000);
+    const size_t remove_size1 = UCS_PTR_BYTE_DIFF(remove_start1, end1);
+    memtype_cache_remove(remove_start1, remove_size1);
+
+    // remove [0x7f6f34021000 .. 0x7f6f40000000]
+    const void *remove_start2 = reinterpret_cast<void*>(0x7f6f34021000);
+    const size_t remove_size2 = UCS_PTR_BYTE_DIFF(remove_start2, end2);
+    memtype_cache_remove(remove_start2, remove_size2);
+
+    // remove [0x7f6f4a000000 .. 0x7f6f48000000]
+    const void *remove_start3 = reinterpret_cast<void*>(0x7f6f4a000000);
+    const size_t remove_size3 = UCS_PTR_BYTE_DIFF(remove_start3, end3);
+    memtype_cache_remove(remove_start3, remove_size3);
+
+    // remove remaining subintervals
+    // remove [0x7f6ef0000000 .. 0x7f6ef8000000]
+    memtype_cache_remove(start1, UCS_PTR_BYTE_DIFF(start1, remove_start1));
+    test_ptr_released(start1, size1);
+    test_ptr_not_found(start1, size1);
+
+    // remove [0x7f6f2c021000 .. 0x7f6f34021000]
+    memtype_cache_remove(start2, UCS_PTR_BYTE_DIFF(start2, remove_start2));
+    test_ptr_released(start2, size2);
+    test_ptr_not_found(start2, size2);
+
+    // remove [0x7f6f42000000 .. 0x7f6f4a000000]
+    memtype_cache_remove(start3, UCS_PTR_BYTE_DIFF(start3, remove_start3));
+    test_ptr_released(start3, size3);
+    test_ptr_not_found(start3, size3);
 }
 
 UCS_TEST_P(test_memtype_cache, shared_page_regions) {
@@ -352,7 +411,6 @@ UCS_TEST_P(test_memtype_cache_deferred_create, lookup_adjacent_regions) {
 
 UCS_TEST_P(test_memtype_cache_deferred_create, lookup_overlapped_regions) {
     test_alloc_before_init(1000000, true, 1);
-    
 }
 
 INSTANTIATE_TEST_CASE_P(mem_type, test_memtype_cache_deferred_create,

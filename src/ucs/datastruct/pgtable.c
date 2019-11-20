@@ -227,7 +227,7 @@ static unsigned ucs_pgtable_get_next_page_order(ucs_pgt_addr_t start, ucs_pgt_ad
     ucs_assertv(ucs_pgt_is_addr_aligned(start), "start=0x%lx", start);
     ucs_assertv(ucs_pgt_is_addr_aligned(end),   "end=0x%lx",   end);
 
-    if (end - start == 0) {
+    if ((end - start) == 0) {
         log2_len = UCS_PGT_ADDR_ORDER; /* entire range */
     } else {
         log2_len = ucs_ilog2(end - start);
@@ -560,7 +560,7 @@ void ucs_pgtable_search_range(const ucs_pgtable_t *pgtable,
     ucs_pgt_addr_t address = ucs_align_down_pow2(from, UCS_PGT_ADDR_ALIGN);
     ucs_pgt_addr_t end     = ucs_align_up_pow2(to, UCS_PGT_ADDR_ALIGN);
     ucs_pgt_region_t *last;
-    unsigned order = 0;
+    unsigned order;
 
     /* if the page table is covering only part of the address space, intersect
      * the range with page table address span */
@@ -572,7 +572,7 @@ void ucs_pgtable_search_range(const ucs_pgtable_t *pgtable,
     }
 
     last = NULL;
-    while ((address <= to) && (order != UCS_PGT_ADDR_ORDER)) {
+    while (address < to) {
         order = ucs_pgtable_get_next_page_order(address, end);
         if ((address & pgtable->mask) == pgtable->base) {
             ucs_pgtable_search_recurs(pgtable, address, order, &pgtable->root,
