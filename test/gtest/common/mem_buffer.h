@@ -19,6 +19,7 @@
  */
 class mem_buffer {
 public:
+    /* get all supported memory types */
     static std::vector<ucs_memory_type_t> supported_mem_types();
 
     /* allocate buffer of a given memory type */

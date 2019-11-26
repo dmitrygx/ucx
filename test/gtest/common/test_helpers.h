@@ -10,6 +10,8 @@
 
 #include "gtest.h"
 
+#include <common/mem_buffer.h>
+
 #include <ucs/config/types.h>
 #include <ucs/sys/preprocessor.h>
 #include <ucs/sys/checker.h>
@@ -811,6 +813,12 @@ private:
 };
 
 } // detail
+
+template<typename T>
+void cartesian_product(std::vector<std::vector<T> > &output,
+                       const std::vector<std::vector<T> > &input);
+
+std::vector<std::vector<ucs_memory_type_t> > mem_type_pairs();
 
 } // ucs
 

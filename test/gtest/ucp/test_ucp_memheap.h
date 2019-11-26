@@ -51,12 +51,19 @@ protected:
     const static size_t DEFAULT_SIZE  = 0;
     const static int    DEFAULT_ITERS = 0;
 
+    void mem_map_and_rkey_exchange(ucp_test_base::entity &receiver,
+                                   ucp_test_base::entity &sender,
+                                   const ucp_mem_map_params_t &params,
+                                   ucp_mem_h &receiver_memh,
+                                   ucp_rkey_h &sender_rkey,
+                                   void **memheap_addr = NULL);
+
     void test_blocking_xfer(blocking_send_func_t send, size_t len, int max_iters,
                             size_t alignment, bool malloc_allocate, bool is_ep_flush);
 
-    void test_nonblocking_implicit_stream_xfer(nonblocking_send_func_t send, 
-                                               size_t len, int max_iters, 
-                                               size_t alignment, bool malloc_allocate, 
+    void test_nonblocking_implicit_stream_xfer(nonblocking_send_func_t send,
+                                               size_t len, int max_iters,
+                                               size_t alignment, bool malloc_allocate,
                                                bool is_ep_flush);
 };
 

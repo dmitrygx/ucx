@@ -26,6 +26,39 @@ test_ucp_memheap::enum_test_params(const ucp_params_t& ctx_params,
     return result;
 }
 
+void test_ucp_memheap::mem_map_and_rkey_exchange(ucp_test_base::entity &receiver,
+                                                 ucp_test_base::entity &sender,
+                                                 const ucp_mem_map_params_t &params,
+                                                 ucp_mem_h &receiver_memh,
+                                                 ucp_rkey_h &sender_rkey,
+                                                 void **memheap_addr_p)
+{
+    ucs_status_t status;
+    ucp_mem_attr_t mem_attr;
+
+    status = ucp_mem_map(receiver.ucph(), &params, &receiver_memh);
+    ASSERT_UCS_OK(status);
+
+    mem_attr.field_mask = UCP_MEM_ATTR_FIELD_ADDRESS |
+                          UCP_MEM_ATTR_FIELD_LENGTH;
+    status = ucp_mem_query(receiver_memh, &mem_attr);
+    ASSERT_UCS_OK(status);
+    EXPECT_GE(mem_attr.length, params.length);
+    if (memheap_addr_p != NULL) {
+        *memheap_addr_p = mem_attr.address;
+    }
+
+    void *rkey_buffer;
+    size_t rkey_buffer_size;
+    status = ucp_rkey_pack(receiver.ucph(), receiver_memh, &rkey_buffer, &rkey_buffer_size);
+    ASSERT_UCS_OK(status);
+
+    status = ucp_ep_rkey_unpack(sender.ep(), rkey_buffer, &sender_rkey);
+    ASSERT_UCS_OK(status);
+
+    ucp_rkey_buffer_release(rkey_buffer);
+}
+
 void test_ucp_memheap::test_nonblocking_implicit_stream_xfer(nonblocking_send_func_t send,
                                                              size_t size, int max_iter,
                                                              size_t alignment,
@@ -35,7 +68,6 @@ void test_ucp_memheap::test_nonblocking_implicit_stream_xfer(nonblocking_send_fu
     void *memheap;
     size_t memheap_size;
     ucp_mem_map_params_t params;
-    ucp_mem_attr_t mem_attr;
     ucs_status_t status;
 
     memheap = NULL;
@@ -69,28 +101,10 @@ void test_ucp_memheap::test_nonblocking_implicit_stream_xfer(nonblocking_send_fu
     }
 
     ucp_mem_h memh;
-    status = ucp_mem_map(receiver().ucph(), &params, &memh);
-    ASSERT_UCS_OK(status);
-
-    mem_attr.field_mask = UCP_MEM_ATTR_FIELD_ADDRESS |
-                          UCP_MEM_ATTR_FIELD_LENGTH;
-    status = ucp_mem_query(memh, &mem_attr);
-    ASSERT_UCS_OK(status);
-
-    EXPECT_GE(mem_attr.length, memheap_size);
-    if (!malloc_allocate) {
-        memheap = mem_attr.address;
-    }
-    memset(memheap, 0, memheap_size);
-
-    void *rkey_buffer;
-    size_t rkey_buffer_size;
-    status = ucp_rkey_pack(receiver().ucph(), memh, &rkey_buffer, &rkey_buffer_size);
-    ASSERT_UCS_OK(status);
-
     ucp_rkey_h rkey;
-    status = ucp_ep_rkey_unpack(sender().ep(), rkey_buffer, &rkey);
-    ASSERT_UCS_OK(status);
+    mem_map_and_rkey_exchange(receiver(), sender(), params, memh, rkey,
+                              (!malloc_allocate ? &memheap : NULL));
+    memset(memheap, 0, memheap_size);
 
     std::string expected_data[300];
     assert (max_iter <= 300);
@@ -104,9 +118,6 @@ void test_ucp_memheap::test_nonblocking_implicit_stream_xfer(nonblocking_send_fu
 
         char *ptr = (char*)memheap + alignment + i * size;
         (this->*send)(&sender(), size, (void*)ptr, rkey, expected_data[i]);
-
-        ASSERT_UCS_OK(status);
-
     }
 
     if (is_ep_flush) {
@@ -126,7 +137,6 @@ void test_ucp_memheap::test_nonblocking_implicit_stream_xfer(nonblocking_send_fu
 
     disconnect(sender());
 
-    ucp_rkey_buffer_release(rkey_buffer);
     status = ucp_mem_unmap(receiver().ucph(), memh);
     ASSERT_UCS_OK(status);
 
@@ -143,7 +153,6 @@ void test_ucp_memheap::test_blocking_xfer(blocking_send_func_t send,
                                           bool is_ep_flush)
 {
     ucp_mem_map_params_t params;
-    ucp_mem_attr_t mem_attr;
     ucs_status_t status;
     size_t size;
     int zero_offset = 0;
@@ -162,7 +171,6 @@ void test_ucp_memheap::test_blocking_xfer(blocking_send_func_t send,
     /* avoid deadlock for blocking rma/amo */
     flush_worker(sender());
 
-    ucp_mem_h memh;
     void *memheap = NULL;
 
     params.field_mask = UCP_MEM_MAP_PARAM_FIELD_ADDRESS |
@@ -182,29 +190,11 @@ void test_ucp_memheap::test_blocking_xfer(blocking_send_func_t send,
         params.flags |= UCP_MEM_MAP_ALLOCATE;
     }
 
-    status = ucp_mem_map(receiver().ucph(), &params, &memh);
-    ASSERT_UCS_OK(status);
-
-    mem_attr.field_mask = UCP_MEM_ATTR_FIELD_ADDRESS |
-                          UCP_MEM_ATTR_FIELD_LENGTH;
-    status = ucp_mem_query(memh, &mem_attr);
-    ASSERT_UCS_OK(status);
-    EXPECT_GE(mem_attr.length, memheap_size);
-    if (!memheap) {
-        memheap = mem_attr.address;
-    }
-    memset(memheap, 0, memheap_size);
-
-    void *rkey_buffer;
-    size_t rkey_buffer_size;
-    status = ucp_rkey_pack(receiver().ucph(), memh, &rkey_buffer, &rkey_buffer_size);
-    ASSERT_UCS_OK(status);
-
+    ucp_mem_h memh;
     ucp_rkey_h rkey;
-    status = ucp_ep_rkey_unpack(sender().ep(), rkey_buffer, &rkey);
-    ASSERT_UCS_OK(status);
-
-    ucp_rkey_buffer_release(rkey_buffer);
+    mem_map_and_rkey_exchange(receiver(), sender(), params, memh, rkey,
+                              (!malloc_allocate ? &memheap : NULL));
+    memset(memheap, 0, memheap_size);
 
     for (int i = 0; i < max_iter; ++i) {
         size_t offset;
