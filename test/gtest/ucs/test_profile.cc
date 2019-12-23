@@ -351,28 +351,32 @@ UCS_TEST_SKIP_COND_P(test_profile_perf, overhead, RUNNING_ON_VALGRIND) {
     scoped_profile p(*this, PROFILE_FILENAME, "accum");
 
     for (int retry = 0; retry < (ucs::perf_retry_count + 1); ++retry) {
-        ucs_time_t  time_profile_on  = 0;
-        ucs_time_t  time_profile_off = 0;
+        ucs_time_t time_profile_on  = 0;
+        ucs_time_t time_profile_off = 0;
 
         for (int i = 0; i < WARMUP_ITERS + ITERS; ++i) {
-            ucs_time_t t;
+            ucs_time_t start, end;
 
-            t = ucs_get_time();
             for (volatile int j = 0; j < COUNT;) {
+                start = ucs_get_time();
                 ++j;
-            }
-            if (i > WARMUP_ITERS) {
-                time_profile_off += ucs_get_time() - t;
+                end = ucs_get_time();
+
+                if (i > WARMUP_ITERS) {
+                    time_profile_off += end - start;
+                }
             }
 
-            t = ucs_get_time();
             for (volatile int j = 0; j < COUNT;) {
+                start = ucs_get_time();
                 UCS_PROFILE_CODE("test") {
                     ++j;
                 }
-            }
-            if (i > WARMUP_ITERS) {
-                time_profile_on += ucs_get_time() - t;
+                end = ucs_get_time();
+
+                if (i > WARMUP_ITERS) {
+                    time_profile_on += end - start;
+                }
             }
         }
 
