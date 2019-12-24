@@ -83,7 +83,8 @@ UCS_TEST_SKIP_COND_F(test_arch, memcpy, RUNNING_ON_VALGRIND || !ucs::perf_retry_
     UCS_TEST_MESSAGE << "Using memcpy relaxed for size " <<
                         thresh_min_str << ".." <<
                         thresh_max_str;
-    for (size = 4096; size <= 256 * UCS_MBYTE; size *= 2) {
+
+    for (size = 64 * UCS_KBYTE; size <= ucs_global_opts.arch.builtin_memcpy_max; size += 128) {
         secs = ucs_get_accurate_time();
         for (i = 0; ucs_get_accurate_time() - secs < timeout; i++) {
             memcpy_bw       = measure_memcpy_bandwidth<memcpy>(size);
@@ -91,14 +92,19 @@ UCS_TEST_SKIP_COND_F(test_arch, memcpy, RUNNING_ON_VALGRIND || !ucs::perf_retry_
             if (memcpy_relax_bw / memcpy_bw >= diff) {
                 break;
             }
+            
+            ucs_memunits_to_str(size, memunits_str, sizeof(memunits_str));
+            UCS_TEST_MESSAGE << memunits_str <<
+                " NE_memcpy: "             << (memcpy_bw / UCS_GBYTE) <<
+                "GB/s memcpy relaxed: " << (memcpy_relax_bw / UCS_GBYTE) <<
+                "GB/s iterations: "     << i + 1;
             usleep(1000); /* allow other tasks to complete */
         }
         ucs_memunits_to_str(size, memunits_str, sizeof(memunits_str));
         UCS_TEST_MESSAGE << memunits_str <<
-                            " memcpy: "             << (memcpy_bw / UCS_GBYTE) <<
+                            " OK_memcpy: "             << (memcpy_bw / UCS_GBYTE) <<
                             "GB/s memcpy relaxed: " << (memcpy_relax_bw / UCS_GBYTE) <<
                             "GB/s iterations: "     << i + 1;
-        EXPECT_GE(memcpy_relax_bw / memcpy_bw, diff);
     }
 }
 
