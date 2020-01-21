@@ -1082,7 +1082,8 @@ size_t ucp_ep_tag_offload_min_rndv_thresh(ucp_ep_config_t *config)
     return sizeof(ucp_rndv_rts_hdr_t) + config->tag.rndv.rkey_size;
 }
 
-static void ucp_ep_config_set_am_rndv_thresh(ucp_worker_h worker,
+static void ucp_ep_config_set_am_rndv_thresh(uct_device_type_t dev_type,
+                                             ucp_worker_h worker,
                                              uct_iface_attr_t *iface_attr,
                                              uct_md_attr_t *md_attr,
                                              ucp_ep_config_t *config,
@@ -1098,7 +1099,8 @@ static void ucp_ep_config_set_am_rndv_thresh(ucp_worker_h worker,
     if (config->key.err_mode == UCP_ERR_HANDLING_MODE_PEER) {
         /* Disable RNDV */
         rndv_thresh = rndv_nbr_thresh = SIZE_MAX;
-    } else if (context->config.ext.rndv_thresh == UCS_MEMUNITS_AUTO) {
+    } else if (context->config.ext.rndv_thresh == UCS_MEMUNITS_AUTO ||
+               dev_type == UCT_DEVICE_TYPE_NET) {
         /* auto - Make UCX calculate the AM rndv threshold on its own.*/
         rndv_thresh     = ucp_ep_config_calc_rndv_thresh(worker, config,
                                                          config->key.am_bw_lanes,
@@ -1521,7 +1523,8 @@ ucs_status_t ucp_ep_config_init(ucp_worker_h worker, ucp_ep_config_t *config,
 
             /* Calculate rndv threshold for AM Rendezvous, which may be used by
              * any tag-matching protocol (AM and offload). */
-            ucp_ep_config_set_am_rndv_thresh(worker, iface_attr, md_attr, config,
+            ucp_ep_config_set_am_rndv_thresh(context->tl_rscs[rsc_index].tl_rsc.dev_type,
+                                             worker, iface_attr, md_attr, config,
                                              min_am_rndv_thresh,
                                              max_am_rndv_thresh);
         } else {
