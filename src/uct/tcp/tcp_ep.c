@@ -839,9 +839,9 @@ static inline void uct_tcp_ep_handle_put_req(uct_tcp_ep_t *ep,
     ucs_assert(put_req->addr || !put_req->length);
 
     copied_length  = ucs_min(put_req->length, extra_recvd_length);
-    memcpy((void*)(uintptr_t)put_req->addr,
-           UCS_PTR_BYTE_OFFSET(ep->rx.buf, ep->rx.offset),
-           copied_length);
+    ucs_memcpy_relaxed((void*)(uintptr_t)put_req->addr,
+                       UCS_PTR_BYTE_OFFSET(ep->rx.buf, ep->rx.offset),
+                       copied_length);
     ep->rx.offset += copied_length;
     ep->rx.put_sn  = put_req->sn;
 
@@ -1100,7 +1100,7 @@ uct_tcp_ep_set_outstanding_zcopy(uct_tcp_iface_t *iface, uct_tcp_ep_t *ep,
          * retransmission. iov_len is already set to the proper value */
         ctx->iov[1].iov_base = UCS_PTR_BYTE_OFFSET(ep->tx.buf,
                                                    iface->config.zcopy.hdr_offset);
-        memcpy(ctx->iov[1].iov_base, header, header_length);
+        ucs_memcpy_relaxed(ctx->iov[1].iov_base, header, header_length);
     }
 
     ctx->iov_index = 0;

@@ -24,11 +24,11 @@ static ucs_config_field_t uct_tcp_iface_config_table[] = {
    ucs_offsetof(uct_tcp_iface_config_t, super),
    UCS_CONFIG_TYPE_TABLE(uct_iface_config_table)},
 
-  {"TX_SEG_SIZE", "8kb",
+  {"TX_SEG_SIZE", "8208",
    "Size of send copy-out buffer",
    ucs_offsetof(uct_tcp_iface_config_t, tx_seg_size), UCS_CONFIG_TYPE_MEMUNITS},
   
-  {"RX_SEG_SIZE", "64kb",
+  {"RX_SEG_SIZE", "64k",
    "Size of receive copy-out buffer",
    ucs_offsetof(uct_tcp_iface_config_t, rx_seg_size), UCS_CONFIG_TYPE_MEMUNITS},
 
@@ -44,6 +44,10 @@ static ucs_config_field_t uct_tcp_iface_config_table[] = {
   {"PREFER_DEFAULT", "y",
    "Give higher priority to the default network interface on the host",
    ucs_offsetof(uct_tcp_iface_config_t, prefer_default), UCS_CONFIG_TYPE_BOOL},
+
+  {"USE_PUT", "n",
+   "Enable PUT Zcopy support",
+   ucs_offsetof(uct_tcp_iface_config_t, use_put), UCS_CONFIG_TYPE_BOOL},
 
   {"CONN_NB", "n",
    "Enable non-blocking connection establishment. It may improve startup "
@@ -148,13 +152,15 @@ static ucs_status_t uct_tcp_iface_query(uct_iface_h tl_iface, uct_iface_attr_t *
         attr->cap.am.opt_zcopy_align  = 1;
         attr->cap.flags              |= UCT_IFACE_FLAG_AM_ZCOPY;
 
-        /* PUT */
-        attr->cap.put.max_iov          = iface->config.zcopy.max_iov -
-                                         UCT_TCP_EP_ZCOPY_SERVICE_IOV_COUNT;
-        attr->cap.put.max_zcopy        = UCT_TCP_EP_PUT_ZCOPY_MAX -
-                                         UCT_TCP_EP_PUT_SERVICE_LENGTH;
-        attr->cap.put.opt_zcopy_align  = 1;
-        attr->cap.flags               |= UCT_IFACE_FLAG_PUT_ZCOPY;
+        if (iface->config.use_put) {
+            /* PUT */
+            attr->cap.put.max_iov          = iface->config.zcopy.max_iov -
+                                             UCT_TCP_EP_ZCOPY_SERVICE_IOV_COUNT;
+            attr->cap.put.max_zcopy        = UCT_TCP_EP_PUT_ZCOPY_MAX -
+                                             UCT_TCP_EP_PUT_SERVICE_LENGTH;
+            attr->cap.put.opt_zcopy_align  = 1;
+            attr->cap.flags               |= UCT_IFACE_FLAG_PUT_ZCOPY;
+        }
     }
 
     attr->bandwidth.dedicated = 0;
@@ -454,6 +460,7 @@ static UCS_CLASS_INIT_FUNC(uct_tcp_iface_t, uct_md_h md, uct_worker_h worker,
     self->config.zcopy.max_hdr     = self->config.tx_seg_size -
                                      self->config.zcopy.hdr_offset;
     self->config.prefer_default    = config->prefer_default;
+    self->config.use_put           = config->use_put;
     self->config.conn_nb           = config->conn_nb;
     self->config.max_poll          = config->max_poll;
     self->config.max_conn_retries  = config->max_conn_retries;
