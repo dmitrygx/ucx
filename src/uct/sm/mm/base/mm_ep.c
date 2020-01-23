@@ -214,9 +214,7 @@ static inline void uct_mm_ep_update_cached_tail(uct_mm_ep_t *ep)
 }
 
 /* A common mm active message sending function.
- * The first parameter indicates the origin of the call.
- * is_short = 1 - perform AM short sending
- * is_short = 0 - perform AM bcopy sending
+ * The first parameter indicates the origin of the call (Short or Bcopy).
  */
 static UCS_F_ALWAYS_INLINE ssize_t
 uct_mm_ep_am_common_send(uct_mm_send_op_t send_op, uct_mm_ep_t *ep,
