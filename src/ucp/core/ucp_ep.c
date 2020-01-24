@@ -995,9 +995,9 @@ static void ucp_ep_config_calc_params(ucp_worker_h worker,
             if (md_attr->cap.flags & UCT_MD_FLAG_REG) {
                 params->reg_growth   += md_attr->reg_cost.growth;
                 params->reg_overhead += md_attr->reg_cost.overhead;
-                params->overhead     += iface_attr->overhead;
-                params->latency      += ucp_tl_iface_latency(context, iface_attr);
             }
+            params->overhead     += iface_attr->overhead;
+            params->latency      += ucp_tl_iface_latency(context, iface_attr);
         }
         wiface      = ucp_worker_iface(worker, rsc_index);
         params->bw += ucp_tl_iface_bandwidth(context, &wiface->attr.bandwidth);
@@ -1012,41 +1012,59 @@ static size_t ucp_ep_config_calc_rndv_thresh(ucp_worker_t *worker,
 {
     ucp_context_h context = worker->context;
     double diff_percent   = 1.0 - context->config.ext.rndv_perf_diff / 100.0;
-    ucp_ep_thresh_params_t eager_zcopy;
+    ucp_ep_thresh_params_t eager;
     ucp_ep_thresh_params_t rndv;
     double numerator, denumerator;
+    double numerator_eager_overhead;
+    double denumerator_eager_overhead;
     ucp_rsc_index_t eager_rsc_index;
     uct_iface_attr_t *eager_iface_attr;
     double rts_latency;
+    double result_thresh;
+    double bcopy_bw;
 
     /* All formulas and descriptions are listed at
      * https://github.com/openucx/ucx/wiki/Rendezvous-Protocol-threshold-for-multilane-mode */
 
-    ucp_ep_config_calc_params(worker, config, eager_lanes, &eager_zcopy);
+    ucp_ep_config_calc_params(worker, config, eager_lanes, &eager);
     ucp_ep_config_calc_params(worker, config, rndv_lanes, &rndv);
 
-    if (!eager_zcopy.bw || !rndv.bw) {
+    if (!ucp_score_cmp(rndv.bw, 0) || !ucp_score_cmp(eager.bw, 0)) {
         goto fallback;
     }
 
     eager_rsc_index  = config->key.lanes[eager_lanes[0]].rsc_index;
     eager_iface_attr = ucp_worker_iface_get_attr(worker, eager_rsc_index);
+    bcopy_bw         = ucs_min(eager.bw, context->config.ext.bcopy_bw);
 
     /* RTS/RTR latency is used from lanes[0] */
     rts_latency      = ucp_tl_iface_latency(context, eager_iface_attr);
 
-    numerator = diff_percent * (rndv.reg_overhead * (1 + recv_reg_cost) +
-                                (2 * rts_latency) + (2 * rndv.latency) +
-                                (2 * eager_zcopy.overhead) + rndv.overhead) -
-                eager_zcopy.reg_overhead - eager_zcopy.overhead;
+    if (eager_iface_attr->cap.flags & UCT_IFACE_FLAG_AM_ZCOPY) {
+        numerator_eager_overhead   = eager.reg_overhead + eager.overhead;
+        denumerator_eager_overhead = eager.reg_growth + 1.0 / bcopy_bw;
+    } else {
+        numerator_eager_overhead   = 2 * eager.overhead;
+        denumerator_eager_overhead = 2.0 / bcopy_bw;
+    }
 
-    denumerator = eager_zcopy.reg_growth +
-                  1.0 / ucs_min(eager_zcopy.bw, context->config.ext.bcopy_bw) -
+    numerator   = diff_percent * (rndv.reg_overhead * (1 + recv_reg_cost) +
+                                  (2 * rts_latency) + (2 * rndv.latency) +
+                                  (2 * eager.overhead) + rndv.overhead) -
+                  numerator_eager_overhead;
+
+    denumerator = denumerator_eager_overhead -
                   diff_percent *
                   (rndv.reg_growth * (1 + recv_reg_cost) + 1.0 / rndv.bw);
 
-    if ((numerator > 0) && (denumerator > 0)) {
-        return ucs_max(numerator / denumerator, eager_iface_attr->cap.am.max_bcopy);
+    if ((numerator > 0.0) && (denumerator > 0.0)) {
+        result_thresh = numerator / denumerator;
+        if (eager_lanes == rndv_lanes) {
+            /* If setting RNDV AM thresh */
+            return ucs_max(result_thresh, eager_iface_attr->cap.am.max_bcopy);
+        }
+
+        return result_thresh;
     }
 
 fallback:
