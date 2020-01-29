@@ -370,8 +370,8 @@ uct_xpmem_mem_attach_common(xpmem_segid_t xsegid, uintptr_t remote_address,
         goto err;
     }
 
-    start = ucs_align_down_pow2(remote_address,          ucs_get_page_size());
-    end   = ucs_align_up_pow2  (remote_address + length, ucs_get_page_size());
+    start = ucs_align_down_pow2(remote_address,          UCS_PGT_ADDR_ALIGN);
+    end   = ucs_align_up_pow2  (remote_address + length, UCS_PGT_ADDR_ALIGN);
 
     status = ucs_rcache_get(rmem->rcache, (void*)start, end - start,
                             PROT_READ|PROT_WRITE, NULL, &rcache_region);

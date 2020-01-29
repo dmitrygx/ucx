@@ -676,8 +676,8 @@ ucp_rndv_is_rkey_ptr(const ucp_rndv_rts_hdr_t *rndv_rts_hdr, ucp_ep_h ep,
            UCP_MEM_IS_ACCESSIBLE_FROM_CPU(recv_mem_type);
 }
 
-static void ucp_rndv_do_rkey_ptr(ucp_request_t *rndv_req, ucp_request_t *rreq,
-                                 const ucp_rndv_rts_hdr_t *rndv_rts_hdr)
+void ucp_rndv_do_rkey_ptr(ucp_request_t *rndv_req, ucp_request_t *rreq,
+                          const ucp_rndv_rts_hdr_t *rndv_rts_hdr)
 {
     ucp_ep_h ep                      = rndv_req->send.ep;
     const ucp_ep_config_t *ep_config = ucp_ep_config(ep);
@@ -719,10 +719,17 @@ static void ucp_rndv_do_rkey_ptr(ucp_request_t *rndv_req, ucp_request_t *rreq,
                               &rkey->tl_rkey[rkey_index].rkey,
                               rndv_rts_hdr->address, &local_ptr);
     if (status == UCS_OK) {
+        void *test_mem = ucs_calloc(1, rndv_rts_hdr->size, "test mem");
+        size_t i;
+        for (i = 0; i < rndv_rts_hdr->size; i++) {
+            *(char*)UCS_PTR_BYTE_OFFSET(local_ptr, i) = *(char*)UCS_PTR_BYTE_OFFSET(local_ptr, i);
+        }
+
         ucp_trace_req(rndv_req, "obtained a local pointer to remote buffer: %p",
                       local_ptr);
         status = ucp_request_recv_data_unpack(rreq, local_ptr,
                                               rndv_rts_hdr->size, 0, 1);
+        ucs_free(test_mem);
     }
 
     ucp_request_complete_tag_recv(rreq, status);
