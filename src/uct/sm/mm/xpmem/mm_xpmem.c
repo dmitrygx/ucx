@@ -360,7 +360,7 @@ static ucs_status_t
 uct_xpmem_mem_attach_common(xpmem_segid_t xsegid, uintptr_t remote_address,
                             size_t length, uct_xpmem_remote_region_t **region_p)
 {
-    ucs_rcache_region_t *rcache_region;
+    //ucs_rcache_region_t *rcache_region;
     uct_xpmem_remote_mem_t *rmem;
     uintptr_t start, end;
     ucs_status_t status;
@@ -373,17 +373,23 @@ uct_xpmem_mem_attach_common(xpmem_segid_t xsegid, uintptr_t remote_address,
     start = ucs_align_down_pow2(remote_address,          ucs_get_page_size());
     end   = ucs_align_up_pow2  (remote_address + length, ucs_get_page_size());
 
+    /*
     status = ucs_rcache_get(rmem->rcache, (void*)start, end - start,
                             PROT_READ|PROT_WRITE, NULL, &rcache_region);
     if (status != UCS_OK) {
         goto err_rmem_put;
     }
+    */
+    *region_p = ucs_calloc(1, sizeof(**region_p), "reg");
+    (*region_p)->super.super.start = start;
+    (*region_p)->super.super.end   = end;
+    uct_xpmem_rcache_mem_reg(rmem, rmem->rcache, NULL, &(*region_p)->super, 0);
 
-    *region_p = ucs_derived_of(rcache_region, uct_xpmem_remote_region_t);
+    //*region_p = ucs_derived_of(rcache_region, uct_xpmem_remote_region_t);
     return UCS_OK;
 
-err_rmem_put:
-    uct_xpmem_rmem_put(rmem);
+    /*err_rmem_put:
+      uct_xpmem_rmem_put(rmem);*/
 err:
     return status;
 }
@@ -392,7 +398,10 @@ static void uct_xpmem_mem_detach_common(uct_xpmem_remote_region_t *xpmem_region)
 {
     uct_xpmem_remote_mem_t *rmem = xpmem_region->rmem;
 
+    /*
     ucs_rcache_region_put(rmem->rcache, &xpmem_region->super);
+    */
+    uct_xpmem_rcache_mem_dereg(rmem, rmem->rcache, &xpmem_region->super);
     uct_xpmem_rmem_put(rmem);
 }
 
@@ -512,7 +521,14 @@ uct_xpmem_rkey_unpack(uct_component_t *component, const void *rkey_buffer,
     }
 
     uct_mm_md_make_rkey(xpmem_region->attach_address,
-                        xpmem_region->super.super.start, rkey_p);
+                        packed_rkey->address, rkey_p);
+    fprintf(stderr, "%d: %p is a local ptr for %p..%p (addr=%p,len=%zu), offset is %zd\n",
+            getpid(),
+            (void*)xpmem_region->attach_address,
+            (void*)xpmem_region->super.super.start,
+            (void*)xpmem_region->super.super.end,
+            (void*)packed_rkey->address, packed_rkey->length,
+            (ptrdiff_t)*rkey_p);
     *handle_p = xpmem_region;
 
     return UCS_OK;
