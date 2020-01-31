@@ -14,8 +14,12 @@
 
 static ucs_config_field_t uct_knem_iface_config_table[] = {
     {"SM_", "BW=13862MBs", NULL,
-    ucs_offsetof(uct_knem_iface_config_t, super),
-    UCS_CONFIG_TYPE_TABLE(uct_sm_iface_config_table)},
+     ucs_offsetof(uct_knem_iface_config_t, super),
+     UCS_CONFIG_TYPE_TABLE(uct_sm_iface_config_table)},
+
+    {"INLINE_COPY", "y", "Use inline copy for RMA operations",
+     ucs_offsetof(uct_knem_iface_config_t, inline_copy),
+     UCS_CONFIG_TYPE_BOOL},
 
     {NULL}
 };
@@ -88,9 +92,12 @@ static UCS_CLASS_INIT_FUNC(uct_knem_iface_t, uct_md_h md, uct_worker_h worker,
                            const uct_iface_params_t *params,
                            const uct_iface_config_t *tl_config)
 {
+    const uct_knem_iface_config_t *knem_config =
+        ucs_derived_of(tl_config, uct_knem_iface_config_t);
     UCS_CLASS_CALL_SUPER_INIT(uct_sm_iface_t, &uct_knem_iface_ops, md,
                               worker, params, tl_config);
-    self->knem_md = (uct_knem_md_t *)md;
+    self->knem_md     = (uct_knem_md_t *)md;
+    self->inline_copy = knem_config->inline_copy;
     uct_sm_get_max_iov(); /* to initialize ucs_iov_get_max static variable */
 
     return UCS_OK;

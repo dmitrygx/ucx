@@ -406,7 +406,7 @@ ucp_request_unpack_contig(ucp_request_t *req, void *buf, const void *data,
                           size_t length)
 {
     if (ucs_likely(UCP_MEM_IS_ACCESSIBLE_FROM_CPU(req->recv.mem_type))) {
-        UCS_PROFILE_NAMED_CALL("memcpy_recv", ucs_memcpy_relaxed, buf,
+        UCS_PROFILE_NAMED_CALL("memcpy_recv", memmove, buf,
                                data, length);
     } else {
         ucp_mem_type_unpack(req->recv.worker, buf, data, length,

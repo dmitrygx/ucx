@@ -15,6 +15,7 @@
 #include <ucs/type/spinlock.h>
 #include <ucs/memory/rcache.h>
 #include <ucs/debug/log.h>
+#include <ucm/util/sys.h>
 
 
 /* XPMEM memory domain configuration */
@@ -66,9 +67,22 @@ static ucs_config_field_t uct_xpmem_md_config_table[] = {
   {NULL}
 };
 
+static uintptr_t xpmem_max_addr = 0;
+
+static int uct_xpmem_get_max_addr_cb(void *arg, void *addr, size_t length,
+                                     int prot, const char *path)
+{
+    uintptr_t end_addr = (uintptr_t)UCS_PTR_BYTE_OFFSET(addr, length);
+    if (xpmem_max_addr < end_addr) {
+        xpmem_max_addr = end_addr;
+    }
+    return 0;
+}
+
 UCS_STATIC_INIT {
     ucs_spinlock_init(&uct_xpmem_remote_mem_lock);
     kh_init_inplace(xpmem_remote_mem, &uct_xpmem_remote_mem_hash);
+    ucm_parse_proc_self_maps(uct_xpmem_get_max_addr_cb, NULL);
 }
 
 UCS_STATIC_CLEANUP {
@@ -136,6 +150,8 @@ uct_xpmem_rcache_mem_reg(void *context, ucs_rcache_t *rcache, void *arg,
     addr.apid   = rmem->apid;
     addr.offset = xpmem_region->super.super.start;
     length      = uct_xpmem_rcache_region_length(xpmem_region);
+
+    ucs_assert(xpmem_region->super.super.end <= xpmem_region->super.super.end);
 
     xpmem_region->attach_address = xpmem_attach(addr, length, NULL);
     VALGRIND_MAKE_MEM_DEFINED(&xpmem_region->attach_address,
@@ -372,6 +388,10 @@ uct_xpmem_mem_attach_common(xpmem_segid_t xsegid, uintptr_t remote_address,
 
     start = ucs_align_down_pow2(remote_address,          ucs_get_page_size());
     end   = ucs_align_up_pow2  (remote_address + length, ucs_get_page_size());
+
+    if (end > xpmem_max_addr) {
+        end = xpmem_max_addr;
+    }
 
     status = ucs_rcache_get(rmem->rcache, (void*)start, end - start,
                             PROT_READ|PROT_WRITE, NULL, &rcache_region);

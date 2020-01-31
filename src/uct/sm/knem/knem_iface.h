@@ -15,12 +15,14 @@
 
 typedef struct uct_knem_iface_config {
     uct_sm_iface_config_t         super;
+    int                           inline_copy;
 } uct_knem_iface_config_t;
 
 
 typedef struct uct_knem_iface {
     uct_sm_iface_t                super;
     uct_knem_md_t                 *knem_md;
+    int                           inline_copy;
 } uct_knem_iface_t;
 
 

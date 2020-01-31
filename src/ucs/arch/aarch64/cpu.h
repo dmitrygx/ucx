@@ -200,7 +200,11 @@ static inline void ucs_arch_clear_cache(void *start, void *end)
 
 static inline void *ucs_memcpy_relaxed(void *dst, const void *src, size_t len)
 {
-    return memcpy(dst, src, len);
+    if (ucs_unlikely(len >= 524288)) {
+        return memcpy(dst, src, len);
+    } else {
+        return memmove(dst, src, len);
+    }
 }
 
 static UCS_F_ALWAYS_INLINE void

@@ -420,11 +420,13 @@ UCS_PROFILE_FUNC(ucs_status_t, ucp_rndv_progress_rma_get_zcopy, (self),
     size_t tail;
     int pending_add_res;
     ucp_lane_index_t lane;
+    ucp_md_index_t md_index;
 
     ucp_rndv_get_lanes_count(rndv_req);
 
     /* Figure out which lane to use for get operation */
     rndv_req->send.lane = lane = ucp_rndv_get_next_lane(rndv_req, &uct_rkey);
+    md_index = ucp_ep_md_index(ep, lane);
 
     if (lane == UCP_NULL_LANE) {
         /* If can't perform get_zcopy - switch to active-message.
@@ -439,7 +441,9 @@ UCS_PROFILE_FUNC(ucs_status_t, ucp_rndv_progress_rma_get_zcopy, (self),
         return UCS_OK;
     }
 
-    if (!rndv_req->send.mdesc) {
+    if (!rndv_req->send.mdesc &&
+        ep->worker->context->tl_mds[md_index].attr.cap.flags &
+        UCT_MD_FLAG_NEED_MEMH) {
         status = ucp_send_request_add_reg_lane(rndv_req, lane);
         ucs_assert_always(status == UCS_OK);
     }
@@ -498,8 +502,7 @@ UCS_PROFILE_FUNC(ucs_status_t, ucp_rndv_progress_rma_get_zcopy, (self),
      * but it will work on single lane */
     ucp_dt_iov_copy_uct(ep->worker->context, iov, &iovcnt, max_iovcnt, &state,
                         rndv_req->send.buffer, ucp_dt_make_contig(1), length,
-                        ucp_ep_md_index(ep, lane),
-                        rndv_req->send.mdesc);
+                        md_index, rndv_req->send.mdesc);
 
     for (;;) {
         status = uct_ep_get_zcopy(ep->uct_eps[lane],
