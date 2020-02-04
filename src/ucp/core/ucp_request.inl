@@ -353,21 +353,35 @@ ucp_request_send_buffer_reg(ucp_request_t *req, ucp_md_map_t md_map,
 }
 
 static UCS_F_ALWAYS_INLINE ucs_status_t
+ucp_request_send_buffer_reg_lane_check(ucp_request_t *req, ucp_lane_index_t lane,
+                                       ucp_md_map_t prev_md_map, unsigned uct_flags)
+{
+    ucp_md_map_t md_map;
+
+    if (ucp_ep_md_attr(req->send.ep,
+                       lane)->cap.flags & UCT_MD_FLAG_NEED_MEMH) {
+        ucs_assert(ucp_ep_md_attr(req->send.ep,
+                                  lane)->cap.flags & UCT_MD_FLAG_REG);
+        md_map = UCS_BIT(ucp_ep_md_index(req->send.ep, lane)) | prev_md_map;
+        return ucp_request_send_buffer_reg(req, md_map, uct_flags);
+    }
+
+    return UCS_OK;
+}
+
+static UCS_F_ALWAYS_INLINE ucs_status_t
 ucp_request_send_buffer_reg_lane(ucp_request_t *req, ucp_lane_index_t lane,
                                  unsigned uct_flags)
 {
-    ucp_md_map_t md_map = UCS_BIT(ucp_ep_md_index(req->send.ep, lane));
-    return ucp_request_send_buffer_reg(req, md_map, uct_flags);
+    return ucp_request_send_buffer_reg_lane_check(req, lane, 0, uct_flags);
 }
 
 static UCS_F_ALWAYS_INLINE ucs_status_t
 ucp_send_request_add_reg_lane(ucp_request_t *req, ucp_lane_index_t lane)
 {
     /* add new lane to registration map */
-    ucp_md_map_t md_map = UCS_BIT(ucp_ep_md_index(req->send.ep, lane)) |
-                          req->send.state.dt.dt.contig.md_map;
-    ucs_assert(ucs_popcount(md_map) <= UCP_MAX_OP_MDS);
-    return ucp_request_send_buffer_reg(req, md_map, 0);
+    return ucp_request_send_buffer_reg_lane_check(req, lane,
+                                                  req->send.state.dt.dt.contig.md_map, 0);
 }
 
 static UCS_F_ALWAYS_INLINE ucs_status_t
