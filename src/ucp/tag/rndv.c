@@ -840,6 +840,8 @@ UCS_PROFILE_FUNC_VOID(ucp_rndv_matched, (worker, rreq, rndv_rts_hdr),
      * configured to PUT, or GET rndv mode is unsupported - send an RTR and
      * the sender will send the data with active message or put_zcopy. */
     ucp_rndv_recv_data_init(rreq, rndv_rts_hdr->size);
+    rreq->send.mdesc  = (void*)rndv_rts_hdr->sreq.reqptr;
+    rreq->send.ep = rndv_req->send.ep;
     ucp_rndv_req_send_rtr(rndv_req, rreq, rndv_rts_hdr->sreq.reqptr,
                           rndv_rts_hdr->size);
 
@@ -938,7 +940,7 @@ UCS_PROFILE_FUNC(ucs_status_t, ucp_rndv_progress_am_bcopy, (self),
                                        ucp_rndv_pack_data, 1);
     }
     if (status == UCS_OK) {
-        ucp_rndv_complete_send(sreq, UCS_OK);
+        //ucp_rndv_complete_send(sreq, UCS_OK);
     } else if (status == UCP_STATUS_PENDING_SWITCH) {
         status = UCS_OK;
     }
@@ -1415,12 +1417,19 @@ UCS_PROFILE_FUNC(ucs_status_t, ucp_rndv_data_handler,
     ucp_rndv_data_hdr_t *rndv_data_hdr = data;
     ucp_request_t *rreq = (ucp_request_t*) rndv_data_hdr->rreq_ptr;
     size_t recv_len;
+    int last;
 
     recv_len = length - sizeof(*rndv_data_hdr);
     UCS_PROFILE_REQUEST_EVENT(rreq, "rndv_data_recv", recv_len);
 
+    last = (rreq->recv.tag.remaining == recv_len);
+
     (void)ucp_tag_request_process_recv_data(rreq, rndv_data_hdr + 1, recv_len,
                                             rndv_data_hdr->offset, 1, 0);
+    if (last) {
+        ucp_rndv_req_send_ats(rreq, rreq, (uintptr_t)(void*)rreq->send.mdesc, UCS_OK);
+        //ucp_request_complete_tag_recv(rreq, UCS_OK);
+    }
     return UCS_OK;
 }
 
