@@ -440,8 +440,10 @@ static ucs_status_t
 uct_rc_mlx5_iface_init_rx(uct_rc_iface_t *rc_iface,
                           const uct_rc_iface_common_config_t *rc_config)
 {
-    uct_rc_mlx5_iface_common_t *iface = ucs_derived_of(rc_iface, uct_rc_mlx5_iface_common_t);
-    uct_ib_mlx5_md_t *md = ucs_derived_of(rc_iface->super.super.md, uct_ib_mlx5_md_t);
+    uct_rc_mlx5_iface_common_t *iface    = ucs_derived_of(rc_iface,
+                                                          uct_rc_mlx5_iface_common_t);
+    uct_ib_mlx5_md_t *md                 = ucs_derived_of(rc_iface->super.super.md,
+                                                          uct_ib_mlx5_md_t);
     struct ibv_srq_init_attr_ex srq_attr = {};
     ucs_status_t status;
 
@@ -451,7 +453,7 @@ uct_rc_mlx5_iface_init_rx(uct_rc_iface_t *rc_iface,
                                                  UCT_RC_RNDV_HDR_LEN);
         } else {
             status = uct_rc_mlx5_init_rx_tm(iface, rc_config, &srq_attr,
-                                            UCT_RC_RNDV_HDR_LEN);
+                                           UCT_RC_RNDV_HDR_LEN);
         }
 
         if (status != UCS_OK) {
@@ -463,21 +465,29 @@ uct_rc_mlx5_iface_init_rx(uct_rc_iface_t *rc_iface,
     }
 
     /* MP XRQ is supported with HW TM only */
-    ucs_assert(iface->tm.mp.num_strides == 1);
+    ucs_assert(!UCT_RC_MLX5_MP_ENABLED(iface));
 
-    status = uct_rc_iface_init_rx(rc_iface, rc_config, &iface->rx.srq.verbs.srq);
-    if (status != UCS_OK) {
-        goto err;
+    if (md->flags & UCT_IB_MLX5_MD_FLAG_DEVX_RC_SRQ) {
+        status = uct_rc_mlx5_devx_init_rx(iface, rc_config, 0);
+        if (status != UCS_OK) {
+            goto err;
+        }
+    } else {
+        status = uct_rc_iface_init_rx(rc_iface, rc_config, &iface->rx.srq.verbs.srq);
+        if (status != UCS_OK) {
+            goto err;
+        }
+
+        status = uct_ib_mlx5_srq_init(&iface->rx.srq, iface->rx.srq.verbs.srq,
+                                      iface->super.super.config.seg_size,
+                                      iface->tm.mp.num_strides);
+        if (status != UCS_OK) {
+            goto err_free_srq;
+        }
+
+        iface->rx.srq.type    = UCT_IB_MLX5_OBJ_TYPE_VERBS;
     }
 
-    status = uct_ib_mlx5_srq_init(&iface->rx.srq, iface->rx.srq.verbs.srq,
-                                  iface->super.super.config.seg_size,
-                                  iface->tm.mp.num_strides);
-    if (status != UCS_OK) {
-        goto err_free_srq;
-    }
-
-    iface->rx.srq.type    = UCT_IB_MLX5_OBJ_TYPE_VERBS;
     iface->super.progress = uct_rc_mlx5_iface_progress;
     return UCS_OK;
 
@@ -542,7 +552,6 @@ static int uct_rc_mlx5_iface_srq_topo(uct_rc_mlx5_iface_common_t *iface,
     /* Cyclic SRQ is supported with HW TM and DEVX only. */
     if (((mlx5_config->srq_topo == UCT_RC_MLX5_SRQ_TOPO_AUTO) ||
         (mlx5_config->srq_topo == UCT_RC_MLX5_SRQ_TOPO_CYCLIC)) &&
-        UCT_RC_MLX5_TM_ENABLED(iface) &&
         (ib_md->flags & UCT_IB_MLX5_MD_FLAG_DEVX)) {
 
         return UCT_RC_MLX5_MP_ENABLED(iface) ?

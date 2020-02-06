@@ -645,6 +645,22 @@ uct_rc_mlx5_init_rx_tm(uct_rc_mlx5_iface_common_t *iface,
 }
 #endif
 
+#if HAVE_DEVX
+ucs_status_t
+uct_rc_mlx5_devx_init_rx(uct_rc_mlx5_iface_common_t *iface,
+                         const uct_rc_iface_common_config_t *config,
+                         int dc);
+
+#else
+static UCS_F_MAYBE_UNUSED ucs_status_t
+uct_rc_mlx5_devx_init_rx(uct_rc_mlx5_iface_common_t *iface,
+                         const uct_rc_iface_common_config_t *config,
+                         int dc)
+{
+    return UCS_ERR_UNSUPPORTED;
+}
+#endif
+
 #if IBV_HW_TM && HAVE_DEVX
 ucs_status_t uct_rc_mlx5_devx_init_rx_tm(uct_rc_mlx5_iface_common_t *iface,
                                          const uct_rc_iface_common_config_t *config,

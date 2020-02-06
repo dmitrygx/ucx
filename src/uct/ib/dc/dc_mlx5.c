@@ -562,15 +562,16 @@ static ucs_status_t
 uct_dc_mlx5_init_rx(uct_rc_iface_t *rc_iface,
                     const uct_rc_iface_common_config_t *rc_config)
 {
-    uct_ib_mlx5_md_t *md               = ucs_derived_of(rc_iface->super.super.md, uct_ib_mlx5_md_t);
-    uct_dc_mlx5_iface_config_t *config = ucs_derived_of(rc_config, uct_dc_mlx5_iface_config_t);
-    uct_dc_mlx5_iface_t *iface         = ucs_derived_of(rc_iface, uct_dc_mlx5_iface_t);
+    uct_ib_mlx5_md_t *md                 = ucs_derived_of(rc_iface->super.super.md,
+                                                          uct_ib_mlx5_md_t);
+    uct_dc_mlx5_iface_t *iface           = ucs_derived_of(rc_iface,
+                                                          uct_dc_mlx5_iface_t);
     struct ibv_srq_init_attr_ex srq_attr = {};
     ucs_status_t status;
 
     if (UCT_RC_MLX5_TM_ENABLED(&iface->super)) {
         if (md->flags & UCT_IB_MLX5_MD_FLAG_DEVX_DC_SRQ) {
-            status = uct_rc_mlx5_devx_init_rx_tm(&iface->super, &config->super,
+            status = uct_rc_mlx5_devx_init_rx_tm(&iface->super, rc_config,
                                                  1, UCT_DC_RNDV_HDR_LEN);
             if (status != UCS_OK) {
                 goto err;
@@ -590,13 +591,13 @@ uct_dc_mlx5_init_rx(uct_rc_iface_t *rc_iface,
             dc_op.sl         = rc_iface->super.config.sl;
             dc_op.dct_key    = UCT_IB_KEY;
             dc_op.ooo_caps   = uct_dc_mlx5_iface_ooo_flag(iface,
-                    IBV_EXP_OOO_SUPPORT_RW_DATA_PLACEMENT,
-                    "TM XRQ", 0);
+                                                          IBV_EXP_OOO_SUPPORT_RW_DATA_PLACEMENT,
+                                                          "TM XRQ", 0);
 
             srq_attr.comp_mask         = IBV_EXP_CREATE_SRQ_DC_OFFLOAD_PARAMS;
             srq_attr.dc_offload_params = &dc_op;
 #endif
-            status = uct_rc_mlx5_init_rx_tm(&iface->super, &config->super,
+            status = uct_rc_mlx5_init_rx_tm(&iface->super, rc_config,
                                             &srq_attr, UCT_DC_RNDV_HDR_LEN);
             if (status != UCS_OK) {
                 goto err;
@@ -607,21 +608,32 @@ uct_dc_mlx5_init_rx(uct_rc_iface_t *rc_iface,
         return status;
     }
 
-    status = uct_rc_iface_init_rx(rc_iface, rc_config,
-                                  &iface->super.rx.srq.verbs.srq);
-    if (status != UCS_OK) {
-        goto err;
+    /* MP XRQ is supported with HW TM only */
+    ucs_assert(!UCT_RC_MLX5_MP_ENABLED(&iface->super));
+
+    if (md->flags & UCT_IB_MLX5_MD_FLAG_DEVX_DC_SRQ) {
+        status = uct_rc_mlx5_devx_init_rx(&iface->super, rc_config, 1);
+        if (status != UCS_OK) {
+            goto err;
+        }
+    } else {
+        status = uct_rc_iface_init_rx(rc_iface, rc_config,
+                                      &iface->super.rx.srq.verbs.srq);
+        if (status != UCS_OK) {
+            goto err;
+        }
+
+        status = uct_ib_mlx5_srq_init(&iface->super.rx.srq,
+                                      iface->super.rx.srq.verbs.srq,
+                                      iface->super.super.super.config.seg_size,
+                                      iface->super.tm.mp.num_strides);
+        if (status != UCS_OK) {
+            goto err_free_srq;
+        }
+
+        iface->super.rx.srq.type = UCT_IB_MLX5_OBJ_TYPE_VERBS;
     }
 
-    status = uct_ib_mlx5_srq_init(&iface->super.rx.srq,
-                                  iface->super.rx.srq.verbs.srq,
-                                  iface->super.super.super.config.seg_size,
-                                  iface->super.tm.mp.num_strides);
-    if (status != UCS_OK) {
-        goto err_free_srq;
-    }
-
-    iface->super.rx.srq.type = UCT_IB_MLX5_OBJ_TYPE_VERBS;
     iface->super.super.progress = uct_dc_mlx5_iface_progress;
     return UCS_OK;
 

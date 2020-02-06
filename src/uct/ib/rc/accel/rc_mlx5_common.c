@@ -758,7 +758,8 @@ ucs_status_t uct_rc_mlx5_init_rx_tm(uct_rc_mlx5_iface_common_t *iface,
 
     uct_rc_mlx5_init_rx_tm_common(iface, config, rndv_hdr_len);
 
-    ucs_assert(iface->tm.mp.num_strides == 1); /* MP XRQ is supported with DEVX only */
+    ucs_assert(!UCT_RC_MLX5_MP_ENABLED(iface)); /* MP XRQ is supported with DEVX only */
+
 #if HAVE_DECL_IBV_EXP_CREATE_SRQ
     /* Create TM-capable XRQ */
     srq_attr->base.attr.max_sge   = 1;
