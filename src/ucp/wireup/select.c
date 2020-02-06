@@ -1196,8 +1196,7 @@ ucp_wireup_add_rma_bw_lanes(const ucp_wireup_select_params_t *select_params,
     bw_info.md_map            = 0;
 
     /* check rkey_ptr */
-    if (!(ep_init_flags & UCP_EP_INIT_FLAG_MEM_TYPE) &&
-         (context->config.ext.rndv_mode == UCP_RNDV_MODE_AUTO)) {
+    if (!(ep_init_flags & UCP_EP_INIT_FLAG_MEM_TYPE)) {
 
         /* We require remote memory registration and local ability to obtain
          * a pointer to the remote key. Only one is needed since we are doing

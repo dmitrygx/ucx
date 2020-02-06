@@ -65,7 +65,7 @@
         if (ucs_likely((_req)->flags & UCP_REQUEST_FLAG_CALLBACK)) { \
             (_req)->_cb((_req) + 1, (_status), ## __VA_ARGS__); \
         } \
-        if (ucs_unlikely(((_req)->flags  |= UCP_REQUEST_FLAG_COMPLETED) & \
+        if (ucs_unlikely(((_req)->flags |= UCP_REQUEST_FLAG_COMPLETED) & \
                          UCP_REQUEST_FLAG_RELEASED)) { \
             ucp_request_put(_req); \
         } \
