@@ -106,7 +106,7 @@ struct ucp_request {
 
     union {
 
-        /* "send" part - used for tag_send, am_send stream_send,
+        /* "send" part - used for tag_send, am_send, stream_send,
          * put, get, and atomic operations */
         struct {
             ucp_ep_h              ep;
