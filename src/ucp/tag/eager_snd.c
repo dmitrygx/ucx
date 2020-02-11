@@ -73,7 +73,7 @@ static size_t ucp_tag_pack_eager_first_dt(void *dest, void *arg)
                            sizeof(*hdr);
     hdr->super.super.tag = req->send.tag.tag;
     hdr->total_len       = req->send.length;
-    hdr->msg_id          = req->send.tag.message_id;
+    hdr->msg_id          = req->send.message_id;
 
     return ucp_tag_pack_eager_common(req, hdr + 1, length, sizeof(*hdr), 0, 1);
 }
@@ -92,7 +92,7 @@ static size_t ucp_tag_pack_eager_sync_first_dt(void *dest, void *arg)
     hdr->super.super.super.tag = req->send.tag.tag;
     hdr->super.total_len       = req->send.length;
     hdr->req.ep_ptr            = ucp_request_get_dest_ep_ptr(req);
-    hdr->super.msg_id          = req->send.tag.message_id;
+    hdr->super.msg_id          = req->send.message_id;
     hdr->req.reqptr            = (uintptr_t)req;
 
     return ucp_tag_pack_eager_common(req, hdr + 1, length, sizeof(*hdr), 0, 1);
@@ -107,7 +107,7 @@ static size_t ucp_tag_pack_eager_middle_dt(void *dest, void *arg)
     length      = ucs_min(ucp_ep_get_max_bcopy(req->send.ep, req->send.lane) -
                           sizeof(*hdr),
                           req->send.length - req->send.state.dt.offset);
-    hdr->msg_id = req->send.tag.message_id;
+    hdr->msg_id = req->send.message_id;
     hdr->offset = req->send.state.dt.offset;
 
     return ucp_tag_pack_eager_common(req, hdr + 1, length, sizeof(*hdr), 0, 0);
@@ -179,8 +179,8 @@ static ucs_status_t ucp_tag_eager_zcopy_multi(uct_pending_req_t *self)
 
     first_hdr.super.super.tag = req->send.tag.tag;
     first_hdr.total_len       = req->send.length;
-    first_hdr.msg_id          = req->send.tag.message_id;
-    middle_hdr.msg_id         = req->send.tag.message_id;
+    first_hdr.msg_id          = req->send.message_id;
+    middle_hdr.msg_id         = req->send.message_id;
     middle_hdr.offset         = req->send.state.dt.offset;
 
     return ucp_do_am_zcopy_multi(self,
@@ -293,8 +293,8 @@ static ucs_status_t ucp_tag_eager_sync_zcopy_multi(uct_pending_req_t *self)
     first_hdr.super.total_len       = req->send.length;
     first_hdr.req.ep_ptr            = ucp_request_get_dest_ep_ptr(req);
     first_hdr.req.reqptr            = (uintptr_t)req;
-    first_hdr.super.msg_id          = req->send.tag.message_id;
-    middle_hdr.msg_id               = req->send.tag.message_id;
+    first_hdr.super.msg_id          = req->send.message_id;
+    middle_hdr.msg_id               = req->send.message_id;
     middle_hdr.offset               = req->send.state.dt.offset;
 
     return ucp_do_am_zcopy_multi(self,

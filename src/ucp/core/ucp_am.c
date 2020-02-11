@@ -151,7 +151,7 @@ ucp_am_bcopy_pack_args_first(void *dest, void *arg)
                                   sizeof(*hdr);
     hdr->total_size = req->send.length;
     hdr->am_id      = req->send.am.am_id;
-    hdr->msg_id     = req->send.am.message_id;
+    hdr->msg_id     = req->send.message_id;
     hdr->ep         = ucp_request_get_dest_ep_ptr(req);
     hdr->offset     = req->send.state.dt.offset;
     
@@ -177,7 +177,7 @@ ucp_am_bcopy_pack_args_mid(void *dest, void *arg)
     length    = ucs_min(max_bcopy - sizeof(*hdr),
                         req->send.length - req->send.state.dt.offset);
 
-    hdr->msg_id     = req->send.am.message_id;
+    hdr->msg_id     = req->send.message_id;
     hdr->offset     = req->send.state.dt.offset;
     hdr->ep         = ucp_request_get_dest_ep_ptr(req);
     hdr->am_id      = req->send.am.am_id;
@@ -321,7 +321,7 @@ static ucs_status_t ucp_am_zcopy_multi(uct_pending_req_t *self)
     ucp_am_long_hdr_t hdr;
     
     hdr.ep         = ucp_request_get_dest_ep_ptr(req);
-    hdr.msg_id     = req->send.am.message_id;
+    hdr.msg_id     = req->send.message_id;
     hdr.offset     = req->send.state.dt.offset;
     hdr.am_id      = req->send.am.am_id;
     hdr.total_size = req->send.length;
@@ -330,7 +330,7 @@ static ucs_status_t ucp_am_zcopy_multi(uct_pending_req_t *self)
                                  UCP_AM_ID_MULTI,
                                  &hdr, sizeof(hdr),
                                  &hdr, sizeof(hdr),
-                                 ucp_proto_am_zcopy_req_complete, 0);
+                                 ucp_proto_am_zcopy_req_complete, 1);
 }
 
 static ucs_status_t ucp_am_zcopy_multi_reply(uct_pending_req_t *self)
@@ -339,16 +339,16 @@ static ucs_status_t ucp_am_zcopy_multi_reply(uct_pending_req_t *self)
     ucp_am_long_hdr_t hdr;
 
     hdr.ep         = ucp_request_get_dest_ep_ptr(req);
-    hdr.msg_id     = req->send.am.message_id;
+    hdr.msg_id     = req->send.message_id;
     hdr.offset     = req->send.state.dt.offset;
     hdr.am_id      = req->send.am.am_id;
     hdr.total_size = req->send.length;
     
-    return ucp_do_am_zcopy_multi(self, UCP_AM_ID_MULTI_REPLY, 
+    return ucp_do_am_zcopy_multi(self, UCP_AM_ID_MULTI_REPLY,
                                  UCP_AM_ID_MULTI_REPLY,
                                  &hdr, sizeof(hdr),
                                  &hdr, sizeof(hdr),
-                                 ucp_proto_am_zcopy_req_complete, 0);
+                                 ucp_proto_am_zcopy_req_complete, 1);
 }
 
 static void ucp_am_send_req_init(ucp_request_t *req, ucp_ep_h ep,

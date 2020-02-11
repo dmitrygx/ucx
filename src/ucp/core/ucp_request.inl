@@ -379,9 +379,23 @@ ucp_request_send_buffer_reg_lane(ucp_request_t *req, ucp_lane_index_t lane,
 static UCS_F_ALWAYS_INLINE ucs_status_t
 ucp_send_request_add_reg_lane(ucp_request_t *req, ucp_lane_index_t lane)
 {
-    /* add new lane to registration map */
-    return ucp_request_send_buffer_reg_lane_check(req, lane,
-                                                  req->send.state.dt.dt.contig.md_map, 0);
+    /* add new lane to the current registration map */
+    ucp_md_map_t md_map;
+
+    if (ucs_likely(!UCP_DT_IS_IOV(req->send.datatype))) {
+        md_map = req->send.state.dt.dt.contig.md_map;
+    } else if (req->send.state.dt.dt.iov.dt_reg != NULL)  {
+        /* dt_reg can be NULL if underlying UCT TL doesn't require
+         * memory handle for for local AM/GET/PUT operations
+         * (i.e. UCT_MD_FLAG_NEED_MEMH is not set) */
+        /* can use the first DT registration element, since
+         * they have the same MD maps */
+        md_map = req->send.state.dt.dt.iov.dt_reg[0].md_map;
+    } else {
+        md_map = 0;
+    }
+    
+    return ucp_request_send_buffer_reg_lane_check(req, lane, md_map, 0);
 }
 
 static UCS_F_ALWAYS_INLINE ucs_status_t
@@ -553,14 +567,14 @@ ucp_send_request_get_next_am_bw_lane(ucp_request_t *req)
     /* at least one lane must be initialized */
     ucs_assert(ucp_ep_config(req->send.ep)->key.am_bw_lanes[0] != UCP_NULL_LANE);
 
-    lane = (req->send.tag.am_bw_index >= UCP_MAX_LANES) ?
+    lane = (req->send.am_bw_index >= UCP_MAX_LANES) ?
            UCP_NULL_LANE :
-           ucp_ep_config(req->send.ep)->key.am_bw_lanes[req->send.tag.am_bw_index];
+           ucp_ep_config(req->send.ep)->key.am_bw_lanes[req->send.am_bw_index];
     if (lane != UCP_NULL_LANE) {
-        req->send.tag.am_bw_index++;
+        req->send.am_bw_index++;
         return lane;
     } else {
-        req->send.tag.am_bw_index = 1;
+        req->send.am_bw_index = 1;
         return ucp_ep_config(req->send.ep)->key.am_bw_lanes[0];
     }
 }

@@ -230,13 +230,15 @@ UCS_PROFILE_FUNC(ucs_status_t, ucp_request_memory_reg,
     case UCP_DATATYPE_IOV:
         iovcnt = state->dt.iov.iovcnt;
         iov    = buffer;
-        dt_reg = ucs_malloc(sizeof(*dt_reg) * iovcnt, "iov_dt_reg");
+
+        dt_reg = ((state->dt.iov.dt_reg == NULL) ?
+                  ucs_calloc(iovcnt, sizeof(*dt_reg), "iov_dt_reg") :
+                  state->dt.iov.dt_reg);
         if (NULL == dt_reg) {
             status = UCS_ERR_NO_MEMORY;
             goto err;
         }
         for (iov_it = 0; iov_it < iovcnt; ++iov_it) {
-            dt_reg[iov_it].md_map = 0;
             if (iov[iov_it].length) {
                 status = ucp_mem_rereg_mds(context, md_map, iov[iov_it].buffer,
                                            iov[iov_it].length, flags, NULL,
@@ -329,18 +331,16 @@ ucp_request_send_start(ucp_request_t *req, ssize_t max_short,
         /* bcopy */
         ucp_request_send_state_reset(req, NULL, UCP_REQUEST_SEND_PROTO_BCOPY_AM);
         if (length <= msg_config->max_bcopy - proto->only_hdr_size) {
-            req->send.uct.func   = proto->bcopy_single;
+            req->send.uct.func        = proto->bcopy_single;
             UCS_PROFILE_REQUEST_EVENT(req, "start_bcopy_single", req->send.length);
         } else {
             req->send.uct.func        = proto->bcopy_multi;
-            
-            if (req->flags & UCP_REQUEST_FLAG_SEND_AM) {
-                req->send.am.message_id = req->send.ep->worker->am_message_id++;
-            } else if (req->flags & UCP_REQUEST_FLAG_SEND_TAG) {
-                req->send.tag.message_id  = req->send.ep->worker->am_message_id++;
-                req->send.tag.am_bw_index = 1;
+
+            if (req->flags & (UCP_REQUEST_FLAG_SEND_AM | UCP_REQUEST_FLAG_SEND_TAG)) {
+                req->send.message_id  = req->send.ep->worker->am_message_id++;
+                req->send.am_bw_index = 1;
             }
-            
+
             req->send.pending_lane    = UCP_NULL_LANE;
             UCS_PROFILE_REQUEST_EVENT(req, "start_bcopy_multi", req->send.length);
         }
@@ -369,13 +369,11 @@ ucp_request_send_start(ucp_request_t *req, ssize_t max_short,
 
         if (multi) {
             req->send.uct.func        = proto->zcopy_multi;
-            
-            if (req->flags & UCP_REQUEST_FLAG_SEND_AM) {
-                req->send.am.message_id = req->send.ep->worker->am_message_id++;
-            } else if (req->flags & UCP_REQUEST_FLAG_SEND_TAG) {
-                req->send.tag.message_id  = req->send.ep->worker->am_message_id++;
-                req->send.tag.am_bw_index = 1;
-            } 
+
+            if (req->flags & (UCP_REQUEST_FLAG_SEND_AM | UCP_REQUEST_FLAG_SEND_TAG)) {
+                req->send.message_id  = req->send.ep->worker->am_message_id++;
+                req->send.am_bw_index = 1;
+            }
 
             req->send.pending_lane    = UCP_NULL_LANE;
             UCS_PROFILE_REQUEST_EVENT(req, "start_zcopy_multi", req->send.length);

@@ -117,17 +117,26 @@ struct ucp_request {
             ucp_send_callback_t   cb;       /* Completion callback */
 
             union {
-
                 ucp_wireup_msg_t  wireup;
 
-                /* Tagged send */
                 struct {
-                    ucp_tag_t        tag;
-                    uint64_t         message_id;  /* message ID used in AM */
                     ucp_lane_index_t am_bw_index; /* AM BW lane index */
-                    uintptr_t        rreq_ptr;    /* receive request ptr on the
+                    uint64_t         message_id;  /* used to identify matching parts
+                                                   * of a large message in AM */
+
+                    /* Tagged send */
+                    struct {
+                        ucp_tag_t    tag;
+                        uintptr_t    rreq_ptr;    /* receive request ptr on the
                                                      recv side (used in AM rndv) */
-                } tag;
+                    } tag;
+
+                    /* AM send */
+                    struct {
+                        uint16_t         am_id;
+                        unsigned         flags;
+                    } am;
+                };
 
                 struct {
                     uint64_t      remote_addr; /* Remote address */
@@ -211,13 +220,6 @@ struct ucp_request {
                     uintptr_t              req;  /* Remote atomic request pointer */
                     ucp_atomic_reply_t     data; /* Atomic reply data */
                 } atomic_reply;
-                
-                struct {
-                    uint16_t am_id;
-                    uint64_t message_id;  /* used to identify matching parts
-                                             of a large message */
-                    unsigned flags;
-                } am;
             };
 
             /* This structure holds all mutable fields, and everything else

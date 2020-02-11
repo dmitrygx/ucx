@@ -272,17 +272,10 @@ ucs_status_t ucp_do_am_zcopy_multi(uct_pending_req_t *self, uint8_t am_id_first,
     uct_ep_h uct_ep;
     int pending_adde_res;
 
-    if (UCP_DT_IS_CONTIG(req->send.datatype)) {
-        if (enable_am_bw && req->send.state.dt.offset) {
-            req->send.lane = ucp_send_request_get_next_am_bw_lane(req);
-            ucp_send_request_add_reg_lane(req, req->send.lane);
-        } else {
-            req->send.lane = ucp_ep_get_am_lane(ep);
-        }
+    if (enable_am_bw && req->send.state.dt.offset) {
+        req->send.lane = ucp_send_request_get_next_am_bw_lane(req);
+        ucp_send_request_add_reg_lane(req, req->send.lane);
     } else {
-        ucs_assert(UCP_DT_IS_IOV(req->send.datatype));
-        /* disable multilane for IOV datatype.
-         * TODO: add IOV processing for multilane */
         req->send.lane = ucp_ep_get_am_lane(ep);
     }
 
