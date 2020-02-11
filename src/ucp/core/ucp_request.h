@@ -106,8 +106,8 @@ struct ucp_request {
 
     union {
 
-        /* "send" part - used for tag_send, stream_send,  put, get, and atomic
-         * operations */
+        /* "send" part - used for tag_send, am_send stream_send,
+         * put, get, and atomic operations */
         struct {
             ucp_ep_h              ep;
             void                  *buffer;  /* Send buffer */
@@ -120,22 +120,24 @@ struct ucp_request {
                 ucp_wireup_msg_t  wireup;
 
                 struct {
-                    ucp_lane_index_t am_bw_index; /* AM BW lane index */
-                    uint64_t         message_id;  /* used to identify matching parts
-                                                   * of a large message in AM */
+                    ucp_lane_index_t am_bw_index;     /* AM BW lane index */
+                    uint64_t         message_id;      /* Used to identify matching parts
+                                                         of a large message in AM */
 
-                    /* Tagged send */
-                    struct {
-                        ucp_tag_t    tag;
-                        uintptr_t    rreq_ptr;    /* receive request ptr on the
-                                                     recv side (used in AM rndv) */
-                    } tag;
+                    union {
+                        /* Tagged send */
+                        struct {
+                            ucp_tag_t    tag;
+                            uintptr_t    rreq_ptr;    /* Receive request ptr on the
+                                                         recv side (used in AM rndv) */
+                        } tag;
 
-                    /* AM send */
-                    struct {
-                        uint16_t         am_id;
-                        unsigned         flags;
-                    } am;
+                        /* AM send */
+                        struct {
+                            uint16_t         am_id;
+                            unsigned         flags;
+                        } am;
+                    };
                 };
 
                 struct {
