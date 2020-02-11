@@ -507,11 +507,12 @@ UCS_PROFILE_FUNC(ucs_status_t, ucp_rndv_progress_rma_get_zcopy, (self),
                         rndv_req->send.mdesc);
 
     for (;;) {
-        status = uct_ep_get_zcopy(ep->uct_eps[lane],
-                                  iov, iovcnt,
-                                  rndv_req->send.rndv_get.remote_address + offset,
-                                  uct_rkey,
-                                  &rndv_req->send.state.uct_comp);
+        status = UCS_PROFILE_RNDV_CALL("RNDV Get Zcopy", uct_ep_get_zcopy,
+                                       ep->uct_eps[lane],
+                                       iov, iovcnt,
+                                       rndv_req->send.rndv_get.remote_address + offset,
+                                       uct_rkey,
+                                       &rndv_req->send.state.uct_comp);
         ucp_request_send_state_advance(rndv_req, &state,
                                        UCP_REQUEST_SEND_PROTO_RNDV_GET,
                                        status);
@@ -966,11 +967,12 @@ UCS_PROFILE_FUNC(ucs_status_t, ucp_rndv_progress_rma_put_zcopy, (self),
     ucp_dt_iov_copy_uct(ep->worker->context, iov, &iovcnt, max_iovcnt, &state,
                         sreq->send.buffer, ucp_dt_make_contig(1), length,
                         ucp_ep_md_index(ep, sreq->send.lane), sreq->send.mdesc);
-    status = uct_ep_put_zcopy(ep->uct_eps[sreq->send.lane],
-                              iov, iovcnt,
-                              sreq->send.rndv_put.remote_address + offset,
-                              sreq->send.rndv_put.uct_rkey,
-                              &sreq->send.state.uct_comp);
+    status = UCS_PROFILE_RNDV_CALL("RNDV Put Zcopy", uct_ep_put_zcopy,
+                                   ep->uct_eps[sreq->send.lane],
+                                   iov, iovcnt,
+                                   sreq->send.rndv_put.remote_address + offset,
+                                   sreq->send.rndv_put.uct_rkey,
+                                   &sreq->send.state.uct_comp);
     ucp_request_send_state_advance(sreq, &state,
                                    UCP_REQUEST_SEND_PROTO_RNDV_PUT,
                                    status);

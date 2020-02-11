@@ -23,6 +23,7 @@
 #define UCS_PROFILE_CALL(_func, ...)                        _func(__VA_ARGS__)
 #define UCS_PROFILE_NAMED_CALL_VOID(_name, _func, ...)      _func(__VA_ARGS__)
 #define UCS_PROFILE_CALL_VOID(_func, ...)                   _func(__VA_ARGS__)
+#define UCS_PROFILE_RNDV_CALL(_name, _func, ...)            _func(__VA_ARGS__)
 #define UCS_PROFILE_REQUEST_NEW(...)                        UCS_EMPTY_STATEMENT
 #define UCS_PROFILE_REQUEST_EVENT(...)                      UCS_EMPTY_STATEMENT
 #define UCS_PROFILE_REQUEST_EVENT_CHECK_STATUS(...)         UCS_EMPTY_STATEMENT

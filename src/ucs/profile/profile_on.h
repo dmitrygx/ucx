@@ -86,6 +86,31 @@ BEGIN_C_DECLS
         UCS_PROFILE(UCS_PROFILE_TYPE_SCOPE_END, _name, 0, 0); \
     }
 
+#if 1
+
+#define UCS_PROFILE_CODE(_name)
+#define UCS_PROFILE_FUNC(_ret_type, _name, _arglist, ...)   _ret_type _name(__VA_ARGS__)
+#define UCS_PROFILE_FUNC_VOID(_name, _arglist, ...)         void _name(__VA_ARGS__)
+#define UCS_PROFILE_NAMED_CALL(_name, _func, ...)           _func(__VA_ARGS__)
+#define UCS_PROFILE_CALL(_func, ...)                        _func(__VA_ARGS__)
+#define UCS_PROFILE_NAMED_CALL_VOID(_name, _func, ...)      _func(__VA_ARGS__)
+#define UCS_PROFILE_CALL_VOID(_func, ...)                   _func(__VA_ARGS__)
+#define UCS_PROFILE_REQUEST_NEW(...)                        UCS_EMPTY_STATEMENT
+#define UCS_PROFILE_REQUEST_EVENT(...)                      UCS_EMPTY_STATEMENT
+#define UCS_PROFILE_REQUEST_EVENT_CHECK_STATUS(...)         UCS_EMPTY_STATEMENT
+#define UCS_PROFILE_REQUEST_FREE(...)                       UCS_EMPTY_STATEMENT
+
+
+#define UCS_PROFILE_RNDV_CALL(_name, _func, ...) \
+    ({ \
+        typeof(_func(__VA_ARGS__)) retval; \
+        UCS_PROFILE_SCOPE_BEGIN(); \
+        retval = _func(__VA_ARGS__); \
+        UCS_PROFILE_SCOPE_END(_name); \
+        retval; \
+    })
+
+#else
 
 /**
  * Declare a profiled scope of code.
@@ -254,7 +279,7 @@ BEGIN_C_DECLS
  */
 #define UCS_PROFILE_REQUEST_FREE(_req) \
     UCS_PROFILE(UCS_PROFILE_TYPE_REQUEST_FREE, "", 0, (uintptr_t)(_req));
-
+#endif
 
 /*
  * Store a new record with the given data.
