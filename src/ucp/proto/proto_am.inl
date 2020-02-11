@@ -120,6 +120,58 @@ ucs_status_t ucp_do_am_bcopy_multi(uct_pending_req_t *self, uint8_t am_id_first,
 }
 
 static UCS_F_ALWAYS_INLINE
+size_t ucp_dt_iov_copy_iov_uct(uct_iov_t *iov, size_t *iovcnt,
+                               size_t max_dst_iov, ucp_dt_state_t *state,
+                               const ucp_dt_iov_t *src_iov, size_t length_max,
+                               ucp_md_index_t md_index, uint64_t md_flags)
+{
+    size_t length_it = 0;
+    size_t iov_offset, max_src_iov, src_it, dst_it;
+    ucp_md_index_t memh_index;
+
+    iov_offset               = state->dt.iov.iov_offset;
+    max_src_iov              = state->dt.iov.iovcnt;
+    src_it                   = state->dt.iov.iovcnt_offset;
+    dst_it                   = 0;
+    state->dt.iov.iov_offset = 0;
+
+    while ((dst_it < max_dst_iov) && (src_it < max_src_iov)) {
+        if (src_iov[src_it].length != 0) {
+            iov[dst_it].buffer   = UCS_PTR_BYTE_OFFSET(src_iov[src_it].buffer,
+                                                       iov_offset);
+            iov[dst_it].length   = src_iov[src_it].length - iov_offset;
+            if (md_flags & UCT_MD_FLAG_NEED_MEMH) {
+                ucs_assert(state->dt.iov.dt_reg != NULL);
+                memh_index       = ucs_bitmap2idx(state->dt.iov.dt_reg[src_it].md_map,
+                                                  md_index);
+                iov[dst_it].memh = state->dt.iov.dt_reg[src_it].memh[memh_index];
+            } else {
+                ucs_assert(state->dt.iov.dt_reg == NULL);
+                iov[dst_it].memh = UCT_MEM_HANDLE_NULL;
+            }
+            iov[dst_it].stride   = 0;
+            iov[dst_it].count    = 1;
+            length_it           += iov[dst_it].length;
+
+            ++dst_it;
+            if (length_it >= length_max) {
+                iov[dst_it - 1].length  -= (length_it - length_max);
+                length_it                = length_max;
+                state->dt.iov.iov_offset = iov_offset + iov[dst_it - 1].length;
+                break;
+            }
+        }
+        iov_offset = 0;
+        ++src_it;
+    }
+
+    state->dt.iov.iovcnt_offset = src_it;
+    *iovcnt                     = dst_it;
+
+    return length_it;
+}
+
+static UCS_F_ALWAYS_INLINE
 void ucp_dt_iov_copy_uct(ucp_context_h context, uct_iov_t *iov, size_t *iovcnt,
                          size_t max_dst_iov, ucp_dt_state_t *state,
                          const ucp_dt_iov_t *src_iov, ucp_datatype_t datatype,
@@ -127,8 +179,7 @@ void ucp_dt_iov_copy_uct(ucp_context_h context, uct_iov_t *iov, size_t *iovcnt,
                          ucp_mem_desc_t *mdesc)
 {
     uint64_t md_flags = context->tl_mds[md_index].attr.cap.flags;
-    size_t length_it  = 0;
-    size_t iov_offset, max_src_iov, src_it, dst_it;
+    size_t length_it;
     ucp_md_index_t memh_index;
 
     ucs_assert((context->tl_mds[md_index].attr.cap.flags & UCT_MD_FLAG_REG) ||
@@ -156,44 +207,9 @@ void ucp_dt_iov_copy_uct(ucp_context_h context, uct_iov_t *iov, size_t *iovcnt,
         length_it = iov[0].length;
         break;
     case UCP_DATATYPE_IOV:
-        iov_offset               = state->dt.iov.iov_offset;
-        max_src_iov              = state->dt.iov.iovcnt;
-        src_it                   = state->dt.iov.iovcnt_offset;
-        dst_it                   = 0;
-        state->dt.iov.iov_offset = 0;
-        
-        while ((dst_it < max_dst_iov) && (src_it < max_src_iov)) {
-            if (src_iov[src_it].length != 0) {
-                iov[dst_it].buffer   = UCS_PTR_BYTE_OFFSET(src_iov[src_it].buffer,
-                                                           iov_offset);
-                iov[dst_it].length   = src_iov[src_it].length - iov_offset;
-                if (md_flags & UCT_MD_FLAG_NEED_MEMH) {
-                    ucs_assert(state->dt.iov.dt_reg != NULL);
-                    memh_index       = ucs_bitmap2idx(state->dt.iov.dt_reg[src_it].md_map,
-                                                      md_index);
-                    iov[dst_it].memh = state->dt.iov.dt_reg[src_it].memh[memh_index];
-                } else {
-                    ucs_assert(state->dt.iov.dt_reg == NULL);
-                    iov[dst_it].memh = UCT_MEM_HANDLE_NULL;
-                }
-                iov[dst_it].stride   = 0;
-                iov[dst_it].count    = 1;
-                length_it           += iov[dst_it].length;
-
-                ++dst_it;
-                if (length_it >= length_max) {
-                    iov[dst_it - 1].length  -= (length_it - length_max);
-                    length_it                = length_max;
-                    state->dt.iov.iov_offset = iov_offset + iov[dst_it - 1].length;
-                    break;
-                }
-            }
-            iov_offset = 0;
-            ++src_it;
-        }
-
-        state->dt.iov.iovcnt_offset = src_it;
-        *iovcnt                     = dst_it;
+        length_it = ucp_dt_iov_copy_iov_uct(iov, iovcnt, max_dst_iov, state,
+                                            src_iov, length_max, md_index,
+                                            md_flags);
         break;
     default:
         ucs_error("Invalid data type");
