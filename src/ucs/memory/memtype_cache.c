@@ -99,7 +99,7 @@ static void ucs_memtype_cache_region_collect_callback(const ucs_pgtable_t *pgtab
 
 UCS_PROFILE_FUNC_VOID(ucs_memtype_cache_update_internal,
                       (memtype_cache, address, size, mem_type, action),
-                      ucs_memtype_cache_t *memtype_cache, void *address,
+                      ucs_memtype_cache_t *memtype_cache, const void *address,
                       size_t size, ucs_memory_type_t mem_type,
                       ucs_memtype_cache_action_t action)
 {
