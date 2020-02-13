@@ -57,6 +57,10 @@ ucs_config_field_t uct_mm_iface_config_table[] = {
      "Size of the FIFO element size (data + header) in the MM UCTs.",
      ucs_offsetof(uct_mm_iface_config_t, fifo_elem_size), UCS_CONFIG_TYPE_UINT},
 
+    {"RX_MAX_POLL", "16",
+     "Maximal number of receive completions to pick during RX poll",
+     ucs_offsetof(uct_mm_iface_config_t, rx_max_poll), UCS_CONFIG_TYPE_ULUNITS},
+
     {NULL}
 };
 
@@ -288,15 +292,21 @@ static inline unsigned uct_mm_iface_poll_fifo(uct_mm_iface_t *iface)
 unsigned uct_mm_iface_progress(void *arg)
 {
     uct_mm_iface_t *iface = arg;
+    unsigned total_count  = 0;
     unsigned count;
 
-    /* progress receive */
-    count = uct_mm_iface_poll_fifo(iface);
+    do {/* progress receive */
+        count        = uct_mm_iface_poll_fifo(iface);
+        ucs_assert((count == 0) || (count == 1));
+        total_count += count;
+        ucs_assert(total_count < UINT_MAX);
+    } while ((count != 0) && (total_count < iface->config.rx_max_poll));
 
     /* progress the pending sends (if there are any) */
-    ucs_arbiter_dispatch(&iface->arbiter, 1, uct_mm_ep_process_pending, NULL);
+    ucs_arbiter_dispatch(&iface->arbiter, 1, uct_mm_ep_process_pending,
+                         &total_count);
 
-    return count;
+    return total_count;
 }
 
 static ucs_status_t uct_mm_iface_event_fd_get(uct_iface_h tl_iface, int *fd_p)
@@ -533,6 +543,9 @@ static UCS_CLASS_INIT_FUNC(uct_mm_iface_t, uct_md_h md, uct_worker_h worker,
     self->config.fifo_size         = mm_config->fifo_size;
     self->config.fifo_elem_size    = mm_config->fifo_elem_size;
     self->config.seg_size          = mm_config->seg_size;
+    self->config.rx_max_poll       = ((mm_config->rx_max_poll == UCS_ULUNITS_AUTO) ? 16 :
+                                      /* trim by the maximum value for unsigned int */
+                                      ucs_min(mm_config->rx_max_poll, UINT_MAX));
     /* cppcheck-suppress internalAstError */
     self->fifo_release_factor_mask = UCS_MASK(ucs_ilog2(ucs_max((int)
                                      (mm_config->fifo_size * mm_config->release_fifo_factor),

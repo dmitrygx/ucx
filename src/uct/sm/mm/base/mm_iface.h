@@ -54,13 +54,15 @@ enum {
  */
 typedef struct uct_mm_iface_config {
     uct_sm_iface_config_t    super;
-    size_t                   seg_size;        /* Size of the receive
-                                               * descriptor (for payload) */
-    unsigned                 fifo_size;       /* Size of the receive FIFO */
+    size_t                   seg_size;            /* Size of the receive
+                                                   * descriptor (for payload) */
+    unsigned                 fifo_size;           /* Size of the receive FIFO */
+    size_t                   rx_max_poll;         /* Maximal RX completions to pick
+                                                   * during RX poll */
     double                   release_fifo_factor; /* Tail index update frequency */
-    ucs_ternary_value_t      hugetlb_mode;    /* Enable using huge pages for
-                                               * shared memory buffers */
-    unsigned                 fifo_elem_size;  /* Size of the FIFO element size */
+    ucs_ternary_value_t      hugetlb_mode;        /* Enable using huge pages for
+                                                   * shared memory buffers */
+    unsigned                 fifo_elem_size;      /* Size of the FIFO element size */
     uct_iface_mpool_config_t mp;
 } uct_mm_iface_config_t;
 
@@ -170,6 +172,7 @@ typedef struct uct_mm_iface {
         unsigned            fifo_size;
         unsigned            fifo_elem_size;
         unsigned            seg_size;         /* size of the receive descriptor (for payload)*/
+        unsigned            rx_max_poll;
     } config;
 } uct_mm_iface_t;
 
