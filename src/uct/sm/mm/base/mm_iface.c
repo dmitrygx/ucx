@@ -57,13 +57,13 @@ ucs_config_field_t uct_mm_iface_config_table[] = {
      "Size of the FIFO element size (data + header) in the MM UCTs.",
      ucs_offsetof(uct_mm_iface_config_t, fifo_elem_size), UCS_CONFIG_TYPE_UINT},
 
-    {"FIFO_MAX_POLL", "16",
+    {"FIFO_MAX_POLL", UCS_PP_MAKE_STRING(UCT_MM_IFACE_FIFO_MAX_POLL),
      "Maximal number of receive completions to pick during RX poll",
      ucs_offsetof(uct_mm_iface_config_t, fifo_max_poll), UCS_CONFIG_TYPE_ULUNITS},
 
-    {"FIFO_WINDOW_EPOCH", "128",
+    {"FIFO_WINDOW_UPDATE_RATE", UCS_PP_MAKE_STRING(UCT_MM_IFACE_FIFO_WINDOW_UPDATE_RATE),
      "How much iterations should be done before FIFO poll window size will be adjusted",
-     ucs_offsetof(uct_mm_iface_config_t, fifo_window_epoch), UCS_CONFIG_TYPE_ULUNITS},
+     ucs_offsetof(uct_mm_iface_config_t, fifo_window_update_rate), UCS_CONFIG_TYPE_ULUNITS},
 
     {NULL}
 };
@@ -232,64 +232,65 @@ static inline void uct_mm_iface_process_recv(uct_mm_iface_t *iface,
         uct_iface_trace_am(&iface->super.super, UCT_AM_TRACE_TYPE_RECV,
                            elem->am_id, elem + 1, elem->length, "RX: AM_SHORT");
         uct_mm_iface_invoke_am(iface, elem->am_id, elem + 1, elem->length, 0);
-    } else {
-        /* check the memory pool to make sure that there is a new descriptor available */
-        if (ucs_unlikely(iface->last_recv_desc == NULL)) {
-            UCT_TL_IFACE_GET_RX_DESC(&iface->super.super, &iface->recv_desc_mp,
-                                     iface->last_recv_desc, return);
-        }
+        return;
+    }
 
-        /* read bcopy messages from the receive descriptors */
-        data = elem->desc_data;
-        VALGRIND_MAKE_MEM_DEFINED(data, elem->length);
+    /* check the memory pool to make sure that there is a new descriptor available */
+    if (ucs_unlikely(iface->last_recv_desc == NULL)) {
+        UCT_TL_IFACE_GET_RX_DESC(&iface->super.super, &iface->recv_desc_mp,
+                                 iface->last_recv_desc, return);
+    }
 
-        uct_iface_trace_am(&iface->super.super, UCT_AM_TRACE_TYPE_RECV,
-                           elem->am_id, data, elem->length, "RX: AM_BCOPY");
+    /* read bcopy messages from the receive descriptors */
+    data = elem->desc_data;
+    VALGRIND_MAKE_MEM_DEFINED(data, elem->length);
 
-        status = uct_mm_iface_invoke_am(iface, elem->am_id, data, elem->length,
-                                        UCT_CB_PARAM_FLAG_DESC);
-        if (status != UCS_OK) {
-            /* assign a new receive descriptor to this FIFO element.*/
-            uct_mm_assign_desc_to_fifo_elem(iface, elem, 0);
-            /* the last_recv_desc is in use. get a new descriptor for it */
-            UCT_TL_IFACE_GET_RX_DESC(&iface->super.super, &iface->recv_desc_mp,
-                                     iface->last_recv_desc, ucs_debug("recv mpool is empty"));
-        }
+    uct_iface_trace_am(&iface->super.super, UCT_AM_TRACE_TYPE_RECV,
+                       elem->am_id, data, elem->length, "RX: AM_BCOPY");
+
+    status = uct_mm_iface_invoke_am(iface, elem->am_id, data, elem->length,
+                                    UCT_CB_PARAM_FLAG_DESC);
+    if (status != UCS_OK) {
+        /* assign a new receive descriptor to this FIFO element.*/
+        uct_mm_assign_desc_to_fifo_elem(iface, elem, 0);
+        /* the last_recv_desc is in use. get a new descriptor for it */
+        UCT_TL_IFACE_GET_RX_DESC(&iface->super.super, &iface->recv_desc_mp,
+                                 iface->last_recv_desc, ucs_debug("recv mpool is empty"));
     }
 }
 
 static inline int uct_mm_iface_fifo_has_new_data(uct_mm_iface_t *iface)
 {
+    /* check the read_index to see if there is a new item to read
+     * (checking the owner bit) */
     return (((iface->read_index >> iface->fifo_shift) & 1) ==
-            ((iface->read_index_elem->flags) & 1));
+            (iface->read_index_elem->flags & 1));
 }
 
 static inline unsigned
 uct_mm_iface_poll_fifo(uct_mm_iface_t *iface)
 {
-    /* check the read_index to see if there is a new item to read
-     * (checking the owner bit) */
-    if (uct_mm_iface_fifo_has_new_data(iface)) {
-        /* read from read_index_elem */
-        ucs_memory_cpu_load_fence();
-        ucs_assert(iface->read_index <= iface->recv_fifo_ctl->head);
-
-        uct_mm_iface_process_recv(iface, iface->read_index_elem);
-
-        /* raise the read_index */
-        iface->read_index++;
-
-        /* the next fifo_element which the read_index points to */
-        iface->read_index_elem =
-            UCT_MM_IFACE_GET_FIFO_ELEM(iface, iface->recv_fifo_elems,
-                                       (iface->read_index & iface->fifo_mask));
-
-        uct_mm_progress_fifo_tail(iface);
-
-        return 1;
+    if (!uct_mm_iface_fifo_has_new_data(iface)) {
+        return 0;
     }
 
-    return 0;
+    /* read from read_index_elem */
+    ucs_memory_cpu_load_fence();
+    ucs_assert(iface->read_index <= iface->recv_fifo_ctl->head);
+
+    uct_mm_iface_process_recv(iface, iface->read_index_elem);
+
+    /* raise the read_index */
+    iface->read_index++;
+
+    /* the next fifo_element which the read_index points to */
+    iface->read_index_elem =
+        UCT_MM_IFACE_GET_FIFO_ELEM(iface, iface->recv_fifo_elems,
+                                   (iface->read_index & iface->fifo_mask));
+
+    uct_mm_progress_fifo_tail(iface);
+
+    return 1;
 }
 
 static inline void
@@ -299,23 +300,21 @@ uct_mm_iface_fifo_window_adjust(uct_mm_iface_t *iface,
     unsigned avg_count;
 
     if (fifo_poll_count != 0) {
-        if (++iface->fifo_window_update_iter < iface->config.fifo_window_epoch) {
-            /* Calculate average value between the current FIFO window size
-             * and the total receive count for this iterationy */
-            avg_count = (iface->fifo_poll_window_size + fifo_poll_count) >> 1;
+        if (++iface->fifo_window_update_iter < iface->config.fifo_window_update_rate) {
+            iface->fifo_total_count += fifo_poll_count;
+            avg_count                = ucs_div_round_up(iface->fifo_total_count,
+                                                        iface->fifo_window_update_iter);
 
             if (avg_count < iface->fifo_poll_window_size) {
-                iface->fifo_poll_window_size--;
-                ucs_assert(avg_count <= iface->fifo_poll_window_size);
-            } else {
-                ucs_assert(avg_count == iface->fifo_poll_window_size);
-                iface->fifo_poll_window_size = avg_count;
+                iface->fifo_poll_window_size =
+                    (iface->fifo_poll_window_size + avg_count) >> 1;
             }
         } else {
             /* Try to increase FIFO polling window size during the
              * next iface progress procedure */
             iface->fifo_poll_window_size   = iface->config.fifo_max_poll;
             iface->fifo_window_update_iter = 0;
+            iface->fifo_total_count        = 0;
         }
     }
 
@@ -328,7 +327,9 @@ static unsigned uct_mm_iface_progress(uct_iface_h tl_iface)
     unsigned total_count  = 0;
     unsigned count;
 
-    do {/* progress receive */
+    ucs_assert(iface->fifo_poll_window_size >= 1);
+
+    do { /* progress receive */
         count        = uct_mm_iface_poll_fifo(iface);
         ucs_assert(count < 2);
         total_count += count;
@@ -578,11 +579,13 @@ static UCS_CLASS_INIT_FUNC(uct_mm_iface_t, uct_md_h md, uct_worker_h worker,
     self->config.fifo_size         = mm_config->fifo_size;
     self->config.fifo_elem_size    = mm_config->fifo_elem_size;
     self->config.seg_size          = mm_config->seg_size;
-    self->config.fifo_max_poll     = ((mm_config->fifo_max_poll == UCS_ULUNITS_AUTO) ? 16 :
+    self->config.fifo_max_poll     = ((mm_config->fifo_max_poll == UCS_ULUNITS_AUTO) ?
+                                      UCT_MM_IFACE_FIFO_MAX_POLL :
                                       /* trim by the maximum value for unsigned int */
                                       ucs_min(mm_config->fifo_max_poll, UINT_MAX));
     self->fifo_poll_window_size    = self->config.fifo_max_poll;
     self->fifo_window_update_iter  = 0;
+    self->fifo_total_count         = 0;
     /* cppcheck-suppress internalAstError */
     self->fifo_release_factor_mask = UCS_MASK(ucs_ilog2(ucs_max((int)
                                      (mm_config->fifo_size * mm_config->release_fifo_factor),
@@ -594,12 +597,12 @@ static UCS_CLASS_INIT_FUNC(uct_mm_iface_t, uct_md_h md, uct_worker_h worker,
                                      params->rx_headroom : 0;
     self->release_desc.cb          = uct_mm_iface_release_desc;
     /* check that the fifo size, from the user, is a power of two and bigger than 1 */
-    if (mm_config->fifo_window_epoch == UCS_ULUNITS_AUTO) {
-        self->config.fifo_window_epoch = 128;
-    } else if (mm_config->fifo_window_epoch == UCS_ULUNITS_INF) {
-        self->config.fifo_window_epoch = UINT_MAX;
+    if (mm_config->fifo_window_update_rate == UCS_ULUNITS_AUTO) {
+        self->config.fifo_window_update_rate = UCT_MM_IFACE_FIFO_WINDOW_UPDATE_RATE;
+    } else if (mm_config->fifo_window_update_rate == UCS_ULUNITS_INF) {
+        self->config.fifo_window_update_rate = UINT_MAX;
     } else {
-        self->config.fifo_window_epoch = mm_config->fifo_window_epoch - 1;
+        self->config.fifo_window_update_rate = mm_config->fifo_window_update_rate - 1;
     }
 
     /* Allocate the receive FIFO */

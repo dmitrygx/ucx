@@ -48,23 +48,27 @@ enum {
         uct_mm_md_mapper_call(md, _func, ## __VA_ARGS__); \
     })
 
+#define UCT_MM_IFACE_FIFO_MAX_POLL           16
+
+#define UCT_MM_IFACE_FIFO_WINDOW_UPDATE_RATE 128
+
 
 /**
  * MM interface configuration
  */
 typedef struct uct_mm_iface_config {
     uct_sm_iface_config_t    super;
-    size_t                   seg_size;            /* Size of the receive
-                                                   * descriptor (for payload) */
-    unsigned                 fifo_size;           /* Size of the receive FIFO */
-    size_t                   fifo_max_poll;       /* Maximal RX completions to pick
-                                                   * during RX poll */
-    size_t                   fifo_window_epoch;   /* How much iterations should be done before
-                                                   * FIFO poll window size will be adjusted */
-    double                   release_fifo_factor; /* Tail index update frequency */
-    ucs_ternary_value_t      hugetlb_mode;        /* Enable using huge pages for
-                                                   * shared memory buffers */
-    unsigned                 fifo_elem_size;      /* Size of the FIFO element size */
+    size_t                   seg_size;                /* Size of the receive
+                                                       * descriptor (for payload) */
+    unsigned                 fifo_size;               /* Size of the receive FIFO */
+    size_t                   fifo_max_poll;           /* Maximal RX completions to pick
+                                                       * during RX poll */
+    size_t                   fifo_window_update_rate; /* How much iterations should be done before
+                                                       * FIFO poll window size will be adjusted */
+    double                   release_fifo_factor;     /* Tail index update frequency */
+    ucs_ternary_value_t      hugetlb_mode;            /* Enable using huge pages for
+                                                       * shared memory buffers */
+    unsigned                 fifo_elem_size;          /* Size of the FIFO element size */
     uct_iface_mpool_config_t mp;
 } uct_mm_iface_config_t;
 
@@ -158,10 +162,12 @@ typedef struct uct_mm_iface {
     uct_mm_fifo_element_t   *read_index_elem;
     uint64_t                read_index;       /* actual reading location */
 
-    unsigned                fifo_poll_window_size; /* how much elements can be polled during
-                                                    * single call to iface progress, can be
-                                                    * <= config.fifo_max_poll */
-    unsigned                fifo_window_update_iter;
+    unsigned                fifo_poll_window_size; /* how much receive operations can be
+                                                    * processed during single call to iface
+                                                    * progress, can be <= config.fifo_max_poll */
+    unsigned                fifo_window_update_iter; /* the current number of iterations done
+                                                      * before FIFO window adjustment */
+    unsigned                fifo_total_count; /* how much receive operations were processed */
     uint8_t                 fifo_shift;       /* = log2(fifo_size) */
     unsigned                fifo_mask;        /* = 2^fifo_shift - 1 */
     uint64_t                fifo_release_factor_mask;
@@ -180,7 +186,7 @@ typedef struct uct_mm_iface {
         unsigned            fifo_elem_size;
         unsigned            seg_size;         /* size of the receive descriptor (for payload)*/
         unsigned            fifo_max_poll;
-        unsigned            fifo_window_epoch;
+        unsigned            fifo_window_update_rate;
     } config;
 } uct_mm_iface_t;
 
