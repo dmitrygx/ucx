@@ -638,15 +638,13 @@ static UCS_CLASS_INIT_FUNC(uct_mm_iface_t, uct_md_h md, uct_worker_h worker,
                                   sizeof(uct_mm_recv_desc_t),
                                   UCS_SYS_CACHE_LINE_SIZE,
                                   &mm_config->mp,
-                                  512,
+                                  mm_config->mp.bufs_grow,
                                   uct_mm_iface_recv_desc_init,
                                   "mm_recv_desc");
     if (status != UCS_OK) {
         ucs_error("failed to create a receive descriptor memory pool for the MM transport");
         goto err_close_signal_fd;
     }
-
-    ucs_mpool_grow(&self->recv_desc_mp, mm_config->fifo_size * 2);
 
     /* set the first receive descriptor */
     self->last_recv_desc = ucs_mpool_get(&self->recv_desc_mp);
