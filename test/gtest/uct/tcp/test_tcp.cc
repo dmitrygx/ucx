@@ -68,6 +68,13 @@ public:
         EXPECT_EQ(0, ucs_socket_is_connected(fd));
     }
 
+    void check_connected_peers(int fd) {
+        ucs_status_t status = post_recv(fd, true);
+        EXPECT_TRUE((status == UCS_OK) ||
+                    (status == UCS_ERR_NO_PROGRESS));
+        EXPECT_EQ(1, ucs_socket_is_connected(fd));
+    }
+
     void test_listener_flood(entity& test_entity, size_t max_conn,
                              size_t msg_size) {
         std::vector<int> fds;
@@ -85,7 +92,13 @@ public:
         for (std::vector<int>::const_iterator iter = fds.begin();
              iter != fds.end(); ++iter) {
             size_t sent_length = 0;
-            do {
+
+            handled++;
+
+            while (true) {
+                // Peers still have to be connected
+                check_connected_peers(*iter);
+
                 if (msg_size > 0) {
                     post_send(*iter, buf);
                     sent_length += buf.size();
@@ -94,24 +107,22 @@ public:
                 }
 
                 // If it was sent >= the length of the magic number or sending
-                // is not required by the current test, wait until connection
+                // is not required by the current test, wait until the connection
                 // is destroyed. Otherwise, need to send more data
                 if ((msg_size == 0) || (sent_length >= sizeof(uint64_t))) {
-                    handled++;
-
-                    while (get_accepted_conn_num(test_entity) != (max_conn - handled)) {
+                    while (get_accepted_conn_num(test_entity) > (max_conn - handled)) {
                         sched_yield();
                         progress();
                     }
-                } else {
-                    // Peers still have to be connected
-                    ucs_status_t status = post_recv(*iter, true);
-                    EXPECT_TRUE((status == UCS_OK) ||
-                                (status == UCS_ERR_NO_PROGRESS));
-                    EXPECT_EQ(1, ucs_socket_is_connected(*iter));
+
+                    break;
                 }
-            } while ((msg_size != 0) && (sent_length < sizeof(uint64_t)));
+
+                ASSERT_TRUE((msg_size != 0) && (sent_length < sizeof(uint64_t)));
+            }
         }
+
+        EXPECT_EQ(max_conn, handled);
 
         // give a chance to close all connections
         while (!ucs_list_is_empty(&m_tcp_iface->ep_list)) {
@@ -123,14 +134,15 @@ public:
         // created after accept():
         // - EP list has to be empty
         EXPECT_EQ(1, ucs_list_is_empty(&m_tcp_iface->ep_list));
-        // - all connections have to be destroyed (if wasn't closed
-        //   yet by the clients)
-        if (msg_size > 0) {
-            // if we sent data during the test, close socket fd here
-            while (!fds.empty()) {
-                int fd = fds.back();
-                fds.pop_back();
+
+        while (!fds.empty()) {
+            int fd = fds.back();
+            fds.pop_back();
+            if (msg_size > 0) {
+                // - all connections have to be destroyed (if wasn't closed
+                //   yet by the clients)
                 detect_conn_reset(fd);
+                // if we sent data during the test, close socket fd here
                 close(fd);
             }
         }
