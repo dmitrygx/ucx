@@ -299,23 +299,26 @@ uct_mm_iface_fifo_window_adjust(uct_mm_iface_t *iface,
 {
     unsigned avg_count;
 
-    if (fifo_poll_count != 0) {
-        if (++iface->fifo_window_update_iter < iface->config.fifo_window_update_rate) {
-            iface->fifo_total_count += fifo_poll_count;
-            avg_count                = ucs_div_round_up(iface->fifo_total_count,
-                                                        iface->fifo_window_update_iter);
+    if (fifo_poll_count == 0) {
+        return;
+    }
 
-            if (avg_count < iface->fifo_poll_window_size) {
-                iface->fifo_poll_window_size =
-                    (iface->fifo_poll_window_size + avg_count) >> 1;
-            }
-        } else {
-            /* Try to increase FIFO polling window size during the
-             * next iface progress procedure */
-            iface->fifo_poll_window_size   = iface->config.fifo_max_poll;
-            iface->fifo_window_update_iter = 0;
-            iface->fifo_total_count        = 0;
+    if (ucs_likely(++iface->fifo_window_update_iter <
+                   iface->config.fifo_window_update_rate)) {
+        iface->fifo_total_count += fifo_poll_count;
+        avg_count                = ucs_div_round_up(iface->fifo_total_count,
+                                                    iface->fifo_window_update_iter);
+
+        if (avg_count < iface->fifo_poll_window_size) {
+            iface->fifo_poll_window_size =
+                (iface->fifo_poll_window_size + avg_count) >> 1;
         }
+    } else {
+        /* Try to increase FIFO polling window size during the
+         * next iface progress procedure */
+        iface->fifo_poll_window_size   = iface->config.fifo_max_poll;
+        iface->fifo_window_update_iter = 0;
+        iface->fifo_total_count        = 0;
     }
 
     ucs_assert(iface->fifo_poll_window_size <= iface->config.fifo_max_poll);
@@ -329,7 +332,8 @@ static unsigned uct_mm_iface_progress(uct_iface_h tl_iface)
 
     ucs_assert(iface->fifo_poll_window_size >= 1);
 
-    do { /* progress receive */
+    /* progress receive */
+    do {
         count        = uct_mm_iface_poll_fifo(iface);
         ucs_assert(count < 2);
         total_count += count;
