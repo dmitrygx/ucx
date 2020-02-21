@@ -57,13 +57,9 @@ ucs_config_field_t uct_mm_iface_config_table[] = {
      "Size of the FIFO element size (data + header) in the MM UCTs.",
      ucs_offsetof(uct_mm_iface_config_t, fifo_elem_size), UCS_CONFIG_TYPE_UINT},
 
-    {"FIFO_MAX_POLL", UCS_PP_MAKE_STRING(UCT_MM_IFACE_FIFO_MAX_POLL),
+    {"FIFO_MAX_WINDOW", UCS_PP_MAKE_STRING(UCT_MM_IFACE_FIFO_MAX_WINDOW),
      "Maximal number of receive completions to pick during RX poll",
-     ucs_offsetof(uct_mm_iface_config_t, fifo_max_poll), UCS_CONFIG_TYPE_ULUNITS},
-
-    {"FIFO_WINDOW_UPDATE_RATE", UCS_PP_MAKE_STRING(UCT_MM_IFACE_FIFO_WINDOW_UPDATE_RATE),
-     "How much iterations should be done before FIFO poll window size will be adjusted",
-     ucs_offsetof(uct_mm_iface_config_t, fifo_window_update_rate), UCS_CONFIG_TYPE_ULUNITS},
+     ucs_offsetof(uct_mm_iface_config_t, fifo_max_wnd), UCS_CONFIG_TYPE_ULUNITS},
 
     {NULL}
 };
@@ -297,31 +293,29 @@ static inline void
 uct_mm_iface_fifo_window_adjust(uct_mm_iface_t *iface,
                                 unsigned fifo_poll_count)
 {
-    unsigned avg_count;
-
+    /* Adjust window if was completed at least one RX operation
+     * during polling */
     if (fifo_poll_count == 0) {
         return;
     }
 
-    if (ucs_likely(++iface->fifo_window_update_iter <
-                   iface->config.fifo_window_update_rate)) {
-        iface->fifo_total_count += fifo_poll_count;
-        avg_count                = ucs_div_round_up(iface->fifo_total_count,
-                                                    iface->fifo_window_update_iter);
-
-        if (avg_count < iface->fifo_poll_window_size) {
-            iface->fifo_poll_window_size =
-                (iface->fifo_poll_window_size + avg_count) >> 1;
+    if (fifo_poll_count == iface->fifo_wnd) {
+        if (iface->fifo_prev_wnd_cons) {
+            /* Increase FIFO window size if it was fully consumed
+             * during the previous iface progress call */
+            iface->fifo_wnd = ucs_min(iface->fifo_wnd +
+                                      UCT_MM_IFACE_FIFO_AI_VALUE,
+                                      iface->config.fifo_max_wnd);
+        } else {
+            iface->fifo_prev_wnd_cons = 1;
         }
     } else {
-        /* Try to increase FIFO polling window size during the
-         * next iface progress procedure */
-        iface->fifo_poll_window_size   = iface->config.fifo_max_poll;
-        iface->fifo_window_update_iter = 0;
-        iface->fifo_total_count        = 0;
+        iface->fifo_wnd = ucs_max(iface->fifo_wnd /
+                                  UCT_MM_IFACE_FIFO_MD_FACTOR,
+                                  UCT_MM_IFACE_FIFO_MIN_WINDOW);
     }
 
-    ucs_assert(iface->fifo_poll_window_size <= iface->config.fifo_max_poll);
+    ucs_assert(iface->fifo_wnd <= iface->config.fifo_max_wnd);
 }
 
 static unsigned uct_mm_iface_progress(uct_iface_h tl_iface)
@@ -330,15 +324,23 @@ static unsigned uct_mm_iface_progress(uct_iface_h tl_iface)
     unsigned total_count  = 0;
     unsigned count;
 
-    ucs_assert(iface->fifo_poll_window_size >= 1);
+    ucs_assert(iface->fifo_wnd >= UCT_MM_IFACE_FIFO_MIN_WINDOW);
 
     /* progress receive */
     do {
-        count        = uct_mm_iface_poll_fifo(iface);
+        count = uct_mm_iface_poll_fifo(iface);
         ucs_assert(count < 2);
+        if (count == 0) {
+            iface->fifo_prev_wnd_cons = 0;
+            break;
+        }
+
         total_count += count;
         ucs_assert(total_count < UINT_MAX);
-    } while ((count != 0) && (total_count < iface->fifo_poll_window_size));
+    } while (total_count < iface->fifo_wnd);
+
+    ucs_assert(((count != 0) && (total_count == iface->fifo_wnd)) ||
+               (!iface->fifo_prev_wnd_cons));
 
     uct_mm_iface_fifo_window_adjust(iface, total_count);
 
@@ -583,13 +585,12 @@ static UCS_CLASS_INIT_FUNC(uct_mm_iface_t, uct_md_h md, uct_worker_h worker,
     self->config.fifo_size         = mm_config->fifo_size;
     self->config.fifo_elem_size    = mm_config->fifo_elem_size;
     self->config.seg_size          = mm_config->seg_size;
-    self->config.fifo_max_poll     = ((mm_config->fifo_max_poll == UCS_ULUNITS_AUTO) ?
-                                      UCT_MM_IFACE_FIFO_MAX_POLL :
-                                      /* trim by the maximum value for unsigned int */
-                                      ucs_min(mm_config->fifo_max_poll, UINT_MAX));
-    self->fifo_poll_window_size    = self->config.fifo_max_poll;
-    self->fifo_window_update_iter  = 0;
-    self->fifo_total_count         = 0;
+    self->config.fifo_max_wnd      = ((mm_config->fifo_max_wnd == UCS_ULUNITS_AUTO) ?
+                                      UCT_MM_IFACE_FIFO_MAX_WINDOW :
+                                      /* trim by the maximum unsigned integer value */
+                                      ucs_min(mm_config->fifo_max_wnd, UINT_MAX));
+    self->fifo_prev_wnd_cons       = 0;
+    self->fifo_wnd                 = self->config.fifo_max_wnd;
     /* cppcheck-suppress internalAstError */
     self->fifo_release_factor_mask = UCS_MASK(ucs_ilog2(ucs_max((int)
                                      (mm_config->fifo_size * mm_config->release_fifo_factor),
@@ -600,14 +601,6 @@ static UCS_CLASS_INIT_FUNC(uct_mm_iface_t, uct_md_h md, uct_worker_h worker,
                                       UCT_IFACE_PARAM_FIELD_RX_HEADROOM) ?
                                      params->rx_headroom : 0;
     self->release_desc.cb          = uct_mm_iface_release_desc;
-    /* check that the fifo size, from the user, is a power of two and bigger than 1 */
-    if (mm_config->fifo_window_update_rate == UCS_ULUNITS_AUTO) {
-        self->config.fifo_window_update_rate = UCT_MM_IFACE_FIFO_WINDOW_UPDATE_RATE;
-    } else if (mm_config->fifo_window_update_rate == UCS_ULUNITS_INF) {
-        self->config.fifo_window_update_rate = UINT_MAX;
-    } else {
-        self->config.fifo_window_update_rate = mm_config->fifo_window_update_rate - 1;
-    }
 
     /* Allocate the receive FIFO */
     status = uct_iface_mem_alloc(&self->super.super.super,
