@@ -228,7 +228,7 @@ enum ucp_mem_attr_field {
  * @note Worker are parallel "threading points" that an upper layer may use to
  * optimize concurrent communications.
  */
- typedef struct ucp_worker                *ucp_worker_h;
+typedef struct ucp_worker                *ucp_worker_h;
 
 
 /**

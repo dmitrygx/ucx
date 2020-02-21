@@ -1684,15 +1684,17 @@ ucs_status_t ucp_worker_create(ucp_context_h context,
 #endif
     }
 
-    worker->context           = context;
-    worker->uuid              = ucs_generate_uuid((uintptr_t)worker);
-    worker->flush_ops_count   = 0;
-    worker->inprogress        = 0;
-    worker->ep_config_max     = config_count;
-    worker->ep_config_count   = 0;
-    worker->num_active_ifaces = 0;
-    worker->num_ifaces        = 0;
-    worker->am_message_id     = ucs_generate_uuid(0);
+    worker->context             = context;
+    worker->uuid                = ucs_generate_uuid((uintptr_t)worker);
+    worker->flush_ops_count     = 0;
+    worker->inprogress          = 0;
+    worker->ep_config_max       = config_count;
+    worker->ep_config_count     = 0;
+    worker->num_active_ifaces   = 0;
+    worker->num_ifaces          = 0;
+    worker->am_message_id       = ucs_generate_uuid(0);
+    worker->rndv_progress_cb_id = UCS_CALLBACKQ_ID_NULL;
+    ucs_queue_head_init(&worker->rndv_progress_reqs);
     ucs_list_head_init(&worker->arm_ifaces);
     ucs_list_head_init(&worker->stream_ready_eps);
     ucs_list_head_init(&worker->all_eps);

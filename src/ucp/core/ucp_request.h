@@ -109,6 +109,7 @@ struct ucp_request {
         /* "send" part - used for tag_send, stream_send,  put, get, and atomic
          * operations */
         struct {
+            ucs_queue_elem_t      queue;
             ucp_ep_h              ep;
             void                  *buffer;  /* Send buffer */
             ucp_datatype_t        datatype; /* Send type */

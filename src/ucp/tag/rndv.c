@@ -563,9 +563,38 @@ static void ucp_rndv_put_completion(uct_completion_t *self, ucs_status_t status)
     }
 }
 
+unsigned ucp_rndv_progress_recv_data(void *arg)
+{
+    ucp_worker_h worker     = (ucp_worker_h)arg;
+    ucp_request_t *rndv_req = ucs_queue_pull_elem_non_empty(&worker->rndv_progress_reqs,
+                                                            ucp_request_t, send.queue);
+    ucs_status_t status;
+    ucp_request_t *rreq;
+
+    if (ucs_queue_is_empty(&worker->rndv_progress_reqs)) {
+        uct_worker_progress_unregister_safe(worker->uct,
+                                            &worker->rndv_progress_cb_id);
+    }
+
+    if (rndv_req->send.uct.func == ucp_rndv_progress_rma_get_zcopy) {
+        ucp_request_send(rndv_req, 0);
+    } else {
+        rreq   = rndv_req->send.rndv_get.rreq;
+        status = ucp_request_recv_data_unpack(rreq, rndv_req->send.buffer,
+                                              rndv_req->send.length, 0, 1);
+        ucp_request_complete_tag_recv(rreq, status);
+        ucp_rkey_destroy(rndv_req->send.rndv_get.rkey);
+        ucp_rndv_req_send_ats(rndv_req, rreq,
+                              rndv_req->send.rndv_get.remote_request, status);
+    }
+
+    return 1;
+}
+
 static void ucp_rndv_req_send_rma_get(ucp_request_t *rndv_req, ucp_request_t *rreq,
                                       const ucp_rndv_rts_hdr_t *rndv_rts_hdr)
 {
+    ucp_worker_h worker = rreq->recv.worker;
     ucs_status_t status;
 
     ucp_trace_req(rndv_req, "start rma_get rreq %p", rreq);
@@ -593,7 +622,12 @@ static void ucp_rndv_req_send_rma_get(ucp_request_t *rndv_req, ucp_request_t *rr
     ucp_request_send_state_reset(rndv_req, ucp_rndv_get_completion,
                                  UCP_REQUEST_SEND_PROTO_RNDV_GET);
 
-    ucp_request_send(rndv_req, 0);
+    ucs_queue_push(&worker->rndv_progress_reqs, &rndv_req->send.queue);
+    uct_worker_progress_register_safe(rreq->recv.worker->uct,
+                                      ucp_rndv_progress_recv_data,
+                                      rreq->recv.worker,
+                                      UCS_CALLBACKQ_FLAG_FAST,
+                                      &worker->rndv_progress_cb_id);
 }
 
 static void ucp_rndv_send_frag_rtr(ucp_worker_h worker, ucp_request_t *rndv_req,
@@ -686,6 +720,7 @@ static void ucp_rndv_do_rkey_ptr(ucp_request_t *rndv_req, ucp_request_t *rreq,
 {
     ucp_ep_h ep                      = rndv_req->send.ep;
     const ucp_ep_config_t *ep_config = ucp_ep_config(ep);
+    ucp_worker_h worker              = rreq->recv.worker;
     ucp_md_index_t dst_md_index;
     ucp_lane_index_t i, lane;
     ucs_status_t status;
@@ -723,16 +758,27 @@ static void ucp_rndv_do_rkey_ptr(ucp_request_t *rndv_req, ucp_request_t *rreq,
     status     = uct_rkey_ptr(rkey->tl_rkey[rkey_index].cmpt,
                               &rkey->tl_rkey[rkey_index].rkey,
                               rndv_rts_hdr->address, &local_ptr);
-    if (status == UCS_OK) {
-        ucp_trace_req(rndv_req, "obtained a local pointer to remote buffer: %p",
-                      local_ptr);
-        status = ucp_request_recv_data_unpack(rreq, local_ptr,
-                                              rndv_rts_hdr->size, 0, 1);
+    if (status != UCS_OK) {
+        ucp_request_complete_tag_recv(rreq, status);
+        ucp_rkey_destroy(rkey);
+        ucp_rndv_req_send_ats(rndv_req, rreq, rndv_rts_hdr->sreq.reqptr, status);
+        return;
     }
 
-    ucp_request_complete_tag_recv(rreq, status);
-    ucp_rkey_destroy(rkey);
-    ucp_rndv_req_send_ats(rndv_req, rreq, rndv_rts_hdr->sreq.reqptr, status);
+    ucp_trace_req(rndv_req, "obtained a local pointer to remote buffer: %p",
+                  local_ptr);
+    rndv_req->send.buffer                  = local_ptr;
+    rndv_req->send.length                  = rndv_rts_hdr->size;
+    rndv_req->send.rndv_get.rkey           = rkey;
+    rndv_req->send.rndv_get.remote_request = rndv_rts_hdr->sreq.reqptr;
+    rndv_req->send.rndv_get.rreq           = rreq;
+
+    ucs_queue_push(&worker->rndv_progress_reqs, &rndv_req->send.queue);
+    uct_worker_progress_register_safe(rreq->recv.worker->uct,
+                                      ucp_rndv_progress_recv_data,
+                                      rreq->recv.worker,
+                                      UCS_CALLBACKQ_FLAG_FAST,
+                                      &worker->rndv_progress_cb_id);
 }
 
 UCS_PROFILE_FUNC_VOID(ucp_rndv_matched, (worker, rreq, rndv_rts_hdr),
