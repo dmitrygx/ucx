@@ -188,7 +188,8 @@ static ucs_status_t uct_mm_iface_query(uct_iface_h tl_iface,
     return UCS_OK;
 }
 
-static inline void uct_mm_progress_fifo_tail(uct_mm_iface_t *iface)
+static UCS_F_ALWAYS_INLINE void
+uct_mm_progress_fifo_tail(uct_mm_iface_t *iface)
 {
     /* don't progress the tail every time - release in batches. improves performance */
     if (iface->read_index & iface->fifo_release_factor_mask) {
@@ -198,10 +199,10 @@ static inline void uct_mm_progress_fifo_tail(uct_mm_iface_t *iface)
     iface->recv_fifo_ctl->tail = iface->read_index;
 }
 
-static inline
-ucs_status_t uct_mm_assign_desc_to_fifo_elem(uct_mm_iface_t *iface,
-                                             uct_mm_fifo_element_t *elem,
-                                             unsigned need_new_desc)
+static UCS_F_ALWAYS_INLINE ucs_status_t
+uct_mm_assign_desc_to_fifo_elem(uct_mm_iface_t *iface,
+                                uct_mm_fifo_element_t *elem,
+                                unsigned need_new_desc)
 {
     uct_mm_recv_desc_t *desc;
 
@@ -217,8 +218,9 @@ ucs_status_t uct_mm_assign_desc_to_fifo_elem(uct_mm_iface_t *iface,
     return UCS_OK;
 }
 
-static inline void uct_mm_iface_process_recv(uct_mm_iface_t *iface,
-                                             uct_mm_fifo_element_t* elem)
+static UCS_F_ALWAYS_INLINE void
+uct_mm_iface_process_recv(uct_mm_iface_t *iface,
+                          uct_mm_fifo_element_t* elem)
 {
     ucs_status_t status;
     void         *data;
@@ -255,7 +257,8 @@ static inline void uct_mm_iface_process_recv(uct_mm_iface_t *iface,
     }
 }
 
-static inline int uct_mm_iface_fifo_has_new_data(uct_mm_iface_t *iface)
+static UCS_F_ALWAYS_INLINE int
+uct_mm_iface_fifo_has_new_data(uct_mm_iface_t *iface)
 {
     /* check the read_index to see if there is a new item to read
      * (checking the owner bit) */
@@ -263,7 +266,7 @@ static inline int uct_mm_iface_fifo_has_new_data(uct_mm_iface_t *iface)
             (iface->read_index_elem->flags & 1));
 }
 
-static inline unsigned
+static UCS_F_ALWAYS_INLINE unsigned
 uct_mm_iface_poll_fifo(uct_mm_iface_t *iface)
 {
     if (!uct_mm_iface_fifo_has_new_data(iface)) {
@@ -289,16 +292,10 @@ uct_mm_iface_poll_fifo(uct_mm_iface_t *iface)
     return 1;
 }
 
-static inline void
+static UCS_F_ALWAYS_INLINE void
 uct_mm_iface_fifo_window_adjust(uct_mm_iface_t *iface,
                                 unsigned fifo_poll_count)
 {
-    /* Adjust window if was completed at least one RX operation
-     * during polling */
-    if (fifo_poll_count == 0) {
-        return;
-    }
-
     if (fifo_poll_count == iface->fifo_wnd) {
         if (iface->fifo_prev_wnd_cons) {
             /* Increase FIFO window size if it was fully consumed
@@ -309,7 +306,7 @@ uct_mm_iface_fifo_window_adjust(uct_mm_iface_t *iface,
         } else {
             iface->fifo_prev_wnd_cons = 1;
         }
-    } else {
+    } else if (fifo_poll_count != 0) {
         iface->fifo_wnd = ucs_max(iface->fifo_wnd /
                                   UCT_MM_IFACE_FIFO_MD_FACTOR,
                                   UCT_MM_IFACE_FIFO_MIN_WINDOW);
