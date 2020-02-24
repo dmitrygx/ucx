@@ -38,7 +38,12 @@ ucs_config_field_t uct_sm_iface_config_table[] = {
 
     {"BW", "12179MBs",
      "Effective memory bandwidth",
-     ucs_offsetof(uct_sm_iface_config_t, bandwidth), UCS_CONFIG_TYPE_BW},
+     ucs_offsetof(uct_sm_iface_config_t, config.bandwidth), UCS_CONFIG_TYPE_BW},
+
+    {"MAX_IOV", UCS_PP_MAKE_STRING(UCT_SM_MAX_IOV),
+     "Maximum IOV count that can contain user-defined payload in a single\n"
+     "call to GET/PUT Zcopy",
+     ucs_offsetof(uct_sm_iface_config_t, config.max_iov), UCS_CONFIG_TYPE_ULONG},
 
     {NULL}
 };
@@ -157,7 +162,9 @@ UCS_CLASS_INIT_FUNC(uct_sm_iface_t, uct_iface_ops_t *ops, uct_md_h md,
                                             params->stats_root : NULL)
                               UCS_STATS_ARG(params->mode.device.dev_name));
 
-    self->config.bandwidth = sm_config->bandwidth;
+    self->config.bandwidth = sm_config->config.bandwidth;
+    self->config.max_iov   = ucs_min(sm_config->config.max_iov,
+                                     ucs_iov_get_max());
 
     return UCS_OK;
 }

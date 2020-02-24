@@ -19,16 +19,19 @@
 
 extern ucs_config_field_t uct_sm_iface_config_table[];
 
-typedef struct uct_sm_iface_common_config {
-    uct_iface_config_t     super;
-    double                 bandwidth; /* Memory bandwidth in bytes per second */
+typedef struct uct_sm_tl_iface_config {
+    double                   bandwidth; /* Memory bandwidth in bytes per second */
+    size_t                   max_iov;   /* Maximum IOV count used in GET/PUT Zcopy */
+} uct_sm_tl_iface_config_t;
+
+typedef struct uct_sm_iface_config {
+    uct_iface_config_t       super;
+    uct_sm_tl_iface_config_t config;
 } uct_sm_iface_config_t;
 
 typedef struct uct_sm_iface {
-    uct_base_iface_t       super;
-    struct {
-        double             bandwidth; /* Memory bandwidth in bytes per second */
-    } config;
+    uct_base_iface_t         super;
+    uct_sm_tl_iface_config_t config;
 } uct_sm_iface_t;
 
 
@@ -47,10 +50,6 @@ ucs_status_t uct_sm_iface_fence(uct_iface_t *tl_iface, unsigned flags);
 size_t uct_sm_iface_get_device_addr_len();
 
 ucs_status_t uct_sm_ep_fence(uct_ep_t *tl_ep, unsigned flags);
-
-static UCS_F_ALWAYS_INLINE size_t uct_sm_get_max_iov() {
-    return ucs_min(UCT_SM_MAX_IOV, ucs_iov_get_max());
-}
 
 UCS_CLASS_DECLARE(uct_sm_iface_t, uct_iface_ops_t*, uct_md_h, uct_worker_h,
                   const uct_iface_params_t*, const uct_iface_config_t*);

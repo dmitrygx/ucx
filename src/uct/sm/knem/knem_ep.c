@@ -92,10 +92,13 @@ ucs_status_t uct_knem_ep_put_zcopy(uct_ep_h tl_ep, const uct_iov_t *iov, size_t 
                                    uint64_t remote_addr, uct_rkey_t rkey,
                                    uct_completion_t *comp)
 {
-    uct_knem_key_t *key = (uct_knem_key_t *)rkey;
+    uct_knem_iface_t *knem_iface = ucs_derived_of(tl_ep->iface,
+                                                  uct_knem_iface_t);
+    uct_knem_key_t *key          = (uct_knem_key_t*)rkey;
     ucs_status_t status;
 
-    UCT_CHECK_IOV_SIZE(iovcnt, uct_sm_get_max_iov(), "uct_knem_ep_put_zcopy");
+    UCT_CHECK_IOV_SIZE(iovcnt, knem_iface->super.config.max_iov,
+                       "uct_knem_ep_put_zcopy");
 
     status = uct_knem_rma(tl_ep, iov, iovcnt, remote_addr, key, 1);
     UCT_TL_EP_STAT_OP_IF_SUCCESS(status, ucs_derived_of(tl_ep, uct_base_ep_t),
@@ -107,10 +110,13 @@ ucs_status_t uct_knem_ep_get_zcopy(uct_ep_h tl_ep, const uct_iov_t *iov, size_t 
                                    uint64_t remote_addr, uct_rkey_t rkey,
                                    uct_completion_t *comp)
 {
-    uct_knem_key_t *key = (uct_knem_key_t *)rkey;
+    uct_knem_iface_t *knem_iface = ucs_derived_of(tl_ep->iface,
+                                                  uct_knem_iface_t);
+    uct_knem_key_t *key          = (uct_knem_key_t*)rkey;
     ucs_status_t status;
 
-    UCT_CHECK_IOV_SIZE(iovcnt, uct_sm_get_max_iov(), "uct_knem_ep_get_zcopy");
+    UCT_CHECK_IOV_SIZE(iovcnt, knem_iface->super.config.max_iov,
+                       "uct_knem_ep_get_zcopy");
 
     status = uct_knem_rma(tl_ep, iov, iovcnt, remote_addr, key, 0);
     UCT_TL_EP_STAT_OP_IF_SUCCESS(status, ucs_derived_of(tl_ep, uct_base_ep_t),

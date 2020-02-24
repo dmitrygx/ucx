@@ -32,17 +32,13 @@ static ucs_status_t uct_knem_iface_query(uct_iface_h tl_iface,
     iface_attr->cap.put.max_zcopy       = SIZE_MAX;
     iface_attr->cap.put.opt_zcopy_align = 1;
     iface_attr->cap.put.align_mtu       = iface_attr->cap.put.opt_zcopy_align;
-    iface_attr->cap.put.max_iov         = uct_sm_get_max_iov();
+    iface_attr->cap.put.max_iov         = iface->super.config.max_iov;
 
     iface_attr->cap.get.min_zcopy       = 0;
     iface_attr->cap.get.max_zcopy       = SIZE_MAX;
     iface_attr->cap.get.opt_zcopy_align = 1;
     iface_attr->cap.get.align_mtu       = iface_attr->cap.get.opt_zcopy_align;
-    iface_attr->cap.get.max_iov         = uct_sm_get_max_iov();
-
-    iface_attr->cap.am.max_iov         = 1;
-    iface_attr->cap.am.opt_zcopy_align = 1;
-    iface_attr->cap.am.align_mtu       = iface_attr->cap.am.opt_zcopy_align;
+    iface_attr->cap.get.max_iov         = iface->super.config.max_iov;
 
     iface_attr->iface_addr_len         = 0;
     iface_attr->device_addr_len        = uct_sm_iface_get_device_addr_len();
@@ -91,7 +87,6 @@ static UCS_CLASS_INIT_FUNC(uct_knem_iface_t, uct_md_h md, uct_worker_h worker,
     UCS_CLASS_CALL_SUPER_INIT(uct_sm_iface_t, &uct_knem_iface_ops, md,
                               worker, params, tl_config);
     self->knem_md = (uct_knem_md_t *)md;
-    uct_sm_get_max_iov(); /* to initialize ucs_iov_get_max static variable */
 
     return UCS_OK;
 }
