@@ -296,23 +296,26 @@ static UCS_F_ALWAYS_INLINE void
 uct_mm_iface_fifo_window_adjust(uct_mm_iface_t *iface,
                                 unsigned fifo_poll_count)
 {
-    if (fifo_poll_count == iface->fifo_wnd) {
-        if (iface->fifo_prev_wnd_cons) {
-            /* Increase FIFO window size if it was fully consumed
-             * during the previous iface progress call */
-            iface->fifo_wnd = ucs_min(iface->fifo_wnd +
-                                      UCT_MM_IFACE_FIFO_AI_VALUE,
-                                      iface->config.fifo_max_wnd);
-        } else {
-            iface->fifo_prev_wnd_cons = 1;
-        }
-    } else if (fifo_poll_count != 0) {
+    if (fifo_poll_count < iface->fifo_wnd) {
         iface->fifo_wnd = ucs_max(iface->fifo_wnd /
                                   UCT_MM_IFACE_FIFO_MD_FACTOR,
                                   UCT_MM_IFACE_FIFO_MIN_WINDOW);
+        iface->fifo_prev_wnd_cons = 0;
+        return;
     }
 
-    ucs_assert(iface->fifo_wnd <= iface->config.fifo_max_wnd);
+    if (iface->fifo_prev_wnd_cons) {
+        /* Increase FIFO window size if it was fully consumed
+         * during the previous iface progress call in order
+         * to prevent the situation when the window will be
+         * adjusted to [MIN, MIN + 1, MIN, MIN + 1, ...] that
+         * is harmful to latency */
+        iface->fifo_wnd = ucs_min(iface->fifo_wnd +
+                                  UCT_MM_IFACE_FIFO_AI_VALUE,
+                                  iface->config.fifo_max_wnd);
+    } else {
+        iface->fifo_prev_wnd_cons = 1;
+    }
 }
 
 static unsigned uct_mm_iface_progress(uct_iface_h tl_iface)
@@ -327,17 +330,9 @@ static unsigned uct_mm_iface_progress(uct_iface_h tl_iface)
     do {
         count = uct_mm_iface_poll_fifo(iface);
         ucs_assert(count < 2);
-        if (count == 0) {
-            iface->fifo_prev_wnd_cons = 0;
-            break;
-        }
-
         total_count += count;
         ucs_assert(total_count < UINT_MAX);
-    } while (total_count < iface->fifo_wnd);
-
-    ucs_assert(((count != 0) && (total_count == iface->fifo_wnd)) ||
-               (!iface->fifo_prev_wnd_cons));
+    } while ((count != 0) && (total_count < iface->fifo_wnd));
 
     uct_mm_iface_fifo_window_adjust(iface, total_count);
 
