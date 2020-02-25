@@ -82,39 +82,48 @@ uct_cma_iface_is_reachable(const uct_iface_h tl_iface,
 
 static UCS_CLASS_DECLARE_DELETE_FUNC(uct_cma_iface_t, uct_iface_t);
 
-static uct_iface_ops_t uct_cma_iface_ops = {
-    .ep_put_zcopy             = uct_cma_ep_put_zcopy,
-    .ep_get_zcopy             = uct_cma_ep_get_zcopy,
-    .ep_pending_add           = ucs_empty_function_return_busy,
-    .ep_pending_purge         = ucs_empty_function,
-    .ep_flush                 = uct_base_ep_flush,
-    .ep_fence                 = uct_sm_ep_fence,
-    .ep_create                = UCS_CLASS_NEW_FUNC_NAME(uct_cma_ep_t),
-    .ep_destroy               = UCS_CLASS_DELETE_FUNC_NAME(uct_cma_ep_t),
-    .iface_flush              = uct_base_iface_flush,
-    .iface_fence              = uct_sm_iface_fence,
-    .iface_progress_enable    = ucs_empty_function,
-    .iface_progress_disable   = ucs_empty_function,
-    .iface_progress           = ucs_empty_function_return_zero,
-    .iface_close              = UCS_CLASS_DELETE_FUNC_NAME(uct_cma_iface_t),
-    .iface_query              = uct_cma_iface_query,
-    .iface_get_address        = uct_cma_iface_get_address,
-    .iface_get_device_address = uct_sm_iface_get_device_address,
-    .iface_is_reachable       = uct_cma_iface_is_reachable
+static uct_scopy_iface_ops_t uct_cma_iface_ops = {
+    .super = {
+        .ep_put_zcopy             = uct_scopy_ep_put_zcopy,
+        .ep_get_zcopy             = uct_scopy_ep_get_zcopy,
+        .ep_pending_add           = ucs_empty_function_return_busy,
+        .ep_pending_purge         = ucs_empty_function,
+        .ep_flush                 = uct_scopy_ep_flush,
+        .ep_fence                 = uct_sm_ep_fence,
+        .ep_create                = UCS_CLASS_NEW_FUNC_NAME(uct_cma_ep_t),
+        .ep_destroy               = UCS_CLASS_DELETE_FUNC_NAME(uct_cma_ep_t),
+        .iface_flush              = uct_scopy_iface_flush,
+        .iface_fence              = uct_sm_iface_fence,
+        .iface_progress_enable    = uct_base_iface_progress_enable,
+        .iface_progress_disable   = uct_base_iface_progress_disable,
+        .iface_progress           = uct_scopy_iface_progress,
+        .iface_close              = UCS_CLASS_DELETE_FUNC_NAME(uct_cma_iface_t),
+        .iface_query              = uct_cma_iface_query,
+        .iface_get_address        = uct_cma_iface_get_address,
+        .iface_get_device_address = uct_sm_iface_get_device_address,
+        .iface_is_reachable       = uct_cma_iface_is_reachable
+    },
+    .fill_iov                     = (uct_scopy_iface_fill_iov_func_t)uct_iovec_fill_iov,
+    .tx                           = uct_cma_ep_tx,
 };
 
 static UCS_CLASS_INIT_FUNC(uct_cma_iface_t, uct_md_h md, uct_worker_h worker,
                            const uct_iface_params_t *params,
                            const uct_iface_config_t *tl_config)
 {
-    UCS_CLASS_CALL_SUPER_INIT(uct_scopy_iface_t, &uct_cma_iface_ops, md,
-                              worker, params, tl_config);
+    uct_scopy_iface_attr_t attr = {
+        .iov_elem_size = sizeof(struct iovec)
+    };
+
+    UCS_CLASS_CALL_SUPER_INIT(uct_scopy_iface_t, &uct_cma_iface_ops, &attr,
+                              md, worker, params, tl_config);
 
     return UCS_OK;
 }
 
 static UCS_CLASS_CLEANUP_FUNC(uct_cma_iface_t)
 {
+    /* No op */
 }
 
 UCS_CLASS_DEFINE(uct_cma_iface_t, uct_scopy_iface_t);

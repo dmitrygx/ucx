@@ -20,7 +20,7 @@
 #include <ucs/sys/compiler.h>
 #include <ucs/sys/sys.h>
 #include <ucs/type/class.h>
-
+#include <ucs/sys/math.h>
 #include <ucs/datastruct/mpool.inl>
 
 
@@ -678,31 +678,80 @@ size_t uct_iov_total_length(const uct_iov_t *iov, size_t iovcnt)
 }
 
 /**
- * Fill iovec data structure by data provided in uct_iov_t.
+ * Update an array of UCT IOV elements to consider an already consumed data.
+ *
+ * @param [in]     iov            A pointer to an array of UCT IOV elements.
+ * @param [in]     iov_cnt        A number of elements in a iov array.
+ * @param [in/out] cur_iov_idx    A pointer to an index in a iov array from
+ *                                which the operation should be started.
+ * @param [in]     consumed       An amount of data consumed that should be
+ *                                considered in a current iov array.
+ */
+static UCS_F_ALWAYS_INLINE
+void uct_iov_advance(uct_iov_t *iov, size_t iovcnt,
+                     size_t *cur_iov_idx, size_t consumed)
+{
+    size_t i;
+
+    ucs_assert(*cur_iov_idx <= iovcnt);
+
+    for (i = *cur_iov_idx; i < iovcnt; i++) {
+        if (consumed < iov[i].length) {
+            iov[i].length -= consumed;
+            iov[i].buffer  = UCS_PTR_BYTE_OFFSET(iov[i].buffer,
+                                                 consumed);
+            *cur_iov_idx   = i;
+            return;
+        }
+
+        consumed      -= iov[i].length;
+        iov[i].buffer  = UCS_PTR_BYTE_OFFSET(iov[i].buffer,
+                                             iov[i].length);
+        iov[i].length  = 0;
+    }
+
+    ucs_assert(!consumed && (i == iovcnt));
+}
+
+/**
+ * Fill IOVEC data structure by data provided in the array of UCT IOVs.
  * The function avoids copying IOVs with zero length.
+ *
+ * @param [out]    io_vec          Pointer to the resulted array of IOVECs
+ * @param [in]     iov             Pointer to the array of UCT IOVs
+ * @paran [in]     iovcnt          Number of the elemnts in the array of UCT IOVs
+ * @param [in/out] total_length_p  The length of data that should be copied and,
+ *                                 as an output value, indicates to a user how much
+ *                                 data was copied
+ *
  * @return Number of elements in io_vec[].
  */
 static UCS_F_ALWAYS_INLINE
 size_t uct_iovec_fill_iov(struct iovec *io_vec, const uct_iov_t *iov,
-                          size_t iovcnt, size_t *total_length)
+                          size_t iovcnt, size_t *total_length_p)
 {
-    size_t io_vec_it  = 0;
-    size_t io_vec_len = 0;
+    size_t total_length = 0;
+    size_t io_vec_it    = 0;
+    size_t io_vec_len   = 0;
     size_t iov_it;
 
-    *total_length = 0;
-
-    for (iov_it = 0; iov_it < iovcnt; ++iov_it) {
+    for (iov_it = 0; (iov_it < iovcnt) && (*total_length_p != 0); ++iov_it) {
         io_vec_len = uct_iov_get_length(&iov[iov_it]);
 
         /* Avoid zero length elements in resulted iov_vec */
         if (io_vec_len != 0) {
-            io_vec[io_vec_it].iov_len   = io_vec_len;
+            io_vec[io_vec_it].iov_len   = ucs_min(io_vec_len,
+                                                  *total_length_p);
             io_vec[io_vec_it].iov_base  = iov[iov_it].buffer;
-            *total_length              += io_vec_len;
+
+            ucs_assert(*total_length_p >= io_vec[io_vec_it].iov_len);
+            total_length               += io_vec[io_vec_it].iov_len;
+            *total_length_p            -= io_vec[io_vec_it].iov_len;
             ++io_vec_it;
         }
     }
+
+    *total_length_p = total_length;
 
     return io_vec_it;
 }

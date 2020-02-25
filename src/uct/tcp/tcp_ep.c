@@ -1381,8 +1381,9 @@ uct_tcp_ep_prepare_zcopy(uct_tcp_iface_t *iface, uct_tcp_ep_t *ep, uint8_t am_id
     }
 
     /* User-defined payload */
-    ctx->iov_cnt += uct_iovec_fill_iov(&ctx->iov[ctx->iov_cnt], iov,
-                                       iovcnt, zcopy_payload_p);
+    *zcopy_payload_p  = SIZE_MAX;
+    ctx->iov_cnt     += uct_iovec_fill_iov(&ctx->iov[ctx->iov_cnt], iov,
+                                           iovcnt, zcopy_payload_p);
 
     *ctx_p = ctx;
 

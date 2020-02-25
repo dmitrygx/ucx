@@ -7,11 +7,12 @@
 #ifndef UCT_KNEM_IFACE_H
 #define UCT_KNEM_IFACE_H
 
-#include "knem_md.h"
+#include <knem_io.h>
 
 #include <uct/base/uct_iface.h>
 #include <uct/sm/base/sm_iface.h>
 #include <uct/sm/scopy/base/scopy_iface.h>
+#include <uct/sm/scopy/knem/knem_md.h>
 
 
 typedef struct uct_knem_iface_config {
