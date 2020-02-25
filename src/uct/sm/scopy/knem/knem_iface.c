@@ -64,7 +64,6 @@ static UCS_CLASS_INIT_FUNC(uct_knem_iface_t, uct_md_h md, uct_worker_h worker,
     UCS_CLASS_CALL_SUPER_INIT(uct_scopy_iface_t, &uct_knem_iface_ops, md,
                               worker, params, tl_config);
     self->knem_md = (uct_knem_md_t *)md;
-    uct_sm_get_max_iov(); /* to initialize ucs_iov_get_max static variable */
 
     return UCS_OK;
 }
