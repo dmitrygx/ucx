@@ -28,11 +28,6 @@ UCS_CLASS_DEFINE(uct_knem_ep_t, uct_scopy_ep_t)
 UCS_CLASS_DEFINE_NEW_FUNC(uct_knem_ep_t, uct_ep_t, const uct_ep_params_t *);
 UCS_CLASS_DEFINE_DELETE_FUNC(uct_knem_ep_t, uct_ep_t);
 
-
-#define uct_knem_trace_data(_remote_addr, _rkey, _fmt, ...) \
-    ucs_trace_data(_fmt " to %"PRIx64"(%+ld)", ## __VA_ARGS__, (_remote_addr), \
-                   (_rkey))
-
 #define UCT_KNEM_ZERO_LENGTH_POST(len)              \
     if (0 == len) {                                     \
         ucs_trace_data("Zero length request: skip it"); \
@@ -82,9 +77,9 @@ static inline ucs_status_t uct_knem_rma(uct_ep_h tl_ep, const uct_iov_t *iov,
         return UCS_ERR_IO_ERROR;
     }
 
-    uct_knem_trace_data(remote_addr, (uintptr_t)key, "%s [length %zu]",
-                        write?"PUT_ZCOPY":"GET_ZCOPY",
-                        uct_iov_total_length(iov, iovcnt));
+    uct_scopy_trace_data(remote_addr, (uintptr_t)key, "%s [length %zu]",
+                         write ? "PUT_ZCOPY" : "GET_ZCOPY",
+                         uct_iov_total_length(iov, iovcnt));
     return UCS_OK;
 }
 
@@ -95,7 +90,10 @@ ucs_status_t uct_knem_ep_put_zcopy(uct_ep_h tl_ep, const uct_iov_t *iov, size_t 
     uct_knem_key_t *key = (uct_knem_key_t *)rkey;
     ucs_status_t status;
 
-    UCT_CHECK_IOV_SIZE(iovcnt, uct_sm_get_max_iov(), "uct_knem_ep_put_zcopy");
+    UCT_CHECK_IOV_SIZE(iovcnt,
+                       ucs_derived_of(tl_ep->iface,
+                                      uct_scopy_iface_t)->config.max_iov,
+                       "uct_knem_ep_put_zcopy");
 
     status = uct_knem_rma(tl_ep, iov, iovcnt, remote_addr, key, 1);
     UCT_TL_EP_STAT_OP_IF_SUCCESS(status, ucs_derived_of(tl_ep, uct_base_ep_t),
@@ -110,7 +108,10 @@ ucs_status_t uct_knem_ep_get_zcopy(uct_ep_h tl_ep, const uct_iov_t *iov, size_t 
     uct_knem_key_t *key = (uct_knem_key_t *)rkey;
     ucs_status_t status;
 
-    UCT_CHECK_IOV_SIZE(iovcnt, uct_sm_get_max_iov(), "uct_knem_ep_get_zcopy");
+    UCT_CHECK_IOV_SIZE(iovcnt,
+                       ucs_derived_of(tl_ep->iface,
+                                      uct_scopy_iface_t)->config.max_iov,
+                       "uct_knem_ep_get_zcopy");
 
     status = uct_knem_rma(tl_ep, iov, iovcnt, remote_addr, key, 0);
     UCT_TL_EP_STAT_OP_IF_SUCCESS(status, ucs_derived_of(tl_ep, uct_base_ep_t),

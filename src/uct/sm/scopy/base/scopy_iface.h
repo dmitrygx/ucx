@@ -15,12 +15,21 @@ extern ucs_config_field_t uct_scopy_iface_config_table[];
 
 typedef struct uct_scopy_iface_config {
     uct_sm_iface_config_t         super;
+    size_t                        max_iov;
 } uct_scopy_iface_config_t;
 
 
 typedef struct uct_scopy_iface {
     uct_sm_iface_t                super;
+    struct {
+        size_t                    max_iov;
+    } config;
 } uct_scopy_iface_t;
+
+
+#define uct_scopy_trace_data(_remote_addr, _rkey, _fmt, ...) \
+     ucs_trace_data(_fmt " to %"PRIx64"(%+ld)", ## __VA_ARGS__, \
+                    (_remote_addr), (_rkey))
 
 
 void uct_scopy_iface_query(uct_iface_h tl_iface, uct_iface_attr_t *iface_attr);
