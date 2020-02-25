@@ -28,10 +28,10 @@ UCS_CLASS_DEFINE(uct_knem_ep_t, uct_scopy_ep_t)
 UCS_CLASS_DEFINE_NEW_FUNC(uct_knem_ep_t, uct_ep_t, const uct_ep_params_t *);
 UCS_CLASS_DEFINE_DELETE_FUNC(uct_knem_ep_t, uct_ep_t);
 
-#define UCT_KNEM_ZERO_LENGTH_POST(len)              \
-    if (0 == len) {                                     \
+#define UCT_KNEM_ZERO_LENGTH_POST(len) \
+    if (0 == len) { \
         ucs_trace_data("Zero length request: skip it"); \
-        return UCS_OK;                                  \
+        return UCS_OK; \
     }
 
 static inline ucs_status_t uct_knem_rma(uct_ep_h tl_ep, const uct_iov_t *iov,
@@ -46,7 +46,7 @@ static inline ucs_status_t uct_knem_rma(uct_ep_h tl_ep, const uct_iov_t *iov,
     int rc;
     size_t iov_it;
 
-    for (iov_it = 0; iov_it < ucs_min(UCT_SM_MAX_IOV, iovcnt); ++iov_it) {
+    for (iov_it = 0; iov_it < iovcnt; ++iov_it) {
         knem_iov[knem_iov_it].base = (uintptr_t)iov[iov_it].buffer;
         knem_iov[knem_iov_it].len  = uct_iov_get_length(iov + iov_it);
         /* Skip zero length buffers */
@@ -76,45 +76,17 @@ static inline ucs_status_t uct_knem_rma(uct_ep_h tl_ep, const uct_iov_t *iov,
                   "copy status - %d: %m", rc, icopy.current_status);
         return UCS_ERR_IO_ERROR;
     }
-
-    uct_scopy_trace_data(remote_addr, (uintptr_t)key, "%s [length %zu]",
-                         write ? "PUT_ZCOPY" : "GET_ZCOPY",
-                         uct_iov_total_length(iov, iovcnt));
     return UCS_OK;
 }
 
-ucs_status_t uct_knem_ep_put_zcopy(uct_ep_h tl_ep, const uct_iov_t *iov, size_t iovcnt,
-                                   uint64_t remote_addr, uct_rkey_t rkey,
-                                   uct_completion_t *comp)
+ucs_status_t uct_knem_ep_put_zcopy(uct_scopy_tx_t *tx)
 {
-    uct_knem_key_t *key = (uct_knem_key_t *)rkey;
-    ucs_status_t status;
-
-    UCT_CHECK_IOV_SIZE(iovcnt,
-                       ucs_derived_of(tl_ep->iface,
-                                      uct_scopy_iface_t)->config.max_iov,
-                       "uct_knem_ep_put_zcopy");
-
-    status = uct_knem_rma(tl_ep, iov, iovcnt, remote_addr, key, 1);
-    UCT_TL_EP_STAT_OP_IF_SUCCESS(status, ucs_derived_of(tl_ep, uct_base_ep_t),
-                                 PUT, ZCOPY, uct_iov_total_length(iov, iovcnt));
-    return status;
+    return uct_knem_rma(tx->tl_ep, tx->iov, tx->iovcnt, tx->remote_addr,
+                        (uct_knem_key_t*)tx->rkey, 1);
 }
 
-ucs_status_t uct_knem_ep_get_zcopy(uct_ep_h tl_ep, const uct_iov_t *iov, size_t iovcnt,
-                                   uint64_t remote_addr, uct_rkey_t rkey,
-                                   uct_completion_t *comp)
+ucs_status_t uct_knem_ep_get_zcopy(uct_scopy_tx_t *tx)
 {
-    uct_knem_key_t *key = (uct_knem_key_t *)rkey;
-    ucs_status_t status;
-
-    UCT_CHECK_IOV_SIZE(iovcnt,
-                       ucs_derived_of(tl_ep->iface,
-                                      uct_scopy_iface_t)->config.max_iov,
-                       "uct_knem_ep_get_zcopy");
-
-    status = uct_knem_rma(tl_ep, iov, iovcnt, remote_addr, key, 0);
-    UCT_TL_EP_STAT_OP_IF_SUCCESS(status, ucs_derived_of(tl_ep, uct_base_ep_t),
-                                 GET, ZCOPY, uct_iov_total_length(iov, iovcnt));
-    return status;
+    return uct_knem_rma(tx->tl_ep, tx->iov, tx->iovcnt, tx->remote_addr,
+                        (uct_knem_key_t*)tx->rkey, 0);
 }
