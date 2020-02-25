@@ -7,11 +7,12 @@
 #ifndef UCT_KNEM_EP_H
 #define UCT_KNEM_EP_H
 
-#include "knem_iface.h"
+#include <uct/sm/scopy/base/scopy_ep.h>
+#include <uct/sm/scopy/knem/knem_iface.h>
 
 
 typedef struct uct_knem_ep {
-    uct_base_ep_t super;
+    uct_scopy_ep_t super;
 } uct_knem_ep_t;
 
 UCS_CLASS_DECLARE_NEW_FUNC(uct_knem_ep_t, uct_ep_t, const uct_ep_params_t *);

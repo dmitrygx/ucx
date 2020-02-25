@@ -6,16 +6,16 @@
 
 #include <knem_io.h>
 
-#include "knem_ep.h"
-#include "knem_md.h"
-#include <uct/sm/base/sm_iface.h>
 #include <ucs/debug/log.h>
+#include <uct/sm/base/sm_iface.h>
+#include <uct/sm/scopy/knem/knem_md.h>
+#include <uct/sm/scopy/knem/knem_ep.h>
+
 
 static UCS_CLASS_INIT_FUNC(uct_knem_ep_t, const uct_ep_params_t *params)
 {
-    uct_knem_iface_t *iface = ucs_derived_of(params->iface, uct_knem_iface_t);
+    UCS_CLASS_CALL_SUPER_INIT(uct_scopy_ep_t, params);
 
-    UCS_CLASS_CALL_SUPER_INIT(uct_base_ep_t, &iface->super.super);
     return UCS_OK;
 }
 
@@ -24,7 +24,7 @@ static UCS_CLASS_CLEANUP_FUNC(uct_knem_ep_t)
     /* No op */
 }
 
-UCS_CLASS_DEFINE(uct_knem_ep_t, uct_base_ep_t)
+UCS_CLASS_DEFINE(uct_knem_ep_t, uct_scopy_ep_t)
 UCS_CLASS_DEFINE_NEW_FUNC(uct_knem_ep_t, uct_ep_t, const uct_ep_params_t *);
 UCS_CLASS_DEFINE_DELETE_FUNC(uct_knem_ep_t, uct_ep_t);
 
