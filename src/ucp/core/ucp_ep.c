@@ -1256,7 +1256,7 @@ static void ucp_ep_config_init_attrs(ucp_worker_t *worker, ucp_rsc_index_t rsc_i
 
     iface_attr = ucp_worker_iface_get_attr(worker, rsc_index);
 
-    if ((iface_attr->cap.flags & short_flag)) {
+    if (iface_attr->cap.flags & short_flag) {
         config->max_short = max_short - hdr_len;
     } else {
         config->max_short = -1;
@@ -1265,7 +1265,7 @@ static void ucp_ep_config_init_attrs(ucp_worker_t *worker, ucp_rsc_index_t rsc_i
     if (iface_attr->cap.flags & bcopy_flag) {
         config->max_bcopy = max_bcopy;
     } else {
-        config->max_bcopy = SIZE_MAX;
+        config->max_bcopy = 0;
     }
 
     md_attr = &context->tl_mds[context->tl_rscs[rsc_index].md_index].attr;
