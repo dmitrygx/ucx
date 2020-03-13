@@ -20,6 +20,12 @@ typedef enum ucs_iov_copy_direction {
     UCS_IOV_COPY_FROM_BUF
 } ucs_iov_copy_direction_t;
 
+typedef struct ucs_iov_iter {
+    size_t     iov_offset;    /* The current offset in iov array */
+    size_t     buffer_offset; /* The current offset in the buffer of the
+                               * current iov element */
+} ucs_iov_iter_t;
+
 
 /**
  * Copy a data from iovec [buffer] to buffer [iovec].
