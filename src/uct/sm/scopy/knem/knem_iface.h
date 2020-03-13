@@ -23,5 +23,4 @@ typedef struct uct_knem_iface {
     uct_knem_md_t                 *knem_md;
 } uct_knem_iface_t;
 
-
 #endif
