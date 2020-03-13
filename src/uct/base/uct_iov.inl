@@ -84,15 +84,11 @@ size_t uct_iov_to_io_vec(struct iovec *io_vec, size_t *io_vec_cnt_p,
                          const uct_iov_t *uct_iov, size_t uct_iov_cnt,
                          size_t max_length, ucs_iov_iter_t *uct_iov_iter_p)
 {
-    size_t total_length = 0;
-
-    ucs_iov_converter(io_vec, io_vec_cnt_p,
-                      ucs_iov_set_buffer, ucs_iov_set_length,
-                      uct_iov, uct_iov_cnt,
-                      uct_iov_get_buffer, uct_iov_get_length,
-                      max_length, &total_length, uct_iov_iter_p);
-
-    return total_length;
+    return ucs_iov_converter(io_vec, io_vec_cnt_p,
+                             ucs_iov_set_buffer, ucs_iov_set_length,
+                             uct_iov, uct_iov_cnt,
+                             uct_iov_get_buffer, uct_iov_get_length,
+                             max_length, uct_iov_iter_p);
 }
 
 #endif

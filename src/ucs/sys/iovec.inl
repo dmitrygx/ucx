@@ -33,15 +33,16 @@
  *                                       from the destination array.
  * @param [in]     _max_length           The maximal total length of bytes that can be
  *                                       in the resulted array of IOVs.
- * @param [in]     _result_length_p      The total length of the resulted array of IOVs..
  * @param [in]     _iov_iter_p           Pointer to the IOV iterator.
+ *
+ * @return The total length of the resulted array of IOVs.
  */
 #define ucs_iov_converter(_dst_iov, _dst_iov_cnt_p, \
                           _dst_iov_set_buffer_f, _dst_iov_set_length_f, \
                           _src_iov, _src_iov_cnt, \
                           _src_iov_get_buffer_f, _src_iov_get_length_f, \
-                          _max_length, _result_length_p, _iov_iter_p) \
-    do { \
+                          _max_length, _iov_iter_p) \
+   ({ \
         size_t __remain_length = _max_length; \
         size_t __total_length  = 0; \
         size_t __dst_iov_it    = 0; \
@@ -88,8 +89,8 @@
                    (__dst_iov_it <= *(_dst_iov_cnt_p))); \
         (_iov_iter_p)->iov_offset = __src_iov_it; \
         *(_dst_iov_cnt_p)         = __dst_iov_it; \
-        *(_result_length_p)       = __total_length; \
-    } while (0)
+        __total_length; \
+    })
 
 
 /**

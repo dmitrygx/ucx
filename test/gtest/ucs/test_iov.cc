@@ -52,13 +52,11 @@ protected:
     size_t iov_converter(T1 *src_iov, size_t *src_iov_cnt_p,
                          T2 *dst_iov, size_t dst_iov_cnt,
                          size_t max_length, ucs_iov_iter_t *iov_iter_p) {
-        size_t total_length = 0;
-        ucs_iov_converter(src_iov, src_iov_cnt_p,
-                          iov_set_buffer, iov_set_length,
-                          dst_iov, dst_iov_cnt,
-                          iov_get_buffer, iov_get_length,
-                          max_length, &total_length, iov_iter_p);
-        return total_length;
+        return ucs_iov_converter(src_iov, src_iov_cnt_p,
+                                 iov_set_buffer, iov_set_length,
+                                 dst_iov, dst_iov_cnt,
+                                 iov_get_buffer, iov_get_length,
+                                 max_length, iov_iter_p);
     }
 
     void expect_zero_changes(size_t res_cnt, size_t res_length,

@@ -56,15 +56,11 @@ size_t uct_iov_to_knem_io_vec(struct knem_cmd_param_iovec *io_vec, size_t *io_ve
                               const uct_iov_t *uct_iov, size_t uct_iov_cnt,
                               size_t max_length, ucs_iov_iter_t *uct_iov_iter_p)
 {
-    size_t total_length = 0;
-
-    ucs_iov_converter(io_vec, io_vec_cnt_p,
-                      uct_knem_iov_set_buffer, uct_knem_iov_set_length,
-                      uct_iov, uct_iov_cnt,
-                      uct_iov_get_buffer, uct_iov_get_length,
-                      max_length, &total_length, uct_iov_iter_p);
-
-    return total_length;
+    return ucs_iov_converter(io_vec, io_vec_cnt_p,
+                             uct_knem_iov_set_buffer, uct_knem_iov_set_length,
+                             uct_iov, uct_iov_cnt,
+                             uct_iov_get_buffer, uct_iov_get_length,
+                             max_length, uct_iov_iter_p);
 }
 
 static inline ucs_status_t uct_knem_rma(uct_ep_h tl_ep, const uct_iov_t *iov,
