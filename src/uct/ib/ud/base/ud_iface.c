@@ -319,14 +319,13 @@ ucs_status_t uct_ud_iface_complete_init(uct_ud_iface_t *iface)
 
     iface->tx.resend_skbs_quota = iface->tx.available;
 
-    status = ucs_twheel_init(&iface->async.slow_timer,
-                             iface->async.slow_tick / 4,
+    status = ucs_twheel_init(&iface->tx.timer, iface->tx.tick / 4,
                              uct_ud_iface_get_async_time(iface));
     if (status != UCS_OK) {
         goto err;
     }
 
-    status = ucs_async_add_timer(async_mode, iface->async.slow_tick,
+    status = ucs_async_add_timer(async_mode, iface->async.tick,
                                  uct_ud_iface_timer, iface, async,
                                  &iface->async.timer_id);
     if (status != UCS_OK) {
@@ -336,7 +335,7 @@ ucs_status_t uct_ud_iface_complete_init(uct_ud_iface_t *iface)
     return UCS_OK;
 
 err_twheel_cleanup:
-    ucs_twheel_cleanup(&iface->async.slow_timer);
+    ucs_twheel_cleanup(&iface->tx.timer);
 err:
     return status;
 }
@@ -449,21 +448,30 @@ UCS_CLASS_INIT_FUNC(uct_ud_iface_t, uct_ud_iface_ops_t *ops, uct_md_h md,
 
     self->config.max_window = config->max_window;
 
-    if (config->slow_timer_tick <= 0.) {
+    if (config->timer_tick <= 0.) {
         ucs_error("The slow timer tick should be > 0 (%lf)",
-                  config->slow_timer_tick);
+                  config->timer_tick);
         return UCS_ERR_INVALID_PARAM;
     } else {
-        self->async.slow_tick = ucs_time_from_sec(config->slow_timer_tick);
+        self->tx.tick = ucs_time_from_sec(config->timer_tick);
     }
 
-    if (config->slow_timer_backoff < UCT_UD_MIN_TIMER_TIMER_BACKOFF) {
+    if (config->timer_backoff < UCT_UD_MIN_TIMER_TIMER_BACKOFF) {
         ucs_error("The slow timer back off must be >= %lf (%lf)",
-                  UCT_UD_MIN_TIMER_TIMER_BACKOFF, config->slow_timer_backoff);
+                  UCT_UD_MIN_TIMER_TIMER_BACKOFF, config->timer_backoff);
         return UCS_ERR_INVALID_PARAM;
     } else {
-        self->config.slow_timer_backoff = config->slow_timer_backoff;
+        self->tx.timer_backoff = config->timer_backoff;
     }
+
+    if (config->event_timer_tick <= 0.) {
+        ucs_error("The event timer tick should be > 0 (%lf)",
+                  config->event_timer_tick);
+        return UCS_ERR_INVALID_PARAM;
+    } else {
+        self->async.tick = ucs_time_from_sec(config->event_timer_tick);
+    }
+
 
     /* Redefine receive desc release callback */
     self->super.release_desc.cb  = uct_ud_iface_release_desc;
@@ -573,13 +581,15 @@ ucs_config_field_t uct_ud_iface_config_table[] = {
 
     {"TIMEOUT", "5.0m", "Transport timeout",
      ucs_offsetof(uct_ud_iface_config_t, peer_timeout), UCS_CONFIG_TYPE_TIME},
-    {"SLOW_TIMER_TICK", "100ms", "Initial timeout for retransmissions",
-     ucs_offsetof(uct_ud_iface_config_t, slow_timer_tick), UCS_CONFIG_TYPE_TIME},
-    {"SLOW_TIMER_BACKOFF", "2.0",
+    {"TIMER_TICK", "1ms", "Initial timeout for retransmissions",
+     ucs_offsetof(uct_ud_iface_config_t, timer_tick), UCS_CONFIG_TYPE_TIME},
+    {"TIMER_BACKOFF", "2.0",
      "Timeout multiplier for resending trigger (must be >= "
      UCS_PP_MAKE_STRING(UCT_UD_MIN_TIMER_TIMER_BACKOFF) ")",
-     ucs_offsetof(uct_ud_iface_config_t, slow_timer_backoff),
+     ucs_offsetof(uct_ud_iface_config_t, timer_backoff),
                   UCS_CONFIG_TYPE_DOUBLE},
+    {"EVENT_TIMER_TICK", "100ms", "Resolution for async timer",
+     ucs_offsetof(uct_ud_iface_config_t, event_timer_tick), UCS_CONFIG_TYPE_TIME},
     {"ETH_DGID_CHECK", "y",
      "Enable checking destination GID for incoming packets of Ethernet network.\n"
      "Mismatched packets are silently dropped.",
@@ -871,12 +881,8 @@ static inline void uct_ud_iface_async_progress(uct_ud_iface_t *iface)
 static void uct_ud_iface_timer(int timer_id, void *arg)
 {
     uct_ud_iface_t *iface = arg;
-    ucs_time_t now;
 
     uct_ud_enter(iface);
-    now = uct_ud_iface_get_async_time(iface);
-    ucs_trace_async("iface(%p) slow_timer_sweep: now %lu", iface, now);
-    ucs_twheel_sweep(&iface->async.slow_timer, now);
     uct_ud_iface_async_progress(iface);
     uct_ud_leave(iface);
 }
