@@ -117,11 +117,11 @@ uct_ud_iface_complete_tx_inl(uct_ud_iface_t *iface, uct_ud_ep_t *ep,
     skb->len += length;
     memcpy(data, buffer, length);
     ucs_queue_push(&ep->tx.window, &skb->queue);
-    ep->tx.slow_tick = iface->async.slow_tick;
-    ucs_wtimer_add(&iface->async.slow_timer, &ep->slow_timer,
+    ep->tx.tick = iface->tx.tick;
+    ucs_wtimer_add(&iface->tx.timer, &ep->timer,
                    uct_ud_iface_get_async_time(iface) -
-                   ucs_twheel_get_time(&iface->async.slow_timer) +
-                   ep->tx.slow_tick);
+                   ucs_twheel_get_time(&iface->tx.timer) +
+                   ep->tx.tick);
     ep->tx.send_time = uct_ud_iface_get_async_time(iface);
 }
 
@@ -132,11 +132,11 @@ uct_ud_iface_complete_tx_skb(uct_ud_iface_t *iface, uct_ud_ep_t *ep,
     iface->tx.skb = ucs_mpool_get(&iface->tx.mp);
     ep->tx.psn++;
     ucs_queue_push(&ep->tx.window, &skb->queue);
-    ep->tx.slow_tick = iface->async.slow_tick;
-    ucs_wtimer_add(&iface->async.slow_timer, &ep->slow_timer,
+    ep->tx.tick = iface->tx.tick;
+    ucs_wtimer_add(&iface->tx.timer, &ep->timer,
                    uct_ud_iface_get_async_time(iface) -
-                   ucs_twheel_get_time(&iface->async.slow_timer) +
-                   ep->tx.slow_tick);
+                   ucs_twheel_get_time(&iface->tx.timer) +
+                   ep->tx.tick);
     ep->tx.send_time = uct_ud_iface_get_async_time(iface);
 }
 

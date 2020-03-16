@@ -40,8 +40,9 @@ typedef struct uct_ud_iface_config {
     uct_ib_iface_config_t         super;
     uct_ud_iface_common_config_t  ud_common;
     double                        peer_timeout;
-    double                        slow_timer_tick;
-    double                        slow_timer_backoff;
+    double                        timer_tick;
+    double                        timer_backoff;
+    double                        event_timer_tick;
     int                           dgid_check;
     unsigned                      max_window;
 } uct_ud_iface_config_t;
@@ -138,10 +139,12 @@ struct uct_ud_iface {
         unsigned               resend_skbs_quota;
         ucs_arbiter_t          pending_q;
         ucs_queue_head_t       async_comp_q;
+        ucs_twheel_t           timer;
+        ucs_time_t             tick;
+        double                 timer_backoff;
     } tx;
     struct {
         ucs_time_t           peer_timeout;
-        double               slow_timer_backoff;
         unsigned             tx_qp_len;
         unsigned             max_inline;
         int                  check_grh_dgid;
@@ -154,8 +157,7 @@ struct uct_ud_iface {
     ucs_ptr_array_t       eps;
     uct_ud_iface_peer_t  *peers[UCT_UD_HASH_SIZE];
     struct {
-        ucs_twheel_t              slow_timer;
-        ucs_time_t                slow_tick;
+        ucs_time_t                tick;
         int                       timer_id;
     } async;
 };
@@ -389,6 +391,9 @@ static UCS_F_ALWAYS_INLINE void
 uct_ud_iface_progress_pending(uct_ud_iface_t *iface, const uintptr_t is_async)
 {
     if (!is_async) {
+        ucs_twheel_sweep(&iface->tx.timer,
+                         uct_ud_iface_get_async_time(iface));
+
         iface->tx.async_before_pending = 0;
     }
 
