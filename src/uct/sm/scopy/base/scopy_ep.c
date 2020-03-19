@@ -88,6 +88,8 @@ uct_scopy_ep_prepare_tx(uct_ep_h tl_ep, const uct_iov_t *iov,
         return UCS_OK;
     }
 
+    ep->last_tx = tx;
+    iface->outstanding++;
     ucs_arbiter_elem_init(&tx->arb_elem);
     ucs_arbiter_group_push_elem(&ep->arb_group, &tx->arb_elem);
     ucs_arbiter_group_schedule(&iface->arbiter, &ep->arb_group);
@@ -115,6 +117,8 @@ static UCS_F_ALWAYS_INLINE ucs_status_t
 uct_scopy_ep_comp_tx(uct_scopy_ep_t *ep, uct_scopy_tx_t *tx,
                      ucs_status_t status, size_t comp_size)
 {
+    uct_scopy_iface_t *iface = ucs_derived_of(ep->super.super.iface,
+                                              uct_scopy_iface_t);
     uct_scopy_comp_t *flush_comp, *tmp_flush_comp;
 
     tx->consumed_length += comp_size;
@@ -132,6 +136,8 @@ uct_scopy_ep_comp_tx(uct_scopy_ep_t *ep, uct_scopy_tx_t *tx,
             ucs_list_del(&flush_comp->list_elem);
             ucs_mpool_put_inline(flush_comp);
         }
+
+        iface->outstanding--;
 
         ucs_mpool_put_inline(tx);
         return status;
@@ -151,12 +157,11 @@ ucs_arbiter_cb_result_t uct_scopy_ep_progress_tx(ucs_arbiter_t *arbiter,
     uct_scopy_tx_t *tx       = ucs_container_of(elem, uct_scopy_tx_t, arb_elem);
     size_t seg_size          = ucs_min(iface->config.seg_size,
                                        tx->total_length - tx->consumed_length);
-    size_t comp_length       = seg_size;
     unsigned *count          = (unsigned*)arg;
     ucs_status_t status;
 
     status = iface->tx(&ep->super.super, tx->iov, tx->iov_cnt,
-                       &tx->iov_iter, &comp_length,
+                       &tx->iov_iter, &seg_size,
                        tx->remote_addr + tx->consumed_length,
                        tx->rkey, tx->op);
     status = uct_scopy_ep_comp_tx(ep, tx, status, seg_size);
@@ -173,13 +178,26 @@ ucs_arbiter_cb_result_t uct_scopy_ep_progress_tx(ucs_arbiter_t *arbiter,
 ucs_status_t uct_scopy_ep_flush(uct_ep_h tl_ep, unsigned flags,
                                 uct_completion_t *comp)
 {
-    uct_scopy_ep_t *ep = ucs_derived_of(tl_ep, uct_scopy_ep_t);
+    uct_scopy_ep_t *ep       = ucs_derived_of(tl_ep, uct_scopy_ep_t);
+    uct_scopy_iface_t *iface = ucs_derived_of(tl_ep->iface,
+                                              uct_scopy_iface_t);
+    uct_scopy_comp_t *flush_comp;
 
     if (!ucs_arbiter_group_is_empty(&ep->arb_group)) {
+
+        if (comp != NULL) {
+            flush_comp = ucs_mpool_get_inline(&iface->tx_mpool);
+            if (ucs_unlikely(flush_comp == NULL)) {
+                return UCS_ERR_NO_MEMORY;
+            }
+
+            flush_comp->comp = comp;
+            ucs_list_add_tail(&ep->last_tx->flush_comp_list,
+                              &flush_comp->list_elem);
+        }
+
         UCT_TL_EP_STAT_FLUSH_WAIT(&ep->super);
-        return uct_scopy_iface_handle_flush_wait(ucs_derived_of(tl_ep->iface,
-                                                                uct_scopy_iface_t),
-                                                 ep->last_tx, comp);
+        return UCS_INPROGRESS;
     }
 
     UCT_TL_EP_STAT_FLUSH(&ep->super);
