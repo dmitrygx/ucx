@@ -193,6 +193,7 @@ again:
 UCS_CLASS_INIT_FUNC(uct_ud_ep_t, uct_ud_iface_t *iface,
                     const uct_ep_params_t* params)
 {
+    ucs_status_t status;
     ucs_trace_func("");
 
     memset(self, 0, sizeof(*self));
@@ -210,6 +211,13 @@ UCS_CLASS_INIT_FUNC(uct_ud_ep_t, uct_ud_iface_t *iface,
 
     UCT_UD_EP_HOOK_INIT(self);
     ucs_debug("created ep ep=%p iface=%p id=%d", self, iface, self->ep_id);
+    
+    if (++iface->ep_cnt == 1) {
+        status = uct_ud_iface_complete_init(iface);
+        if (status != UCS_OK) {
+            return status;
+        }
+    }
     return UCS_OK;
 }
 
@@ -255,6 +263,10 @@ static UCS_CLASS_CLEANUP_FUNC(uct_ud_ep_t)
                    (int)ucs_queue_length(&self->tx.window));
     }
     ucs_arbiter_group_cleanup(&self->tx.pending.group);
+
+    if (--iface->ep_cnt == 0) {
+        uct_ud_iface_remove_async_handlers(iface);
+    }
 }
 
 UCS_CLASS_DEFINE(uct_ud_ep_t, uct_base_ep_t);

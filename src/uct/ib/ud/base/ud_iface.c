@@ -430,6 +430,7 @@ UCS_CLASS_INIT_FUNC(uct_ud_iface_t, uct_ud_iface_ops_t *ops, uct_md_h md,
         return UCS_ERR_INVALID_PARAM;
     }
 
+    self->ep_cnt                 = 0;
     self->tx.unsignaled          = 0;
     self->tx.available           = config->super.tx.queue_len;
 

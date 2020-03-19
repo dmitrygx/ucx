@@ -663,13 +663,12 @@ static UCS_CLASS_INIT_FUNC(uct_ud_verbs_iface_t, uct_md_h md, uct_worker_h worke
         uct_ud_verbs_iface_post_recv(self);
     }
 
-    return uct_ud_iface_complete_init(&self->super);
+    return UCS_OK;
 }
 
 static UCS_CLASS_CLEANUP_FUNC(uct_ud_verbs_iface_t)
 {
     ucs_trace_func("");
-    uct_ud_iface_remove_async_handlers(&self->super);
     uct_ud_enter(&self->super);
     UCT_UD_IFACE_DELETE_EPS(&self->super, uct_ud_verbs_ep_t);
     ucs_twheel_cleanup(&self->super.async.slow_timer);

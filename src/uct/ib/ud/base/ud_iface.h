@@ -117,6 +117,7 @@ typedef struct uct_ud_iface_ops {
 
 struct uct_ud_iface {
     uct_ib_iface_t           super;
+    size_t                   ep_cnt;
     struct ibv_qp           *qp;
     struct {
         ucs_mpool_t          mp;
