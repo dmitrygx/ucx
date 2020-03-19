@@ -25,13 +25,13 @@ const struct {
     uct_cma_ep_zcopy_fn_t fn;
     char                  *name;
 } uct_cma_ep_fn[] = {
-    [UCT_SCOPY_TX_PUT_ZCOPY] = {
-        .fn   = process_vm_writev,
-        .name = "process_vm_writev"
-    },
     [UCT_SCOPY_TX_GET_ZCOPY] = {
         .fn   = process_vm_readv,
         .name = "process_vm_readv"
+    },
+    [UCT_SCOPY_TX_PUT_ZCOPY] = {
+        .fn   = process_vm_writev,
+        .name = "process_vm_writev"
     }
 };
 

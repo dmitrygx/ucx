@@ -13,27 +13,19 @@
 #include <ucs/debug/log.h>
 
 
-const struct {
-    int     write; /* - `false`: READ from the remote region
-                    *            into my local segments
-                    * - `true`:  WRITE to the remote region
-                    *            from my local segment */
-    char    *name;
-} uct_knem_ep_tx_op[] = {
-    [UCT_SCOPY_TX_PUT_ZCOPY] = {
-        .write = 1,
-        .name  = "WRITE"
-    },
-    [UCT_SCOPY_TX_GET_ZCOPY] = {
-        .write = 0,
-        .name  = "READ"
-    }
+const char *uct_knem_ep_tx_op_str[] = {
+    [UCT_SCOPY_TX_GET_ZCOPY] = "READ",
+    [UCT_SCOPY_TX_PUT_ZCOPY] = "WRITE"
 };
 
 
 static UCS_CLASS_INIT_FUNC(uct_knem_ep_t, const uct_ep_params_t *params)
 {
     UCS_CLASS_CALL_SUPER_INIT(uct_scopy_ep_t, params);
+
+    /* This value is used to set `knem_cmd_inline_copy::write` field */
+    UCS_STATIC_ASSERT(UCT_SCOPY_TX_PUT_ZCOPY == 1);
+
     return UCS_OK;
 }
 
@@ -89,7 +81,7 @@ ucs_status_t uct_knem_ep_tx(uct_ep_h tl_ep, uct_iov_t *iov, size_t iov_cnt,
     icopy.current_status    = 0;
     ucs_assert(remote_addr >= key->address);
     icopy.remote_offset     = remote_addr - key->address;
-    icopy.write             = uct_knem_ep_tx_op[tx_op].write;
+    icopy.write             = tx_op;
     /* TBD: add check and support for KNEM_FLAG_DMA */
     icopy.flags             = 0;
 
@@ -99,7 +91,7 @@ ucs_status_t uct_knem_ep_tx(uct_ep_h tl_ep, uct_iov_t *iov, size_t iov_cnt,
                      (icopy.current_status != KNEM_STATUS_SUCCESS))) {
         ucs_error("KNEM inline copy \"%s\" failed, ioctl() return value - %d, "
                   "copy status - %d: %m",
-                  uct_knem_ep_tx_op[tx_op].name, ret, icopy.current_status);
+                  uct_knem_ep_tx_op_str[tx_op], ret, icopy.current_status);
         return UCS_ERR_IO_ERROR;
     }
 

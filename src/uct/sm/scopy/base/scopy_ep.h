@@ -15,8 +15,8 @@ extern const char* uct_scopy_tx_op_str[];
 
 
 typedef enum uct_scopy_tx_op {
-    UCT_SCOPY_TX_PUT_ZCOPY,
     UCT_SCOPY_TX_GET_ZCOPY,
+    UCT_SCOPY_TX_PUT_ZCOPY,
     UCT_SCOPY_TX_LAST
 } uct_scopy_tx_op_t;
 
