@@ -41,7 +41,6 @@ SGLIB_DEFINE_HASHED_CONTAINER_FUNCTIONS(uct_ud_iface_peer_t,
                                         uct_ud_iface_peer_hash)
 
 static void uct_ud_iface_free_resend_skbs(uct_ud_iface_t *iface);
-static void uct_ud_iface_timer(int timer_id, void *arg);
 
 static void uct_ud_iface_free_pending_rx(uct_ud_iface_t *iface);
 static void uct_ud_iface_free_async_comps(uct_ud_iface_t *iface);
@@ -311,11 +310,36 @@ err_destroy_qp:
     return UCS_ERR_INVALID_PARAM;
 }
 
+
+
+static inline void uct_ud_iface_async_progress(uct_ud_iface_t *iface)
+{
+    unsigned ev_count;
+    uct_ud_iface_ops_t *ops;
+
+    ops = ucs_derived_of(iface->super.ops, uct_ud_iface_ops_t);
+    ev_count = ops->async_progress(iface);
+
+    if (ev_count > 0) {
+        uct_ud_iface_raise_pending_async_ev(iface);
+    }
+}
+
+static void uct_ud_async_event_handler(int fd, void *arg)
+{
+    uct_ud_iface_t *iface = arg;
+
+    uct_ud_enter(iface);
+    uct_ud_iface_async_progress(iface);
+    uct_ud_leave(iface);
+}
+
 ucs_status_t uct_ud_iface_complete_init(uct_ud_iface_t *iface)
 {
-    ucs_async_context_t *async = iface->super.super.worker->async;
+    ucs_async_context_t *async  = iface->super.super.worker->async;
     ucs_async_mode_t async_mode = async->mode;
     ucs_status_t status;
+    int fd, wait_fd;
 
     iface->tx.resend_skbs_quota = iface->tx.available;
 
@@ -325,15 +349,42 @@ ucs_status_t uct_ud_iface_complete_init(uct_ud_iface_t *iface)
         goto err;
     }
 
-    status = ucs_async_add_timer(async_mode, iface->async.tick,
-                                 uct_ud_iface_timer, iface, async,
-                                 &iface->async.timer_id);
+    status = uct_iface_event_fd_get(&iface->super.super.super, &fd);
     if (status != UCS_OK) {
         goto err_twheel_cleanup;
     }
 
+    status = ucs_event_set_create(&iface->event_set);
+    if (status != UCS_OK) {
+        goto err_twheel_cleanup;
+    }
+
+    status = ucs_event_set_add(iface->event_set, fd,
+                               UCS_EVENT_SET_EVREAD |
+                               UCS_EVENT_SET_EVERR,
+                               NULL);
+    if (status != UCS_OK) {
+        goto err_event_set_cleanup;
+    }
+
+    status = ucs_event_set_fd_get(iface->event_set, &wait_fd);
+    if (status != UCS_OK) {
+        goto err_event_set_cleanup;
+    }
+
+    status = ucs_async_set_event_handler(async_mode, wait_fd,
+                                         UCS_EVENT_SET_EVREAD |
+                                         UCS_EVENT_SET_EVERR,
+                                         uct_ud_async_event_handler,
+                                         iface, async);
+    if (status != UCS_OK) {
+        goto err_event_set_cleanup;
+    }
+
     return UCS_OK;
 
+err_event_set_cleanup:
+    ucs_event_set_cleanup(iface->event_set);
 err_twheel_cleanup:
     ucs_twheel_cleanup(&iface->tx.timer);
 err:
@@ -342,9 +393,25 @@ err:
 
 void uct_ud_iface_remove_async_handlers(uct_ud_iface_t *iface)
 {
+    ucs_status_t status;
+    int fd, wait_fd;
+
     uct_base_iface_progress_disable(&iface->super.super.super,
                                     UCT_PROGRESS_SEND | UCT_PROGRESS_RECV);
-    ucs_async_remove_handler(iface->async.timer_id, 1);
+
+    status = uct_iface_event_fd_get(&iface->super.super.super, &fd);
+    if (status != UCS_OK) {
+        return;
+    }
+
+    status = ucs_event_set_fd_get(iface->event_set, &wait_fd);
+    if (status != UCS_OK) {
+        return;
+    }
+
+    ucs_async_remove_handler(wait_fd, 1);
+    ucs_event_set_del(iface->event_set, fd);
+    ucs_event_set_cleanup(iface->event_set);
 }
 
 /* Calculate real GIDs len. Can be either 16 (RoCEv1 or RoCEv2/IPv6)
@@ -866,19 +933,7 @@ static void uct_ud_iface_free_pending_rx(uct_ud_iface_t *iface)
     }
 }
 
-static inline void uct_ud_iface_async_progress(uct_ud_iface_t *iface)
-{
-    unsigned ev_count;
-    uct_ud_iface_ops_t *ops;
-
-    ops = ucs_derived_of(iface->super.ops, uct_ud_iface_ops_t);
-    ev_count = ops->async_progress(iface);
-    if (ev_count > 0) {
-        uct_ud_iface_raise_pending_async_ev(iface);
-    }
-}
-
-static void uct_ud_iface_timer(int timer_id, void *arg)
+void uct_ud_iface_timer(int timer_id, void *arg)
 {
     uct_ud_iface_t *iface = arg;
 

@@ -151,6 +151,7 @@ struct uct_ud_iface {
         unsigned             gid_len;
         unsigned             max_window;
     } config;
+    ucs_sys_event_set_t      *event_set;
 
     UCS_STATS_NODE_DECLARE(stats)
 
