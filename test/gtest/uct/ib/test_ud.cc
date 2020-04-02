@@ -185,9 +185,9 @@ UCS_TEST_SKIP_COND_P(test_ud, basic_tx,
                      !check_caps(UCT_IFACE_FLAG_AM_SHORT)) {
     unsigned i, N = 13;
 
+    connect();
     disable_async(m_e1);
     disable_async(m_e2);
-    connect();
     set_tx_win(m_e1, 1024);
     for (i = 0; i < N; i++) {
         EXPECT_UCS_OK(tx(m_e1));
@@ -211,9 +211,9 @@ UCS_TEST_SKIP_COND_P(test_ud, duplex_tx,
                      !check_caps(UCT_IFACE_FLAG_AM_SHORT)) {
     unsigned i, N = 5;
 
+    connect();
     disable_async(m_e1);
     disable_async(m_e2);
-    connect();
     set_tx_win(m_e1, 1024);
     set_tx_win(m_e2, 1024);
     for (i = 0; i < N; i++) {
@@ -244,9 +244,9 @@ UCS_TEST_SKIP_COND_P(test_ud, tx_window1,
                      !check_caps(UCT_IFACE_FLAG_AM_SHORT)) {
     unsigned i, N = 13;
 
+    connect();
     disable_async(m_e1);
     disable_async(m_e2);
-    connect();
     set_tx_win(m_e1, N+1);
     for (i = 0; i < N; i++) {
         EXPECT_UCS_OK(tx(m_e1));
@@ -295,9 +295,9 @@ UCS_TEST_SKIP_COND_P(test_ud, tx_window2,
                      !check_caps(UCT_IFACE_FLAG_AM_SHORT)) {
     unsigned i, N = 13;
 
-    disable_async(m_e1);
-    disable_async(m_e2);
     connect();
+    disable_async(m_e1);
+    disable_async(m_e2);    
     set_tx_win(m_e1, N+1);
     ep(m_e1)->tx.tx_hook = clear_ack_req;
 
@@ -344,9 +344,9 @@ UCS_TEST_SKIP_COND_P(test_ud, ack_req_window,
                      !check_caps(UCT_IFACE_FLAG_AM_SHORT)) {
     unsigned i, N = 16;
 
+    connect();
     disable_async(m_e1);
     disable_async(m_e2);
-    connect();
     set_tx_win(m_e1, N);
     ack_req_tx_cnt = 0;
     tx_ack_psn = 0;
@@ -494,13 +494,13 @@ UCS_TEST_SKIP_COND_P(test_ud, ca_ai,
     int max_window;
 
     /* check initial window */
-    disable_async(m_e1);
-    disable_async(m_e2);
     /* only test up to 'small' window when on valgrind
      * valgrind drops rx packets when window is too big and resends are disabled in this test
      */
     max_window = RUNNING_ON_VALGRIND ? 128 : UCT_UD_CA_MAX_WINDOW;
     connect();
+    disable_async(m_e1);
+    disable_async(m_e2);
     EXPECT_EQ(UCT_UD_CA_MIN_WINDOW, ep(m_e1)->ca.cwnd);
     EXPECT_EQ(UCT_UD_CA_MIN_WINDOW, ep(m_e2)->ca.cwnd);
 
@@ -771,6 +771,8 @@ UCS_TEST_SKIP_COND_P(test_ud, ep_destroy_flush,
     connect();
     EXPECT_UCS_OK(tx(m_e1));
     short_progress_loop();
+
+    /* m_e1::ep[0] has to be revoked at the end of the testing */
     uct_ep_destroy(m_e1->ep(0));
     /* ep destroy should try to flush outstanding packets */
     short_progress_loop();
@@ -784,17 +786,26 @@ UCS_TEST_SKIP_COND_P(test_ud, ep_destroy_flush,
     ud_ep1 = ucs_derived_of(ep, uct_ud_ep_t);
     EXPECT_EQ(1U, ud_ep1->ep_id);
     uct_ep_destroy(ep);
+
+    /* revoke m_e1::ep[0] as it was destroyed manually */
+    m_e1->revoke_ep(0);
 }
 
 UCS_TEST_SKIP_COND_P(test_ud, ep_destroy_passive,
                      !check_caps(UCT_IFACE_FLAG_AM_SHORT)) {
     connect();
+
+    /* m_ee::ep[0] has to be revoked at the end of the testing */
     uct_ep_destroy(m_e2->ep(0));
+
     /* destroyed ep must still accept data */
     EXPECT_UCS_OK(tx(m_e1));
     EXPECT_UCS_OK(ep_flush_b(m_e1));
 
     validate_flush();
+
+    /* revoke m_e2::ep[0] as it was destroyed manually */
+    m_e2->revoke_ep(0);
 }
 
 UCS_TEST_P(test_ud, ep_destroy_creq) {
@@ -807,7 +818,7 @@ UCS_TEST_P(test_ud, ep_destroy_creq) {
     m_e1->connect_to_iface(0, *m_e2);
     short_progress_loop(TEST_UD_PROGRESS_TIMEOUT);
 
-    uct_ep_destroy(m_e1->ep(0));
+    m_e1->destroy_ep(0);
 
     /* check that ep id are not reused on both sides */
     ep_params.field_mask = UCT_EP_PARAM_FIELD_IFACE;
@@ -862,9 +873,9 @@ UCS_TEST_SKIP_COND_P(test_ud, res_skb_tx,
     uct_ud_send_skb_t *skb;
     int n, tx_count;
 
+    connect();
     disable_async(m_e1);
     disable_async(m_e2);
-    connect();
     EXPECT_UCS_OK(tx(m_e1));
     short_progress_loop();
 

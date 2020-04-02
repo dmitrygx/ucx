@@ -443,19 +443,17 @@ uct_ud_verbs_ep_create_connected(uct_iface_h iface_h, const uct_device_addr_t *d
     uct_ud_enter(&iface->super);
     status = uct_ud_ep_create_connected_common(&iface->super, ib_addr, if_addr,
                                                path_index, &new_ud_ep, &skb);
-    if (status != UCS_OK &&
-        status != UCS_ERR_NO_RESOURCE &&
-        status != UCS_ERR_ALREADY_EXISTS) {
-        uct_ud_leave(&iface->super);
-        return status;
+    if ((status != UCS_OK) &&
+        (status != UCS_ERR_NO_RESOURCE) &&
+        (status != UCS_ERR_ALREADY_EXISTS)) {
+        goto out;
     }
 
     ep = ucs_derived_of(new_ud_ep, uct_ud_verbs_ep_t);
     /* cppcheck-suppress autoVariables */
     *new_ep_p = &ep->super.super.super;
     if (status == UCS_ERR_ALREADY_EXISTS) {
-        uct_ud_leave(&iface->super);
-        return UCS_OK;
+        goto out_ok;
     }
 
     ucs_assert_always(ep->ah == NULL);
@@ -466,8 +464,8 @@ uct_ud_verbs_ep_create_connected(uct_iface_h iface_h, const uct_device_addr_t *d
     if (status_ah != UCS_OK) {
         uct_ud_ep_destroy_connected(&ep->super, ib_addr, if_addr);
         *new_ep_p = NULL;
-        uct_ud_leave(&iface->super);
-        return status_ah;
+        status    = status_ah;
+        goto out;
     }
 
     ep->dest_qpn = uct_ib_unpack_uint24(if_addr->qp_num);
@@ -477,8 +475,12 @@ uct_ud_verbs_ep_create_connected(uct_iface_h iface_h, const uct_device_addr_t *d
         uct_ud_iface_complete_tx_skb(&iface->super, &ep->super, skb);
         ep->super.flags |= UCT_UD_EP_FLAG_CREQ_SENT;
     }
+
+out_ok:
+    status = UCS_OK;
+out:
     uct_ud_leave(&iface->super);
-    return UCS_OK;
+    return status;
 }
 
 
@@ -515,9 +517,9 @@ uct_ud_verbs_ep_create(const uct_ep_params_t *params, uct_ep_h *ep_p)
                                                 params->iface_addr,
                                                 UCT_EP_PARAMS_GET_PATH_INDEX(params),
                                                 ep_p);
+    } else {
+        return uct_ud_verbs_ep_t_new(params, ep_p);
     }
-
-    return uct_ud_verbs_ep_t_new(params, ep_p);
 }
 
 static void UCS_CLASS_DELETE_FUNC_NAME(uct_ud_verbs_iface_t)(uct_iface_t*);
@@ -542,7 +544,7 @@ static uct_ud_iface_ops_t uct_ud_verbs_iface_ops = {
     .iface_progress_enable    = uct_ud_iface_progress_enable,
     .iface_progress_disable   = uct_base_iface_progress_disable,
     .iface_progress           = uct_ud_verbs_iface_progress,
-    .iface_event_fd_get       = uct_ib_iface_event_fd_get,
+    .iface_event_fd_get       = uct_ud_iface_event_fd_get,
     .iface_event_arm          = uct_ud_iface_event_arm,
     .iface_close              = UCS_CLASS_DELETE_FUNC_NAME(uct_ud_verbs_iface_t),
     .iface_query              = uct_ud_verbs_iface_query,

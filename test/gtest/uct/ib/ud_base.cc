@@ -87,7 +87,21 @@ void ud_base_test::set_tx_win(entity *e, uct_ud_psn_t size)
 
 void ud_base_test::disable_async(entity *e) 
 {
-    ucs_async_remove_handler(iface(e)->async.timer_id, 1);
+    ucs_status_t status;
+    int event_fd;
+
+    /* at least one connection has to be initiated in order to disable
+     * timer-based async progress */
+    ASSERT_TRUE(iface(e)->async.timer_id != 0);
+    status = ucs_async_remove_handler(iface(e)->async.timer_id, 1);
+    ASSERT_UCS_OK(status);
+
+    /* disable event-based async progress by removing handler tied
+     * with the completion channel's FD */
+    status = uct_ib_iface_event_fd_get(&iface(e)->super.super.super,
+                                       &event_fd);
+    ASSERT_UCS_OK(status);
+    ucs_async_remove_handler(event_fd, 1);
 }
 
 

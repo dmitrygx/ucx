@@ -10,9 +10,13 @@
 #ifndef UCT_TEST_H_
 #define UCT_TEST_H_
 
+extern "C" {
+#include <poll.h>
 #include <uct/api/uct.h>
 #include <ucs/sys/sys.h>
 #include <ucs/async/async.h>
+#include <ucs/async/pipe.h>
+}
 #include <common/mem_buffer.h>
 #include <common/test.h>
 #include <vector>
@@ -145,6 +149,7 @@ protected:
 
         bool is_caps_supported(uint64_t required_flags);
         bool check_caps(uint64_t required_flags, uint64_t invalid_flags = 0);
+        bool check_event_caps(uint64_t required_flags, uint64_t invalid_flags = 0);
         bool check_atomics(uint64_t required_ops, atomic_mode mode);
 
         uct_md_h md() const;
@@ -171,6 +176,7 @@ protected:
 
         void create_ep(unsigned index);
         void destroy_ep(unsigned index);
+        void revoke_ep(unsigned index);
         void destroy_eps();
         void connect(unsigned index, entity& other, unsigned other_index);
         void connect(unsigned index, entity& other, unsigned other_index,
@@ -280,6 +286,33 @@ protected:
         uct_iov_t               m_iov;
     };
 
+    struct async_event_ctx {
+        async_event_ctx() {
+            init();
+        }
+
+        ~async_event_ctx() {
+            reset();
+        }
+
+        void signal();
+        bool check_event(entity &e, int timeout);
+        void reset();
+
+        struct pollfd    wakeup_fd;
+        /* thios used for UCT TLs that support async event cb
+         * for event notification */
+        ucs_async_pipe_t aux_pipe;
+        bool             aux_pipe_init;
+    private:
+        void init() {
+            wakeup_fd.fd      = -1;
+            wakeup_fd.events  = POLLIN;
+            wakeup_fd.revents = 0;
+            aux_pipe_init     = false;
+        }
+    };
+
     template <typename T>
     static std::vector<const resource*> filter_resources(const std::vector<T>& resources,
                                                          const std::string& tl_name)
@@ -349,6 +382,9 @@ protected:
     bool is_caps_supported(uint64_t required_flags);
     bool check_caps(uint64_t required_flags, uint64_t invalid_flags = 0);
     void check_caps_skip(uint64_t required_flags, uint64_t invalid_flags = 0);
+    bool check_event_caps(uint64_t required_flags, uint64_t invalid_flags = 0);
+    bool is_any_event_notify_supported();
+    void check_event_caps_skip(uint64_t required_flags, uint64_t invalid_flags = 0);
     bool check_atomics(uint64_t required_ops, atomic_mode mode);
     const entity& ent(unsigned index) const;
     unsigned progress() const;
@@ -373,7 +409,9 @@ protected:
                                     uct_tag_unexp_eager_cb_t eager_cb = NULL,
                                     uct_tag_unexp_rndv_cb_t rndv_cb = NULL,
                                     void *eager_arg = NULL,
-                                    void *rndv_arg = NULL);
+                                    void *rndv_arg = NULL,
+                                    uct_async_event_cb_t async_event_cb = NULL,
+                                    void *async_event_arg = NULL);
     uct_test::entity* create_entity(uct_iface_params_t &params);
     uct_test::entity* create_entity();
     int max_connections();

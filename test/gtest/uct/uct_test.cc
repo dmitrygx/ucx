@@ -475,6 +475,26 @@ void uct_test::check_caps_skip(uint64_t required_flags, uint64_t invalid_flags) 
     }
 }
 
+bool uct_test::check_event_caps(uint64_t required_flags, uint64_t invalid_flags) {
+    FOR_EACH_ENTITY(iter) {
+        if (!(*iter)->check_event_caps(required_flags, invalid_flags)) {
+            return false;
+        }
+    }
+    return true;
+}
+
+bool uct_test::is_any_event_notify_supported() {
+    return check_event_caps(UCT_IFACE_FLAG_EVENT_FD) ||
+           check_event_caps(UCT_IFACE_FLAG_EVENT_ASYNC_CB);
+}
+
+void uct_test::check_event_caps_skip(uint64_t required_flags, uint64_t invalid_flags) {
+    if (!check_event_caps(required_flags, invalid_flags)) {
+        UCS_TEST_SKIP_R("unsupported");
+    }
+}
+
 bool uct_test::check_atomics(uint64_t required_ops, atomic_mode mode) {
     FOR_EACH_ENTITY(iter) {
         if (!(*iter)->check_atomics(required_ops, mode)) {
@@ -592,7 +612,9 @@ uct_test::entity* uct_test::create_entity(size_t rx_headroom,
                                           uct_error_handler_t err_handler,
                                           uct_tag_unexp_eager_cb_t eager_cb,
                                           uct_tag_unexp_rndv_cb_t rndv_cb,
-                                          void *eager_arg, void *rndv_arg) {
+                                          void *eager_arg, void *rndv_arg,
+                                          uct_async_event_cb_t async_event_cb,
+                                          void *async_event_arg) {
     uct_iface_params_t iface_params;
 
     iface_params.field_mask        = UCT_IFACE_PARAM_FIELD_RX_HEADROOM       |
@@ -603,7 +625,9 @@ uct_test::entity* uct_test::create_entity(size_t rx_headroom,
                                      UCT_IFACE_PARAM_FIELD_HW_TM_EAGER_CB    |
                                      UCT_IFACE_PARAM_FIELD_HW_TM_EAGER_ARG   |
                                      UCT_IFACE_PARAM_FIELD_HW_TM_RNDV_CB     |
-                                     UCT_IFACE_PARAM_FIELD_HW_TM_RNDV_ARG;
+                                     UCT_IFACE_PARAM_FIELD_HW_TM_RNDV_ARG    |
+                                     UCT_IFACE_PARAM_FIELD_ASYNC_EVENT_CB    |
+                                     UCT_IFACE_PARAM_FIELD_ASYNC_EVENT_ARG;
     iface_params.rx_headroom       = rx_headroom;
     iface_params.open_mode         = UCT_IFACE_OPEN_MODE_DEVICE;
     iface_params.err_handler       = err_handler;
@@ -619,6 +643,11 @@ uct_test::entity* uct_test::create_entity(size_t rx_headroom,
                                      (ucs_empty_function_return_success) :
                                      rndv_cb;
     iface_params.rndv_arg          = rndv_arg;
+    iface_params.async_event_cb    = (async_event_cb == NULL) ?
+                                     reinterpret_cast<uct_async_event_cb_t>
+                                     (ucs_empty_function_return_success) :
+                                     async_event_cb;
+    iface_params.async_event_arg   = async_event_arg;
 
     return new entity(*GetParam(), m_iface_config, &iface_params, m_md_config);
 }
@@ -911,6 +940,14 @@ bool uct_test::entity::check_caps(uint64_t required_flags,
             !(iface_flags & invalid_flags));
 }
 
+bool uct_test::entity::check_event_caps(uint64_t required_flags,
+                                        uint64_t invalid_flags)
+{
+    uint64_t iface_event_flags = iface_attr().cap.event_flags;
+    return (ucs_test_all_flags(iface_event_flags, required_flags) &&
+            !(iface_event_flags & invalid_flags));
+}
+
 bool uct_test::entity::check_atomics(uint64_t required_ops, atomic_mode mode)
 {
     uint64_t amo;
@@ -1035,6 +1072,14 @@ void uct_test::entity::destroy_ep(unsigned index) {
     }
 
     m_eps[index].reset();
+}
+
+void uct_test::entity::revoke_ep(unsigned index) {
+    if (!m_eps[index]) {
+        UCS_TEST_ABORT("ep[" << index << "] does not exist");
+    }
+
+    m_eps[index].revoke();
 }
 
 void uct_test::entity::destroy_eps() {
@@ -1433,6 +1478,48 @@ ucs_status_t uct_test::send_am_message(entity *e, uint8_t am_id, int ep_idx)
                               NULL, 0);
         return (ucs_status_t)(res >= 0 ? UCS_OK : res);
     }
+}
+
+void uct_test::async_event_ctx::signal() {
+    ASSERT_TRUE(aux_pipe_init);
+    ucs_async_pipe_push(&aux_pipe);
+}
+
+bool uct_test::async_event_ctx::check_event(entity &e, int timeout) {
+    if (ucs_unlikely(wakeup_fd.fd == -1)) {
+        /* create wakeup */
+        if (e.iface_attr().cap.event_flags & UCT_IFACE_FLAG_EVENT_FD) {
+            ucs_status_t status =
+                uct_iface_event_fd_get(e.iface(), &wakeup_fd.fd);
+            ASSERT_UCS_OK(status);
+        } else {
+            ucs_status_t status =
+                ucs_async_pipe_create(&aux_pipe);
+            ASSERT_UCS_OK(status);
+            aux_pipe_init = true;
+            wakeup_fd.fd = ucs_async_pipe_rfd(&aux_pipe);
+        }
+    }
+
+    int ret = poll(&wakeup_fd, 1, timeout);
+    EXPECT_TRUE((ret == 0) || (ret == 1));
+    if (ret > 0) {
+        if (e.iface_attr().cap.event_flags &
+            UCT_IFACE_FLAG_EVENT_ASYNC_CB) {
+            ucs_async_pipe_drain(&aux_pipe);
+        }
+        return true;
+    }
+
+    return false;
+}
+
+void uct_test::async_event_ctx::reset() {
+    if (aux_pipe_init) {
+        ucs_async_pipe_destroy(&aux_pipe);
+    }
+
+    init();
 }
 
 void test_uct_iface_attrs::init()
