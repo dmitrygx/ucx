@@ -163,6 +163,8 @@ static void uct_sockcm_iface_recv_handler(int fd, void *arg)
     ucs_status_t status;
     size_t recv_len;
 
+    ucs_assert(fd == sock_id_ctx->sock_fd);
+
     /* attempt another receive only if initial receive was not successful */
     recv_len = sizeof(uct_sockcm_conn_param_t) - sock_id_ctx->recv_len;
     if (recv_len == 0) {
@@ -173,13 +175,15 @@ static void uct_sockcm_iface_recv_handler(int fd, void *arg)
                                 UCS_PTR_BYTE_OFFSET(&sock_id_ctx->conn_param,
                                                     sock_id_ctx->recv_len),
                                 &recv_len, NULL, NULL);
-    if ((status == UCS_ERR_CANCELED) || (status == UCS_ERR_IO_ERROR)) {
+    if ((status != UCS_OK) && (status != UCS_ERR_NO_PROGRESS)) {
         ucs_warn("recv failed in recv handler");
         /* TODO: clean up resources allocated for client endpoint? */
         return;
     }
 
-    sock_id_ctx->recv_len += ((UCS_ERR_NO_PROGRESS == status) ? 0 : recv_len);
+    sock_id_ctx->recv_len += recv_len;
+    ucs_assert(sock_id_ctx->recv_len <= sizeof(uct_sockcm_conn_param_t));
+
     if (sock_id_ctx->recv_len != sizeof(uct_sockcm_conn_param_t)) {
         /* handler should be notified when remaining pieces show up */
         return;
@@ -249,24 +253,30 @@ static void uct_sockcm_iface_event_handler(int fd, void *arg)
 
     status = ucs_socket_recv_nb(accept_fd, &sock_id_ctx->conn_param, &recv_len,
                                 NULL, NULL);
-    if (UCS_OK != status) {
-        sock_id_ctx->recv_len = ((UCS_ERR_NO_PROGRESS == status) ? 0: recv_len);
-        status = ucs_async_set_event_handler(iface->super.worker->async->mode,
-                                             sock_id_ctx->sock_fd,
-                                             UCS_EVENT_SET_EVREAD, 
-                                             uct_sockcm_iface_recv_handler,
-                                             sock_id_ctx,
-                                             iface->super.worker->async);
-        if (status != UCS_OK) {
-            ucs_fatal("sockcm_listener: unable to create handler for new connection");
-            goto err;
+    if ((UCS_OK == status) || (UCS_ERR_NO_PROGRESS == status)) {
+        sock_id_ctx->recv_len = recv_len;
+        ucs_assert(sock_id_ctx->recv_len <= sizeof(sock_id_ctx->conn_param));
+
+        if (sock_id_ctx->recv_len != sizeof(sock_id_ctx->conn_param)) {
+            status = ucs_async_set_event_handler(iface->super.worker->async->mode,
+                                                 sock_id_ctx->sock_fd,
+                                                 UCS_EVENT_SET_EVREAD, 
+                                                 uct_sockcm_iface_recv_handler,
+                                                 sock_id_ctx,
+                                                 iface->super.worker->async);
+            if (status != UCS_OK) {
+                ucs_fatal("sockcm_listener: unable to create handler for new connection");
+            }
+            ucs_debug("assigning recv handler for message from client");
+        } else {
+            ucs_debug("not assigning recv handler for message from client");
+            if (UCS_OK != uct_sockcm_iface_process_conn_req(sock_id_ctx)) {
+                ucs_error("Unable to process connection request");
+            }
         }
-        ucs_debug("assigning recv handler for message from client");
     } else {
-        ucs_debug("not assigning recv handler for message from client");
-        if (UCS_OK != uct_sockcm_iface_process_conn_req(sock_id_ctx)) {
-            ucs_error("Unable to process connection request");
-        }
+        ucs_warn("Unable to receive connecton data");
+        goto err;
     }
 
     UCS_ASYNC_BLOCK(iface->super.worker->async);
