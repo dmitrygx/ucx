@@ -399,12 +399,13 @@ ucs_status_t uct_dc_mlx5_iface_dci_connect(uct_dc_mlx5_iface_t *iface,
 
     ucs_assert(dci->txwq.super.type == UCT_IB_MLX5_OBJ_TYPE_VERBS);
     memset(&attr, 0, sizeof(attr));
-    attr.qp_state        = IBV_QPS_INIT;
-    attr.pkey_index      = iface->super.super.super.pkey_index;
-    attr.port_num        = iface->super.super.super.config.port_num;
-    attr_mask            = IBV_QP_STATE      |
-                           IBV_QP_PKEY_INDEX |
-                           IBV_QP_PORT;
+    attr.qp_state   = IBV_QPS_INIT;
+    attr.pkey_index = uct_ib_iface_pkey(&iface->super.super.super,
+                                        0)->index;
+    attr.port_num   = iface->super.super.super.config.port_num;
+    attr_mask       = IBV_QP_STATE      |
+                      IBV_QP_PKEY_INDEX |
+                      IBV_QP_PORT;
 
     if (ibv_modify_qp(dci->txwq.super.verbs.qp, &attr, attr_mask)) {
         ucs_error("ibv_modify_qp(DCI, INIT) failed : %m");
@@ -484,7 +485,7 @@ ucs_status_t uct_dc_mlx5_iface_create_dct(uct_dc_mlx5_iface_t *iface)
         return UCS_ERR_INVALID_PARAM;
     }
 
-    attr.pkey_index      = iface->super.super.super.pkey_index;
+    attr.pkey_index      = uct_ib_iface_pkey(&iface->super.super.super, 0)->index;
     attr.qp_state        = IBV_QPS_INIT;
     attr.port_num        = iface->super.super.super.config.port_num;
     attr.qp_access_flags = IBV_ACCESS_REMOTE_WRITE |
@@ -608,7 +609,7 @@ uct_dc_mlx5_init_rx(uct_rc_iface_t *rc_iface,
 
             dc_op.timeout    = rc_iface->config.timeout;
             dc_op.path_mtu   = rc_iface->config.path_mtu;
-            dc_op.pkey_index = rc_iface->super.pkey_index;
+            dc_op.pkey_index = uct_ib_iface_pkey(&rc_iface->super, 0)->index;
             dc_op.sl         = rc_iface->super.config.sl;
             dc_op.dct_key    = UCT_IB_KEY;
             dc_op.ooo_caps   = uct_dc_mlx5_iface_ooo_flag(iface,
@@ -680,7 +681,8 @@ ucs_status_t uct_dc_mlx5_iface_create_dct(uct_dc_mlx5_iface_t *iface)
     init_attr.hop_limit        = iface->super.super.super.config.hop_limit;
     init_attr.gid_index        = iface->super.super.super.gid_info.gid_index;
     init_attr.inline_size      = iface->super.super.config.rx_inline;
-    init_attr.pkey_index       = iface->super.super.super.pkey_index;
+    init_attr.pkey_index       = uct_ib_iface_pkey(&iface->super.super.super,
+                                                   0)->index;
     init_attr.create_flags    |= uct_dc_mlx5_iface_ooo_flag(iface,
                                                             IBV_EXP_DCT_OOO_RW_DATA_PLACEMENT,
                                                             "DCT", 0);
@@ -705,7 +707,7 @@ ucs_status_t uct_dc_mlx5_iface_dci_connect(uct_dc_mlx5_iface_t *iface,
 
     memset(&attr, 0, sizeof(attr));
     attr.qp_state        = IBV_QPS_INIT;
-    attr.pkey_index      = iface->super.super.super.pkey_index;
+    attr.pkey_index      = uct_ib_iface_pkey(&iface->super.super.super, 0)->index;
     attr.port_num        = iface->super.super.super.config.port_num;
     attr.dct_key         = UCT_IB_KEY;
     attr_mask            = IBV_EXP_QP_STATE      |

@@ -752,7 +752,7 @@ ucs_status_t uct_rc_iface_qp_init(uct_rc_iface_t *iface, struct ibv_qp *qp)
     memset(&qp_attr, 0, sizeof(qp_attr));
 
     qp_attr.qp_state              = IBV_QPS_INIT;
-    qp_attr.pkey_index            = iface->super.pkey_index;
+    qp_attr.pkey_index            = uct_ib_iface_pkey(&iface->super, 0)->index;
     qp_attr.port_num              = iface->super.config.port_num;
     qp_attr.qp_access_flags       = IBV_ACCESS_LOCAL_WRITE  |
                                     IBV_ACCESS_REMOTE_WRITE |

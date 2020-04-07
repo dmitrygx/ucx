@@ -125,8 +125,8 @@ struct uct_ib_iface_config {
     /* Ranges of path bits */
     UCS_CONFIG_ARRAY_FIELD(ucs_range_spec_t, ranges) lid_path_bits;
 
-    /* IB PKEY to use */
-    unsigned                pkey_value;
+    /* IB PKEYs to use */
+    UCS_CONFIG_HEX_ARRAY_FIELD(values) pkey;
 
     /* Multiple resource domains */
     int                     enable_res_domain;
@@ -181,6 +181,12 @@ struct uct_ib_iface_ops {
 };
 
 
+typedef struct uct_ib_pkey {
+    uint16_t                           value;
+    uint16_t                           index;
+} uct_ib_pkey_t;
+
+
 struct uct_ib_iface {
     uct_base_iface_t          super;
 
@@ -191,8 +197,10 @@ struct uct_ib_iface {
     uint8_t                   *path_bits;
     unsigned                  path_bits_count;
     unsigned                  num_paths;
-    uint16_t                  pkey_index;
-    uint16_t                  pkey_value;
+    struct {
+        uct_ib_pkey_t         *array;
+        unsigned              count;
+    } pkey;
     uint8_t                   addr_size;
     uct_ib_device_gid_info_t  gid_info;
 
@@ -564,6 +572,13 @@ static UCS_F_ALWAYS_INLINE void
 uct_ib_fence_info_init(uct_ib_fence_info_t* fence)
 {
     fence->fence_beat = 0;
+}
+
+static UCS_F_ALWAYS_INLINE const uct_ib_pkey_t*
+uct_ib_iface_pkey(const uct_ib_iface_t *iface, unsigned array_index)
+{
+    ucs_assert(iface->pkey.count != 0);
+    return &iface->pkey.array[array_index];
 }
 
 #endif

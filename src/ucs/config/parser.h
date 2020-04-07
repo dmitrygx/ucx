@@ -331,6 +331,14 @@ void ucs_config_help_generic(char *buf, size_t max, const void *arg);
 
 UCS_CONFIG_DECLARE_ARRAY(string)
 
+/*
+ * Helpers for using an array of hexadecimal values.
+ */
+#define UCS_CONFIG_TYPE_HEX_ARRAY \
+    UCS_CONFIG_TYPE_ARRAY(hex)
+
+UCS_CONFIG_DECLARE_ARRAY(hex)
+
 /**
  * Set default values for options.
  *

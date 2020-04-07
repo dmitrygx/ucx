@@ -110,6 +110,12 @@ typedef enum {
 
 typedef UCS_CONFIG_STRING_ARRAY_FIELD(names) ucs_config_names_array_t;
 
+
+/* Specific structure for an array of hexadecimal values */
+#define UCS_CONFIG_HEX_ARRAY_FIELD(_array_name) \
+    UCS_CONFIG_ARRAY_FIELD(unsigned, _array_name)
+
+
 /**
  * @ingroup UCS_RESOURCE
  * BSD socket address specification.

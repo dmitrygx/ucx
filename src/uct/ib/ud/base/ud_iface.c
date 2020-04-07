@@ -276,7 +276,7 @@ uct_ud_iface_create_qp(uct_ud_iface_t *self, const uct_ud_iface_config_t *config
     memset(&qp_attr, 0, sizeof(qp_attr));
     /* Modify QP to INIT state */
     qp_attr.qp_state   = IBV_QPS_INIT;
-    qp_attr.pkey_index = self->super.pkey_index;
+    qp_attr.pkey_index = uct_ib_iface_pkey(&self->super, 0)->index;
     qp_attr.port_num   = self->super.config.port_num;
     qp_attr.qkey       = UCT_IB_KEY;
     ret = ibv_modify_qp(self->qp, &qp_attr,

@@ -47,8 +47,15 @@ public:
     bool check_pkey(const uct_iface_t *iface, uint16_t pkey_value,
                     uint16_t pkey_index) const {
         const uct_ib_iface_t *ib_iface = ucs_derived_of(iface, uct_ib_iface_t);
-        return ((pkey_value == ib_iface->pkey_value) &&
-                (pkey_index == ib_iface->pkey_index));
+
+        for (unsigned i = 0; i < ib_iface->pkey.count; i++) {
+            if ((pkey_value == uct_ib_iface_pkey(ib_iface, i)->value) &&
+                (pkey_index == uct_ib_iface_pkey(ib_iface, i)->index)) {
+                return 1;
+            }
+        }
+
+        return 0;
     }
 
     bool find_default_pkey(uint16_t &pkey_value, uint16_t &pkey_index) const {
@@ -66,7 +73,7 @@ public:
     }
 
     bool can_use_pkey(uint16_t pkey_value) const {
-        return (pkey_value && (pkey_value & UCT_IB_PKEY_MEMBERSHIP_MASK));
+        return (pkey_value != 0);
     }
 
 public:
@@ -90,8 +97,7 @@ UCS_TEST_P(test_uct_ib_pkey, all_avail_pkeys) {
             continue;
         }
         modify_config("IB_PKEY", "0x" +
-                      ucs::to_hex_string(m_pkey_value &
-                                         UCT_IB_PKEY_PARTITION_MASK));
+                      ucs::to_hex_string(m_pkey_value));
         m_pkey_index = table_idx;
         send_recv_short();
     }

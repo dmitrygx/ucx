@@ -59,6 +59,8 @@ const char *ucs_async_mode_names[] = {
 
 UCS_CONFIG_DEFINE_ARRAY(string, sizeof(char*), UCS_CONFIG_TYPE_STRING);
 
+UCS_CONFIG_DEFINE_ARRAY(hex, sizeof(unsigned), UCS_CONFIG_TYPE_HEX);
+
 /* Fwd */
 static ucs_status_t
 ucs_config_parser_set_value_internal(void *opts, ucs_config_field_t *fields,

@@ -20,6 +20,7 @@
 #include <ucs/time/time.h>
 #include <ucs/memory/numa.h>
 #include <ucs/sys/sock.h>
+#include <ucs/algorithm/qsort_r.h>
 #include <string.h>
 #include <stdlib.h>
 #include <poll.h>
@@ -181,10 +182,10 @@ ucs_config_field_t uct_ib_iface_config_table[] = {
    "which will be the low portion of the LID, according to the LMC in the fabric.",
    ucs_offsetof(uct_ib_iface_config_t, lid_path_bits), UCS_CONFIG_TYPE_ARRAY(path_bits_spec)},
 
-  {"PKEY", "auto",
-   "Which pkey value to use. Should be between 0 and 0x7fff.\n"
-   "\"auto\" option selects a first valid pkey value with full membership.",
-   ucs_offsetof(uct_ib_iface_config_t, pkey_value), UCS_CONFIG_TYPE_HEX},
+  {"PKEY", "",
+   "Which pkey values to use. Each entry should be between 0 and 0xffff.\n"
+   "If no pkey values are specified, all possible pkey values will be used.",
+   ucs_offsetof(uct_ib_iface_config_t, pkey), UCS_CONFIG_TYPE_HEX_ARRAY},
 
 #if HAVE_IBV_EXP_RES_DOMAIN
   {"RESOURCE_DOMAIN", "y",
@@ -566,67 +567,132 @@ void uct_ib_iface_fill_ah_attr_from_addr(uct_ib_iface_t *iface,
                                            ah_attr);
 }
 
+
+typedef struct uct_ib_iface_pkey_elem {
+    ucs_list_link_t    elem;
+    uint16_t           pkey;
+} uct_ib_iface_pkey_elem_t;
+
+
+int uct_ib_iface_config_has_pkey(ucs_list_link_t *user_pkey_list,
+                                 uint16_t pkey)
+{
+    uct_ib_iface_pkey_elem_t *pkey_elem, *tmp_pkey_elem;
+
+    ucs_list_for_each_safe(pkey_elem, tmp_pkey_elem,
+                           user_pkey_list, elem) {
+        if (pkey == pkey_elem->pkey) {
+            ucs_list_del(&pkey_elem->elem);
+            return 1;
+        }
+    }
+
+    return 0;
+}
+
+static int uct_ib_iface_compare_pkey(const void *elem1, const void *elem2,
+                                     void *arg)
+{
+    const uct_ib_pkey_t *pkey1 = elem1;
+    const uct_ib_pkey_t *pkey2 = elem2;
+
+    /* sort from the pkey with highest value to lowest */
+    return (pkey1->value < pkey2->value) ? 1 :
+           ((pkey2->value > pkey1->value) ? -1 : 0);
+}
+
 static ucs_status_t uct_ib_iface_init_pkey(uct_ib_iface_t *iface,
                                            const uct_ib_iface_config_t *config)
 {
+    UCS_LIST_HEAD(user_pkey_list);
     uct_ib_device_t *dev  = uct_ib_iface_device(iface);
     uint16_t pkey_tbl_len = uct_ib_iface_port_attr(iface)->pkey_tbl_len;
-    int pkey_found        = 0;
+    unsigned pkey_count   = 0;
     uint16_t pkey_index, port_pkey, pkey;
+    uct_ib_pkey_t *pkey_array;
+    uct_ib_iface_pkey_elem_t *pkey_elems;
+    unsigned i;
 
-    if ((config->pkey_value != UCS_HEXUNITS_AUTO) &&
-        (config->pkey_value > UCT_IB_PKEY_PARTITION_MASK)) {
-        ucs_error("Requested pkey 0x%x is invalid, should be in the range 0..0x%x",
-                  config->pkey_value, UCT_IB_PKEY_PARTITION_MASK);
-        return UCS_ERR_INVALID_PARAM;
+    iface->pkey.array = NULL;
+    iface->pkey.count = 0;
+
+    pkey_elems = ucs_calloc(config->pkey.count, sizeof(*pkey_elems),
+                            "pkey_elems");
+    if ((pkey_elems == NULL) && (config->pkey.count != 0)) {
+        ucs_error("unable to allocate memory for PKEY elements");
+        return UCS_ERR_NO_MEMORY;
     }
 
-    /* get the user's pkey value and find its index in the port's pkey table */
+    for (i = 0; i < config->pkey.count; i++) {
+        pkey_elems[i].pkey = config->pkey.values[i];
+        ucs_list_add_tail(&user_pkey_list, &pkey_elems[i].elem);
+    }
+
+    /* get the user's pkey values and find their indices from the port's pkeys table */
     for (pkey_index = 0; pkey_index < pkey_tbl_len; ++pkey_index) {
-        /* get the pkey values from the port's pkeys table */
-        if (ibv_query_pkey(dev->ibv_context, iface->config.port_num, pkey_index,
-                           &port_pkey))
-        {
+        /* get the pkey value from the port's pkeys table */
+        if (ibv_query_pkey(dev->ibv_context, iface->config.port_num,
+                           pkey_index, &port_pkey)) {
             ucs_debug("ibv_query_pkey("UCT_IB_IFACE_FMT", index=%d) failed: %m",
                       UCT_IB_IFACE_ARG(iface), pkey_index);
             continue;
         }
 
         pkey = ntohs(port_pkey);
-        if (!(pkey & UCT_IB_PKEY_MEMBERSHIP_MASK)) {
-            /* if pkey = 0x0, just skip it w/o debug trace, because 0x0
-             * means that there is no real pkey configured at this index */
-            if (pkey) {
-                ucs_trace("skipping send-only pkey[%d]=0x%x on "UCT_IB_IFACE_FMT,
-                          pkey_index, pkey, UCT_IB_IFACE_ARG(iface));
-            }
-            continue;
+        if (pkey == 0) {
+            /* if pkey = 0x0, just break the loop, because 0x0 means thet
+             * there is no real pkey configured at this index */
+            break;
         }
 
-        /* take only the lower 15 bits for the comparison */
-        if ((config->pkey_value == UCS_HEXUNITS_AUTO) ||
-            ((pkey & UCT_IB_PKEY_PARTITION_MASK) == config->pkey_value)) {
-            iface->pkey_index = pkey_index;
-            iface->pkey_value = pkey;
-            pkey_found        = 1;
-            break;
+        if ((config->pkey.count == 0) ||
+            uct_ib_iface_config_has_pkey(&user_pkey_list, pkey)) {
+            pkey_array = ucs_realloc(iface->pkey.array,
+                                     (pkey_count + 1) *
+                                     sizeof(*iface->pkey.array),
+                                     "pkey_array");
+            if (pkey_array == NULL) {
+                ucs_error("unable to reallocate PKEY array");
+                break;
+            }
+
+            iface->pkey.array                   = pkey_array;
+            iface->pkey.array[pkey_count].value = pkey;
+            iface->pkey.array[pkey_count].index = pkey_index;
+            ucs_debug("using pkey[%d] 0x%x on "UCT_IB_IFACE_FMT,
+                      iface->pkey.array[pkey_count].index,
+                      iface->pkey.array[pkey_count].value,
+                      UCT_IB_IFACE_ARG(iface));
+            pkey_count++;
+
+            if ((config->pkey.count != 0) &&
+                ucs_list_is_empty(&user_pkey_list)) {
+                break;
+            }
         }
     }
 
-    if (!pkey_found) {
-        if (config->pkey_value == UCS_HEXUNITS_AUTO) {
-            ucs_error("There is no valid pkey with full membership on "
+    ucs_free(pkey_elems);
+
+    iface->pkey.count = pkey_count;
+    if (pkey_count == 0) {
+        if (config->pkey.count == 0) {
+            ucs_error("there is no valid pkey on "
                       UCT_IB_IFACE_FMT, UCT_IB_IFACE_ARG(iface));
         } else {
-            ucs_error("Unable to find specified pkey 0x%x on "UCT_IB_IFACE_FMT,
-                      config->pkey_value, UCT_IB_IFACE_ARG(iface));
+            ucs_error("unable to find specified pkeys on "UCT_IB_IFACE_FMT,
+                      UCT_IB_IFACE_ARG(iface));
         }
 
         return UCS_ERR_INVALID_PARAM;
     }
 
-    ucs_debug("using pkey[%d] 0x%x on "UCT_IB_IFACE_FMT, iface->pkey_index,
-              iface->pkey_value, UCT_IB_IFACE_ARG(iface));
+    /* sort pkeys in descending order to make sure that the first pkeys
+     * are with full membership (i.e. they are greater than 0x8000) */
+    ucs_qsort_r(iface->pkey.array, iface->pkey.count,
+                sizeof(*iface->pkey.array),
+                uct_ib_iface_compare_pkey, NULL);
+
     return UCS_OK;
 }
 
@@ -1170,6 +1236,8 @@ static UCS_CLASS_CLEANUP_FUNC(uct_ib_iface_t)
     if (ret != 0) {
         ucs_warn("ibv_destroy_comp_channel(comp_channel) returned %d: %m", ret);
     }
+
+    ucs_free(self->pkey.array);
 
     ucs_free(self->path_bits);
 }
