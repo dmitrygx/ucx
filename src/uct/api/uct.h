@@ -1406,6 +1406,11 @@ struct uct_tag_context {
 
 extern const char *uct_alloc_method_names[];
 
+static inline
+const char* uct_get_scm_version_string() {
+    return UCT_SCM_VERSION;
+}
+
 
 /**
  * @ingroup UCT_RESOURCE

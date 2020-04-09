@@ -16,6 +16,7 @@
 void print_version()
 {
     printf("# UCT version=%s revision %s\n", UCT_VERNO_STRING, UCT_SCM_VERSION);
+    printf("# UCP version=%s revision %s\n", UCP_VERNO_STRING, UCP_SCM_VERSION);
     printf("# configured with: %s\n", UCX_CONFIGURE_FLAGS);
 }
 

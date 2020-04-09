@@ -1517,6 +1517,12 @@ ucs_status_t ucp_init_version(unsigned api_major_version, unsigned api_minor_ver
                   status == UCS_OK ? addr_info.file.path : "");
     }
 
+    if (strcmp(uct_get_scm_version_string(), UCP_SCM_VERSION) != 0) {
+        ucs_warn("UCP and UCT SCM versions are different "
+                 "(UCP: "UCP_SCM_VERSION" UCT: %s)",
+                 uct_get_scm_version_string());
+    }
+
     if (config == NULL) {
         status = ucp_config_read(NULL, NULL, &dfl_config);
         if (status != UCS_OK) {
