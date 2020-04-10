@@ -255,7 +255,9 @@ UCS_CLASS_DECLARE(uct_base_ep_t, uct_base_iface_t*);
  */
 typedef struct uct_tl_device_resource {
     char                     name[UCT_DEVICE_NAME_MAX]; /**< Hardware device name */
-    uct_device_type_t        type;     /**< Device type. To which UCT group it belongs to */
+    char                     spec[UCT_DEVICE_SPEC_MAX]; /**< Device specification */
+    uct_device_type_t        type;                      /**< Device type. To which UCT group
+                                                             it belongs to */
 } uct_tl_device_resource_t;
 
 

@@ -444,6 +444,8 @@ static void usage(const struct perftest_context *ctx, const char *program)
     printf("\n");
     printf("  UCT only:\n");
     printf("     -d <device>    device to use for testing\n");
+    printf("     -z <spec>      device specification to use for testing (%s)\n",
+                                ctx->params.super.uct.dev_spec);
     printf("     -x <tl>        transport to use for testing\n");
     printf("     -D <layout>    data layout for sender side:\n");
     printf("                        short - short messages (default, cannot be used for get)\n");
@@ -602,6 +604,9 @@ static ucs_status_t init_test_params(perftest_params_t *params)
     params->super.iov_stride        = 0;
     params->super.ucp.send_datatype = UCP_PERF_DATATYPE_CONTIG;
     params->super.ucp.recv_datatype = UCP_PERF_DATATYPE_CONTIG;
+    /* if no device specification was specified, the default
+     * specification will be chosen by UCT TL */
+    strcpy(params->super.uct.dev_spec, UCT_DEVICE_SPEC_DEFAULT);
     strcpy(params->super.uct.dev_name, TL_RESOURCE_NAME_NONE);
     strcpy(params->super.uct.tl_name,  TL_RESOURCE_NAME_NONE);
 
@@ -628,6 +633,10 @@ static ucs_status_t parse_test_params(perftest_params_t *params, char opt,
     case 'd':
         ucs_snprintf_zero(params->super.uct.dev_name,
                           sizeof(params->super.uct.dev_name), "%s", opt_arg);
+        return UCS_OK;
+    case 'z':
+        ucs_snprintf_zero(params->super.uct.dev_spec,
+                          sizeof(params->super.uct.dev_spec), "%s", opt_arg);
         return UCS_OK;
     case 'x':
         ucs_snprintf_zero(params->super.uct.tl_name,

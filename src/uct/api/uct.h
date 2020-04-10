@@ -315,13 +315,21 @@ typedef enum {
  * network interface.
  */
 typedef struct uct_tl_resource_desc {
-    char                     tl_name[UCT_TL_NAME_MAX];   /**< Transport name */
+    char                     tl_name[UCT_TL_NAME_MAX];      /**< Transport name */
     char                     dev_name[UCT_DEVICE_NAME_MAX]; /**< Hardware device name */
-    uct_device_type_t        dev_type;     /**< Device type. To which UCT group it belongs to */
+    char                     dev_spec[UCT_DEVICE_SPEC_MAX]; /**< Device specification */
+    uct_device_type_t        dev_type;                      /**< Device type. To which UCT group
+                                                                 it belongs to */
 } uct_tl_resource_desc_t;
 
-#define UCT_TL_RESOURCE_DESC_FMT              "%s/%s"
-#define UCT_TL_RESOURCE_DESC_ARG(_resource)   (_resource)->tl_name, (_resource)->dev_name
+#define UCT_TL_RESOURCE_DESC_FMT              "%s/%s/%s"
+#define UCT_TL_RESOURCE_DESC_ARG(_resource)   (_resource)->tl_name, \
+                                              (_resource)->dev_name, \
+                                              (_resource)->dev_spec
+
+/* The default device specification. If this value was specified as parameter in
+ * device mode, UCT TL chooses the default specification of the device to use. */
+#define UCT_DEVICE_SPEC_DEFAULT                "<default>"
 
 
 /**
@@ -963,14 +971,15 @@ struct uct_iface_params {
     /** Mode-specific parameters */
     union {
         /** @anchor uct_iface_params_t_mode_device
-         *  The fields in this structure (tl_name and dev_name) need to be set only when
-         *  the @ref UCT_IFACE_OPEN_MODE_DEVICE bit is set in @ref
-         *  uct_iface_params_t.open_mode This will make @ref uct_iface_open
+         *  The fields in this structure (tl_name and dev_name and dev_spec) need
+         *  to be set only when the @ref UCT_IFACE_OPEN_MODE_DEVICE bit is set in
+         *  @ref uct_iface_params_t.open_mode. This will make @ref uct_iface_open
          *  open the interface on the specified device.
          */
         struct {
             const char                           *tl_name;  /**< Transport name */
-            const char                           *dev_name; /**< Device Name */
+            const char                           *dev_name; /**< Device name */
+            const char                           *dev_spec; /**< Device specification */
         } device;
         /** @anchor uct_iface_params_t_mode_sockaddr
          *  These callbacks and address are only relevant for client-server

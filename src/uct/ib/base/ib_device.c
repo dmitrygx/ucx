@@ -793,6 +793,7 @@ ucs_status_t uct_ib_device_query_ports(uct_ib_device_t *dev, unsigned flags,
     unsigned num_tl_devices;
     ucs_status_t status;
     uint8_t port_num;
+    uint8_t last_port;
 
     /* Allocate resources array
      * We may allocate more memory than really required, but it's not so bad. */
@@ -804,9 +805,8 @@ ucs_status_t uct_ib_device_query_ports(uct_ib_device_t *dev, unsigned flags,
 
     /* Second pass: fill port information */
     num_tl_devices = 0;
-    for (port_num = dev->first_port; port_num < dev->first_port + dev->num_ports;
-         ++port_num)
-    {
+    last_port      = dev->first_port + dev->num_ports;
+    for (port_num = dev->first_port; port_num < last_port; ++port_num) {
         /* Check port capabilities */
         status = uct_ib_device_port_check(dev, port_num, flags);
         if (status != UCS_OK) {
@@ -820,6 +820,10 @@ ucs_status_t uct_ib_device_query_ports(uct_ib_device_t *dev, unsigned flags,
         ucs_snprintf_zero(tl_devices[num_tl_devices].name,
                           sizeof(tl_devices[num_tl_devices].name),
                           "%s:%d", uct_ib_device_name(dev), port_num);
+        /* TODO: generate specification per each PKEY/GID pairs */
+        ucs_snprintf_zero(tl_devices[num_tl_devices].spec,
+                          sizeof(tl_devices[num_tl_devices].spec),
+                          UCT_DEVICE_SPEC_DEFAULT);
         tl_devices[num_tl_devices].type = UCT_DEVICE_TYPE_NET;
         ++num_tl_devices;
     }

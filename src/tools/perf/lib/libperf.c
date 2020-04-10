@@ -1469,7 +1469,8 @@ static ucs_status_t uct_perf_create_md(ucx_perf_context_t *perf)
 
             for (tl_index = 0; tl_index < num_tl_resources; ++tl_index) {
                 if (!strcmp(perf->params.uct.tl_name,  tl_resources[tl_index].tl_name) &&
-                    !strcmp(perf->params.uct.dev_name, tl_resources[tl_index].dev_name))
+                    !strcmp(perf->params.uct.dev_name, tl_resources[tl_index].dev_name) &&
+                    !strcmp(perf->params.uct.dev_spec, tl_resources[tl_index].dev_spec))
                 {
                     uct_release_tl_resource_list(tl_resources);
                     perf->uct.cmpt = uct_components[cmpt_index];
@@ -1523,6 +1524,7 @@ static ucs_status_t uct_perf_setup(ucx_perf_context_t *perf)
         .open_mode            = UCT_IFACE_OPEN_MODE_DEVICE,
         .mode.device.tl_name  = params->uct.tl_name,
         .mode.device.dev_name = params->uct.dev_name,
+        .mode.device.dev_spec = params->uct.dev_spec,
         .stats_root           = ucs_stats_get_root(),
         .rx_headroom          = 0
     };

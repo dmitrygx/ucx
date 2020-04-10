@@ -43,7 +43,10 @@ uint32_t ugni_domain_counter = 0;
 void uct_ugni_device_get_resource(uct_ugni_device_t *dev,
                                   uct_tl_device_resource_t *tl_device)
 {
-    ucs_snprintf_zero(tl_device->name, sizeof(tl_device->name), "%s", dev->fname);
+    ucs_snprintf_zero(tl_device->name, sizeof(tl_device->name),
+                      "%s", dev->fname);
+    ucs_snprintf_zero(tl_device->spec, sizeof(tl_device->spec),
+                      "%s", UCT_DEVICE_SPEC_DEFAULT);
     tl_device->type = UCT_DEVICE_TYPE_NET;
 }
 

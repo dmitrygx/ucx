@@ -118,6 +118,7 @@ static void print_iface_info(uct_worker_h worker, uct_md_h md,
         .open_mode             = UCT_IFACE_OPEN_MODE_DEVICE,
         .mode.device.tl_name   = resource->tl_name,
         .mode.device.dev_name  = resource->dev_name,
+        .mode.device.dev_spec  = resource->dev_spec,
         .stats_root            = ucs_stats_get_root(),
         .rx_headroom           = 0
     };
@@ -135,6 +136,7 @@ static void print_iface_info(uct_worker_h worker, uct_md_h md,
 
     printf("#   Transport: %s\n", resource->tl_name);
     printf("#      Device: %s\n", resource->dev_name);
+    printf("#       Spec.: %s\n", resource->dev_spec);
 
     status = uct_iface_open(md, worker, &iface_params, iface_config, &iface);
     uct_config_release(iface_config);

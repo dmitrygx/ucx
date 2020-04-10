@@ -92,9 +92,10 @@ enum {
 };
 
 
-#define UCT_PERF_TEST_PARAMS_FMT             "%s/%s"
+#define UCT_PERF_TEST_PARAMS_FMT             "%s/%s/%s"
 #define UCT_PERF_TEST_PARAMS_ARG(_params)    (_params)->uct.tl_name, \
-                                             (_params)->uct.dev_name
+                                             (_params)->uct.dev_name, \
+                                             (_params)->uct.dev_spec
 
 
 /**
@@ -200,6 +201,7 @@ typedef struct ucx_perf_params {
 
     struct {
         char                   dev_name[UCT_DEVICE_NAME_MAX]; /* Device name to use */
+        char                   dev_spec[UCT_DEVICE_SPEC_MAX]; /* Device specification to use */
         char                   tl_name[UCT_TL_NAME_MAX];      /* Transport to use */
         char                   md_name[UCT_MD_NAME_MAX];      /* Memory domain name to use */
         uct_perf_data_layout_t data_layout; /* Data layout to use */

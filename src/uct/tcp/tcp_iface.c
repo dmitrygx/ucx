@@ -658,6 +658,9 @@ ucs_status_t uct_tcp_query_devices(uct_md_h md,
         ucs_snprintf_zero(devices[num_devices].name,
                           sizeof(devices[num_devices].name),
                           "%s", entry->d_name);
+        ucs_snprintf_zero(devices[num_devices].spec,
+                          sizeof(devices[num_devices].spec),
+                          UCT_DEVICE_SPEC_DEFAULT);
         devices[num_devices].type = UCT_DEVICE_TYPE_NET;
         ++num_devices;
     }
