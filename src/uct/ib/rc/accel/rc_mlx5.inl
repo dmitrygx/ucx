@@ -10,6 +10,7 @@
 #include <uct/base/uct_iov.inl>
 #include <uct/ib/mlx5/ib_mlx5.inl>
 #include <uct/ib/mlx5/ib_mlx5_log.h>
+#include <ucs/profile/profile.h>
 
 #define UCT_RC_MLX5_EP_DECL(_tl_ep, _iface, _ep) \
     uct_rc_mlx5_ep_t *_ep = ucs_derived_of(_tl_ep, uct_rc_mlx5_ep_t); \
@@ -1556,8 +1557,10 @@ uct_rc_mlx5_common_dm_make_data(uct_rc_mlx5_iface_common_t *iface,
         ucs_assert(desc->super.buffer != NULL);
         buffer = (void*)UCS_PTR_BYTE_DIFF(iface->dm.dm->start_va, desc->super.buffer);
 
-        uct_rc_mlx5_iface_common_copy_to_dm(cache, hdr_len, payload,
-                                            length, desc->super.buffer, log_sge);
+        UCS_PROFILE_NAMED_CALL_VOID("copy_to_dm",
+                                    uct_rc_mlx5_iface_common_copy_to_dm,
+                                    cache, hdr_len, payload, length,
+                                    desc->super.buffer, log_sge);
         if (ucs_log_is_enabled(UCS_LOG_LEVEL_TRACE_DATA)) {
             log_sge->sg_list[0].lkey = log_sge->sg_list[1].lkey = desc->lkey;
             log_sge->inline_bitmap = 0;
