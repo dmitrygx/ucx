@@ -232,6 +232,7 @@ uct_rc_mlx5_iface_common_devx_connect_qp(uct_rc_mlx5_iface_common_t *iface,
     UCT_IB_MLX5DV_SET(qpc, qpc, mtu, iface->super.config.path_mtu);
     UCT_IB_MLX5DV_SET(qpc, qpc, log_msg_max, UCT_IB_MLX5_LOG_MAX_MSG_SIZE);
     UCT_IB_MLX5DV_SET(qpc, qpc, remote_qpn, dest_qp_num);
+    UCT_IB_MLX5DV_SET(qpc, qpc, multi_path, 1);
     if (uct_ib_iface_is_roce(&iface->super.super)) {
         status = uct_ib_iface_create_ah(&iface->super.super, ah_attr, &ah);
         if (status != UCS_OK) {
@@ -284,6 +285,11 @@ uct_rc_mlx5_iface_common_devx_connect_qp(uct_rc_mlx5_iface_common_t *iface,
 
     status = uct_ib_mlx5_devx_modify_qp(qp, in_2rtr, sizeof(in_2rtr),
                                         out_2rtr, sizeof(out_2rtr));
+    if (status != UCS_OK) {
+        return status;
+    }
+
+    status = uct_ib_mlx5_devx_query_qp(qp);
     if (status != UCS_OK) {
         return status;
     }

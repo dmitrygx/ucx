@@ -70,6 +70,7 @@ enum {
     UCT_IB_MLX5_CMD_OP_RTR2RTS_QP              = 0x504,
     UCT_IB_MLX5_CMD_OP_2ERR_QP                 = 0x507,
     UCT_IB_MLX5_CMD_OP_2RST_QP                 = 0x50a,
+    UCT_IB_MLX5_CMD_OP_QUERY_QP                = 0x50b,
     UCT_IB_MLX5_CMD_OP_CREATE_RMP              = 0x90c,
     UCT_IB_MLX5_CMD_OP_CREATE_DCT              = 0x710,
     UCT_IB_MLX5_CMD_OP_DRAIN_DCT               = 0x712,
@@ -1112,7 +1113,7 @@ struct uct_ib_mlx5_qpc_bits {
     uint8_t         latency_sensitive[0x1];
     uint8_t         reserved_at_24[0x1];
     uint8_t         drain_sigerr[0x1];
-    uint8_t         multi_path[0x1];    
+    uint8_t         multi_path[0x1];
     uint8_t         reserved_at_27[0x1];
     uint8_t         pd[0x18];
 
