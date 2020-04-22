@@ -1112,7 +1112,8 @@ struct uct_ib_mlx5_qpc_bits {
     uint8_t         latency_sensitive[0x1];
     uint8_t         reserved_at_24[0x1];
     uint8_t         drain_sigerr[0x1];
-    uint8_t         reserved_at_26[0x2];
+    uint8_t         multi_path[0x1];    
+    uint8_t         reserved_at_27[0x1];
     uint8_t         pd[0x18];
 
     uint8_t         mtu[0x3];
@@ -1370,6 +1371,38 @@ struct uct_ib_mlx5_modify_qp_out_bits {
 struct uct_ib_mlx5_modify_qp_in_bits {
     uint8_t         opcode[0x10];
     uint8_t         uid[0x10];
+
+    uint8_t         reserved_at_20[0x10];
+    uint8_t         op_mod[0x10];
+
+    uint8_t         reserved_at_40[0x8];
+    uint8_t         qpn[0x18];
+
+    uint8_t         reserved_at_60[0x20];
+};
+
+struct uct_ib_mlx5_query_qp_out_bits {
+    uint8_t         status[0x8];
+    uint8_t         reserved_at_8[0x18];
+
+    uint8_t         syndrome[0x20];
+
+    uint8_t         reserved_at_40[0x40];
+
+    uint8_t         opt_param_mask[0x20];
+
+    uint8_t         reserved_at_a0[0x20];
+
+    struct uct_ib_mlx5_qpc_bits qpc;
+
+    uint8_t         reserved_at_800[0x80];
+
+    uint8_t         pas[0][0x40];
+};
+
+struct uct_ib_mlx5_query_qp_in_bits {
+    uint8_t         opcode[0x10];
+    uint8_t         reserved_at_10[0x10];
 
     uint8_t         reserved_at_20[0x10];
     uint8_t         op_mod[0x10];
