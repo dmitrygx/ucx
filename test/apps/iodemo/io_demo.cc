@@ -48,6 +48,11 @@ typedef struct {
     long                 window_size;
     std::vector<io_op_t> operations;
     unsigned             random_seed;
+    struct {
+        char             addr[128];
+        unsigned         port;
+        int              sock;
+    } supervisor;
     bool                 verbose;
 } options_t;
 
@@ -504,23 +509,23 @@ private:
 
 static int set_data_size(char *str, options_t* test_opts)
 {
-    const static char token = ':';
+    const static char *token = ":";
     char *val1, *val2;
 
-    if (strchr(str, token) == NULL) {
+    if (strchr(str, token[0]) == NULL) {
         test_opts->min_data_size =
             test_opts->max_data_size = strtol(str, NULL, 0);
         return 0;
     }
 
-    val1 = strtok(str, ":");
-    val2 = strtok(NULL, ":");
+    val1 = strtok(str, token);
+    val2 = strtok(NULL, token);
 
     if ((val1 != NULL) && (val2 != NULL)) {
         test_opts->min_data_size = strtol(val1, NULL, 0);
         test_opts->max_data_size = strtol(val2, NULL, 0);
     } else if (val1 != NULL) {
-        if (str[0] == ':') {
+        if (str[0] == token[0]) {
             test_opts->min_data_size = 0;
             test_opts->max_data_size = strtol(val1, NULL, 0);
         } else {
@@ -533,25 +538,50 @@ static int set_data_size(char *str, options_t* test_opts)
     return 0;
 }
 
+static int set_supervisor(char *str, options_t* test_opts)
+{
+    const static char *delimeter = ":";
+    char *addr, *port;
+
+    if (strchr(str, delimeter[0]) == NULL) {
+        return -1;
+    }
+
+    addr = strtok(str, delimeter);
+    port = strtok(NULL, delimeter);
+
+    if ((addr == NULL) || (port == NULL)) {
+        return -1;
+    }
+
+    strncpy(test_opts->supervisor.addr, addr,
+            sizeof(test_opts->supervisor.addr));
+    test_opts->supervisor.port = strtoul(port, NULL, 0);
+
+    return 0;
+}
+
 static int parse_args(int argc, char **argv, options_t* test_opts)
 {
     char *str;
     bool found;
     int c;
 
-    test_opts->server_addr    = NULL;
-    test_opts->port_num       = 1337;
-    test_opts->client_retries = 10;
-    test_opts->client_timeout = 1.0;
-    test_opts->min_data_size  = 4096;
-    test_opts->max_data_size  = 4096;
-    test_opts->iomsg_size     = 256;
-    test_opts->iter_count     = 1000;
-    test_opts->window_size    = 1;
-    test_opts->random_seed    = std::time(NULL);
-    test_opts->verbose        = false;
+    test_opts->server_addr     = NULL;
+    test_opts->port_num        = 1337;
+    test_opts->client_retries  = 10;
+    test_opts->client_timeout  = 1.0;
+    test_opts->min_data_size   = 4096;
+    test_opts->max_data_size   = 4096;
+    test_opts->iomsg_size      = 256;
+    test_opts->iter_count      = 1000;
+    test_opts->window_size     = 1;
+    test_opts->random_seed     = std::time(NULL);
+    test_opts->supervisor.port = 0;
+    test_opts->supervisor.sock = -1;
+    test_opts->verbose         = false;
 
-    while ((c = getopt(argc, argv, "p:c:r:d:i:w:o:t:s:v")) != -1) {
+    while ((c = getopt(argc, argv, "p:c:r:d:i:w:o:t:s:f:v")) != -1) {
         switch (c) {
         case 'p':
             test_opts->port_num = atoi(optarg);
@@ -609,6 +639,12 @@ static int parse_args(int argc, char **argv, options_t* test_opts)
             break;
         case 's':
             test_opts->random_seed = strtoul(optarg, NULL, 0);
+            break;
+        case 'f':
+            if (set_supervisor(optarg, test_opts) != 0) {
+                std::cout << "unable to set supervisor" << std::endl;
+                return -1;
+            }
             break;
         case 'v':
             test_opts->verbose = true;
@@ -692,9 +728,40 @@ int main(int argc, char **argv)
         return ret;
     }
 
-    if (test_opts.server_addr == NULL) {
-        return do_server(test_opts);
-    } else {
-        return do_client(test_opts);
+    if (test_opts.supervisor.port != 0) {
+        struct sockaddr_in saddr;
+        saddr.sin_family = AF_INET;
+        saddr.sin_addr.s_addr = inet_addr(test_opts.supervisor.addr);
+        saddr.sin_port = htons(test_opts.supervisor.port);
+
+        test_opts.supervisor.sock = socket(AF_INET, SOCK_STREAM, 0);
+        if (test_opts.supervisor.sock < 0) {
+            std::cout << "unable to create socket - " << errno << std::endl;
+            return -1;
+        }
+
+        ret = connect(test_opts.supervisor.sock,
+                      (const struct sockaddr*)&saddr,
+                      sizeof(saddr));
+        if (ret < 0) {
+            std::cout << "unable to connect to supervisor - " << errno << std::endl;
+            close(test_opts.supervisor.sock);
+            return -1;
+        }
+
+        LOG << "connected to " << test_opts.supervisor.addr
+            << ":" << test_opts.supervisor.port;
     }
+
+    if (test_opts.server_addr == NULL) {
+        ret = do_server(test_opts);
+    } else {
+        ret = do_client(test_opts);
+    }
+
+    if (test_opts.supervisor.sock != -1) {
+        close(test_opts.supervisor.sock);
+    }
+
+    return ret;
 }
