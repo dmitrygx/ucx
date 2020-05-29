@@ -54,7 +54,7 @@ void uct_tcp_cm_change_conn_state(uct_tcp_ep_t *ep,
         }
         if (ep->ctx_caps & UCS_BIT(UCT_TCP_EP_CTX_TYPE_TX)) {
             /* Progress possibly pending TX operations */
-            uct_tcp_ep_pending_queue_dispatch(ep);
+            //uct_tcp_ep_pending_queue_dispatch(ep);
         }
         break;
     case UCT_TCP_EP_CONN_STATE_CLOSED:

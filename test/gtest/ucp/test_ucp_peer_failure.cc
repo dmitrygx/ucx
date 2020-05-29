@@ -61,6 +61,7 @@ protected:
     static void recv_cb(void *request, ucs_status_t status,
                         ucp_tag_recv_info_t *info);
 
+    virtual void init();
     virtual void cleanup();
 
     void do_test(size_t msg_size, int pre_msg_count, bool force_close,
@@ -274,6 +275,20 @@ void test_ucp_peer_failure::recv_cb(void *request, ucs_status_t status,
 {
 }
 
+void test_ucp_peer_failure::init() {
+    if (has_transport("tcp")) {
+        /* decrease socket's send and receive buffers in order to prevent
+         * buffering the user's data in the socket buffers, so, TCP needs
+         * to retry sending and peer failure is detected earlier (before
+         * TX operation is completed) */
+        m_env.push_back(new ucs::scoped_setenv("UCX_TCP_SNDBUF", "1k"));
+        m_env.push_back(new ucs::scoped_setenv("UCX_TCP_RCVBUF", "128"));
+        m_env.push_back(new ucs::scoped_setenv("UCX_TCP_TX_SEG_SIZE", "1k"));
+        m_env.push_back(new ucs::scoped_setenv("UCX_TCP_RX_SEG_SIZE", "1k"));
+    }
+    ucp_test::init();
+}
+
 void test_ucp_peer_failure::cleanup() {
     m_failing_rkey.reset();
     m_stable_rkey.reset();
@@ -425,7 +440,7 @@ UCS_TEST_P(test_ucp_peer_failure, rndv_disable) {
 }
 
 UCS_TEST_P(test_ucp_peer_failure, zcopy, "ZCOPY_THRESH=1023") {
-    do_test(UCS_KBYTE, /* msg_size */
+    do_test(16 * UCS_KBYTE, /* msg_size */
             0, /* pre_msg_cnt */
             false, /* force_close */
             true /* must_fail */);

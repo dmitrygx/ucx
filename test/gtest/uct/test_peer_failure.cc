@@ -264,6 +264,7 @@ UCS_TEST_SKIP_COND_P(test_uct_peer_failure, purge_failed_peer,
     send_recv_am(1);
 
     const size_t num_pend_sends = 3ul;
+    size_t num_pend_added = 0;
     uct_pending_req_t reqs[num_pend_sends];
     {
         scoped_log_handler slh(wrap_errors_logger);
@@ -277,7 +278,10 @@ UCS_TEST_SKIP_COND_P(test_uct_peer_failure, purge_failed_peer,
 
         for (size_t i = 0; i < num_pend_sends; i ++) {
             reqs[i].func = pending_cb;
-            EXPECT_EQ(uct_ep_pending_add(ep0(), &reqs[i], 0), UCS_OK);
+            if (uct_ep_pending_add(ep0(), &reqs[i], 0) != UCS_OK) {
+                break;
+            }
+            num_pend_added++;
         }
 
         flush();
@@ -286,7 +290,7 @@ UCS_TEST_SKIP_COND_P(test_uct_peer_failure, purge_failed_peer,
     EXPECT_EQ(uct_ep_am_short(ep0(), 0, 0, NULL, 0), UCS_ERR_ENDPOINT_TIMEOUT);
 
     uct_ep_pending_purge(ep0(), purge_cb, NULL);
-    EXPECT_EQ(num_pend_sends, m_req_count);
+    EXPECT_EQ(num_pend_added, m_req_count);
     EXPECT_GE(m_err_count, 0ul);
 }
 
