@@ -45,6 +45,12 @@ protected:
     entity& failing_receiver();
     void *send_nb(ucp_ep_h ep, ucp_rkey_h rkey);
     void *recv_nb(entity& e);
+    static ucs_log_func_rc_t
+    warn_unreleased_rdesc_handler(const char *file, unsigned line,
+                                  const char *function,
+                                  ucs_log_level_t level,
+                                  const ucs_log_component_config_t *comp_conf,
+                                  const char *message, va_list ap);
     void fail_receiver();
     void smoke_test(bool stable_pair);
     static void unmap_memh(ucp_mem_h memh, ucp_context_h context);
@@ -168,6 +174,25 @@ void *test_ucp_peer_failure::recv_nb(entity& e) {
     }
 }
 
+ucs_log_func_rc_t
+test_ucp_peer_failure::warn_unreleased_rdesc_handler(const char *file, unsigned line,
+                                                     const char *function,
+                                                     ucs_log_level_t level,
+                                                     const ucs_log_component_config_t *comp_conf,
+                                                     const char *message, va_list ap)
+{
+    if (level == UCS_LOG_LEVEL_WARN) {
+        std::string err_str = format_message(message, ap);
+
+        if (err_str.find("receive descriptor") != std::string::npos) {
+            UCS_TEST_MESSAGE << err_str;
+            return UCS_LOG_FUNC_RC_STOP;
+        }
+    }
+
+    return UCS_LOG_FUNC_RC_CONTINUE;
+}
+
 void test_ucp_peer_failure::fail_receiver() {
     /* TODO: need to handle non-empty TX window in UD EP destructor",
      *       see debug message (ud_ep.c:220)
@@ -178,7 +203,11 @@ void test_ucp_peer_failure::fail_receiver() {
     // TODO use force-close to close connections
     flush_worker(failing_receiver());
     m_failing_memh.reset();
-    failing_receiver().cleanup();
+    {
+        /* hide warning messages about unreleased rdescs */
+        scoped_log_handler slh(test_ucp_peer_failure::warn_unreleased_rdesc_handler);
+        failing_receiver().cleanup();
+    }
 }
 
 void test_ucp_peer_failure::smoke_test(bool stable_pair) {
