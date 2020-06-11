@@ -92,6 +92,8 @@ typedef enum uct_tcp_ep_conn_state {
      * After it is done, it sends `UCT_TCP_CM_CONN_REQ` to the peer.
      * All AM operations return `UCS_ERR_NO_RESOURCE` error to a caller. */
     UCT_TCP_EP_CONN_STATE_CONNECTING,
+    /* EP is waiting for an acknowledgment for magic number verification. */
+    UCT_TCP_EP_CONN_STATE_WAITING_MAGIC_NUMBER_ACK,
     /* EP is receiving the magic number in order to verify a peer. EP is moved
      * to this state after accept() completed. */
     UCT_TCP_EP_CONN_STATE_RECV_MAGIC_NUMBER,
@@ -162,16 +164,20 @@ typedef struct uct_tcp_cm_state {
  * TCP Connection Manager event
  */
 typedef enum uct_tcp_cm_conn_event {
+    /* Acknowledgment from a EP that verified a connection and an initiator
+     * could continue the connection establishment procedure. */
+    UCT_TCP_CM_CONN_MAGIC_NUMBER_ACK  = UCS_BIT(0),
     /* Connection request from a EP that has TX capability to a EP that
      * has to be able to receive AM data (i.e. has to have RX capability). */
-    UCT_TCP_CM_CONN_REQ               = UCS_BIT(0),
-    /* Connection acknowledgment from a EP that accepts a conenction from
+    UCT_TCP_CM_CONN_REQ               = UCS_BIT(1),
+    /* Connection acknowledgment from a EP that accepts a connection from
      * initiator of a connection request. */
-    UCT_TCP_CM_CONN_ACK               = UCS_BIT(1),
+    UCT_TCP_CM_CONN_ACK               = UCS_BIT(2),
     /* Request for waiting of a connection request.
      * The mesage is not sent separately (only along with a connection
      * acknowledgment.) */
-    UCT_TCP_CM_CONN_WAIT_REQ          = UCS_BIT(2),
+    UCT_TCP_CM_CONN_WAIT_REQ          = UCS_BIT(3
+                                                ),
     /* Connection acknowledgment + Connection request. The mesasge is sent
      * from a EP that accepts remote conenction when it was in
      * `UCT_TCP_EP_CONN_STATE_CONNECTING` state (i.e. original
@@ -488,6 +494,10 @@ ucs_status_t uct_tcp_cm_handle_incoming_conn(uct_tcp_iface_t *iface,
                                              int fd);
 
 ucs_status_t uct_tcp_cm_conn_start(uct_tcp_ep_t *ep);
+
+ucs_status_t uct_tcp_ep_create_connected(uct_tcp_iface_t *iface,
+                                                const struct sockaddr_in *dest_addr,
+                                         uct_tcp_ep_t **ep_p);
 
 static inline void uct_tcp_iface_outstanding_inc(uct_tcp_iface_t *iface)
 {

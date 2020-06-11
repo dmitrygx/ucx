@@ -292,6 +292,17 @@ ucs_status_t uct_tcp_iface_set_sockopt(uct_tcp_iface_t *iface, int fd)
         return status;
     }
 
+    struct linger so_linger;
+
+    so_linger.l_onoff  = 1;
+    so_linger.l_linger = 0;
+
+    status = ucs_socket_setopt(fd, SOL_SOCKET, SO_LINGER,
+                               &so_linger, sizeof(so_linger));
+    if (status != UCS_OK) {
+        return status;
+    }
+
     return ucs_socket_set_buffer_size(fd, iface->sockopt.sndbuf,
                                       iface->sockopt.rcvbuf);
 }
