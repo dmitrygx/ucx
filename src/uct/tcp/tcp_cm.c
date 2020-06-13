@@ -192,6 +192,7 @@ ucs_status_t uct_tcp_cm_send_event(uct_tcp_ep_t *ep, uct_tcp_cm_conn_event_t eve
         conn_pkt             = (uct_tcp_cm_conn_req_pkt_t*)(pkt_hdr + 1);
         conn_pkt->event      = UCT_TCP_CM_CONN_REQ;
         conn_pkt->iface_addr = iface->config.ifaddr;
+        conn_pkt->ep_id      = ep->id;
     } else {
         pkt_event            = (uct_tcp_cm_conn_event_t*)(pkt_hdr + 1);
         *pkt_event           = event;
@@ -269,6 +270,7 @@ void uct_tcp_cm_remove_ep(uct_tcp_iface_t *iface, uct_tcp_ep_t *ep)
 
 uct_tcp_ep_t *uct_tcp_cm_search_ep(uct_tcp_iface_t *iface,
                                    const struct sockaddr_in *peer_addr,
+                                   uct_tcp_ep_id_t ep_id,
                                    uct_tcp_ep_ctx_type_t with_ctx_type)
 {
     uct_tcp_ep_t *ep;
@@ -281,7 +283,8 @@ uct_tcp_ep_t *uct_tcp_cm_search_ep(uct_tcp_iface_t *iface,
         ucs_assertv(!ucs_list_is_empty(ep_list), "iface=%p", iface);
 
         ucs_list_for_each(ep, ep_list, list) {
-            if (ep->ctx_caps & UCS_BIT(with_ctx_type)) {
+            if (ep->id == ep_id) {
+                ucs_assert(ep->ctx_caps & UCS_BIT(with_ctx_type));
                 return ep;
             }
         }
@@ -417,15 +420,15 @@ uct_tcp_cm_handle_conn_req(uct_tcp_ep_t **ep_p,
     uct_tcp_ep_t *peer_ep;
 
     ep->peer_addr = cm_req_pkt->iface_addr;
+    ep->id        = cm_req_pkt->ep_id;
     uct_tcp_cm_trace_conn_pkt(ep, UCS_LOG_LEVEL_TRACE,
                               "%s received from", UCT_TCP_CM_CONN_REQ);
 
-    status = uct_tcp_ep_add_ctx_cap(ep, UCT_TCP_EP_CTX_TYPE_RX);
-    if (status != UCS_OK) {
-        goto out;
-    }
-
     if (ep->conn_state == UCT_TCP_EP_CONN_STATE_CONNECTED) {
+        status = uct_tcp_ep_add_ctx_cap(ep, UCT_TCP_EP_CTX_TYPE_RX);
+        if (status != UCS_OK) {
+            goto out;
+        }
         return 0;
     }
 
@@ -433,12 +436,21 @@ uct_tcp_cm_handle_conn_req(uct_tcp_ep_t **ep_p,
                 "ep %p mustn't have TX cap", ep);
 
     if (!uct_tcp_ep_is_self(ep) &&
-        (peer_ep = uct_tcp_cm_search_ep(iface, &ep->peer_addr,
-                                        UCT_TCP_EP_CTX_TYPE_TX))) {
+        ((peer_ep = uct_tcp_cm_search_ep(iface, &ep->peer_addr, ep->id,
+                                         UCT_TCP_EP_CTX_TYPE_TX)) != NULL)) {
+        status = uct_tcp_ep_add_ctx_cap(ep, UCT_TCP_EP_CTX_TYPE_RX);
+        if (status != UCS_OK) {
+            goto out;
+        }
         progress_count = uct_tcp_cm_handle_simult_conn(iface, ep, peer_ep);
         ucs_assert(!(ep->ctx_caps & UCS_BIT(UCT_TCP_EP_CTX_TYPE_TX)));
         goto out;
     } else {
+        status = uct_tcp_ep_add_ctx_cap(ep, UCT_TCP_EP_CTX_TYPE_RX);
+        if (status != UCS_OK) {
+            goto out;
+        }
+
         /* Just accept this connection and make it operational for RX events */
         status = uct_tcp_cm_send_event(ep, UCT_TCP_CM_CONN_ACK);
         if (status != UCS_OK) {

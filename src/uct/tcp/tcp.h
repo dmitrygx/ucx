@@ -194,11 +194,18 @@ typedef enum uct_tcp_cm_conn_event {
 
 
 /**
+ * TCP endpoint ID
+ */
+typedef uint16_t uct_tcp_ep_id_t;
+
+
+/**
  * TCP connection request packet
  */
 typedef struct uct_tcp_cm_conn_req_pkt {
     uct_tcp_cm_conn_event_t       event;      /* Connection event ID */
     struct sockaddr_in            iface_addr; /* Socket address of UCT local iface */
+    uct_tcp_ep_id_t               ep_id;      /* Endpoint ID */
 } UCS_S_PACKED uct_tcp_cm_conn_req_pkt_t;
 
 
@@ -292,6 +299,7 @@ struct uct_tcp_ep {
     uct_tcp_ep_conn_state_t       conn_state;       /* State of connection with peer */
     unsigned                      conn_retries;     /* Number of connection attempts done */
     int                           events;           /* Current notifications */
+    uct_tcp_ep_id_t               id;               /* Endpoint ID used for this connection */
     uct_tcp_ep_ctx_t              tx;               /* TX resources */
     uct_tcp_ep_ctx_t              rx;               /* RX resources */
     struct sockaddr_in            peer_addr;        /* Remote iface addr */
@@ -308,6 +316,7 @@ struct uct_tcp_ep {
 typedef struct uct_tcp_iface {
     uct_base_iface_t              super;             /* Parent class */
     int                           listen_fd;         /* Server socket */
+    uct_tcp_ep_id_t               last_ep_id;        /* Last endpoint ID used */
     khash_t(uct_tcp_cm_eps)       ep_cm_map;         /* Map of endpoints that don't
                                                       * have one of the context cap */
     ucs_list_link_t               ep_list;           /* List of endpoints */
@@ -483,6 +492,7 @@ void uct_tcp_cm_remove_ep(uct_tcp_iface_t *iface, uct_tcp_ep_t *ep);
 
 uct_tcp_ep_t *uct_tcp_cm_search_ep(uct_tcp_iface_t *iface,
                                    const struct sockaddr_in *peer_addr,
+                                   uct_tcp_ep_id_t ep_id,
                                    uct_tcp_ep_ctx_type_t with_ctx_type);
 
 void uct_tcp_cm_purge_ep(uct_tcp_ep_t *ep);

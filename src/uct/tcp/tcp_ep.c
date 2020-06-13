@@ -169,11 +169,12 @@ static UCS_CLASS_INIT_FUNC(uct_tcp_ep_t, uct_tcp_iface_t *iface,
     uct_tcp_ep_ctx_init(&self->tx);
     uct_tcp_ep_ctx_init(&self->rx);
 
-    self->events        = 0;
-    self->conn_retries  = 0;
-    self->fd            = fd;
-    self->ctx_caps      = 0;
-    self->conn_state    = UCT_TCP_EP_CONN_STATE_CLOSED;
+    self->events       = 0;
+    self->conn_retries = 0;
+    self->fd           = fd;
+    self->ctx_caps     = 0;
+    self->id           = iface->last_ep_id;
+    self->conn_state   = UCT_TCP_EP_CONN_STATE_CLOSED;
 
     ucs_list_head_init(&self->list);
     ucs_queue_head_init(&self->pending_q);
@@ -439,9 +440,9 @@ ucs_status_t uct_tcp_ep_create(const uct_ep_params_t *params,
     dest_addr.sin_addr   = *(struct in_addr*)params->dev_addr;
 
     do {
-        ep = uct_tcp_cm_search_ep(iface, &dest_addr,
+        ep = uct_tcp_cm_search_ep(iface, &dest_addr, iface->last_ep_id,
                                   UCT_TCP_EP_CTX_TYPE_RX);
-        if (ep) {
+        if (ep != NULL) {
             ucs_assert(!(ep->ctx_caps & UCS_BIT(UCT_TCP_EP_CTX_TYPE_TX)));
             /* Found EP with RX ctx, try to send the connection request
              * to the remote peer, if it successful - assign TX to this EP
@@ -455,7 +456,7 @@ ucs_status_t uct_tcp_ep_create(const uct_ep_params_t *params,
             } else {
                 status = uct_tcp_ep_add_ctx_cap(ep, UCT_TCP_EP_CTX_TYPE_TX);
                 if (status != UCS_OK) {
-                    return status;
+                    goto done;
                 }
             }
         } else {
@@ -468,6 +469,9 @@ ucs_status_t uct_tcp_ep_create(const uct_ep_params_t *params,
         /* cppcheck-suppress autoVariables */
         *ep_p = &ep->super.super;
     }
+
+done:
+    iface->last_ep_id++;
     return status;
 }
 

@@ -406,6 +406,7 @@ static UCS_CLASS_INIT_FUNC(uct_tcp_iface_t, uct_md_h md, uct_worker_h worker,
     ucs_strncpy_zero(self->if_name, params->mode.device.dev_name,
                      sizeof(self->if_name));
     self->outstanding        = 0;
+    self->last_ep_id         = 0;
     self->config.tx_seg_size = config->tx_seg_size +
                                sizeof(uct_tcp_am_hdr_t);
     self->config.rx_seg_size = config->rx_seg_size +
@@ -437,16 +438,16 @@ static UCS_CLASS_INIT_FUNC(uct_tcp_iface_t, uct_md_h md, uct_worker_h worker,
         return UCS_ERR_INVALID_PARAM;
     }
 
-    self->config.zcopy.max_hdr     = self->config.tx_seg_size -
-                                     self->config.zcopy.hdr_offset;
-    self->config.prefer_default    = config->prefer_default;
-    self->config.put_enable        = config->put_enable;
-    self->config.conn_nb           = config->conn_nb;
-    self->config.max_poll          = config->max_poll;
-    self->config.max_conn_retries  = config->max_conn_retries;
-    self->sockopt.nodelay          = config->sockopt_nodelay;
-    self->sockopt.sndbuf           = config->sockopt.sndbuf;
-    self->sockopt.rcvbuf           = config->sockopt.rcvbuf;
+    self->config.zcopy.max_hdr    = self->config.tx_seg_size -
+                                    self->config.zcopy.hdr_offset;
+    self->config.prefer_default   = config->prefer_default;
+    self->config.put_enable       = config->put_enable;
+    self->config.conn_nb          = config->conn_nb;
+    self->config.max_poll         = config->max_poll;
+    self->config.max_conn_retries = config->max_conn_retries;
+    self->sockopt.nodelay         = config->sockopt_nodelay;
+    self->sockopt.sndbuf          = config->sockopt.sndbuf;
+    self->sockopt.rcvbuf          = config->sockopt.rcvbuf;
 
     ucs_list_head_init(&self->ep_list);
     kh_init_inplace(uct_tcp_cm_eps, &self->ep_cm_map);
