@@ -38,6 +38,11 @@ const uct_tcp_cm_state_t uct_tcp_ep_cm_state[] = {
         .tx_progress = (uct_tcp_ep_progress_t)ucs_empty_function_return_zero,
         .rx_progress = uct_tcp_ep_progress_magic_number_rx
     },
+    [UCT_TCP_EP_CONN_STATE_WAITING_MAGIC_NUMBER_ACK]   = {
+        .name        = "WAITING_MAGIC_NUMBER_ACK",
+        .tx_progress = (uct_tcp_ep_progress_t)ucs_empty_function_return_zero,
+        .rx_progress = uct_tcp_ep_progress_data_rx
+    },
     [UCT_TCP_EP_CONN_STATE_ACCEPTING]   = {
         .name        = "ACCEPTING",
         .tx_progress = (uct_tcp_ep_progress_t)ucs_empty_function_return_zero,
@@ -77,6 +82,7 @@ static inline ucs_status_t uct_tcp_ep_check_tx_res(uct_tcp_ep_t *ep)
         }
 
         ucs_assertv((ep->conn_state == UCT_TCP_EP_CONN_STATE_CONNECTING) ||
+                    (ep->conn_state == UCT_TCP_EP_CONN_STATE_WAITING_MAGIC_NUMBER_ACK) ||
                     (ep->conn_state == UCT_TCP_EP_CONN_STATE_WAITING_ACK) ||
                     (ep->conn_state == UCT_TCP_EP_CONN_STATE_WAITING_REQ),
                     "ep=%p", ep);
@@ -173,7 +179,7 @@ static UCS_CLASS_INIT_FUNC(uct_tcp_ep_t, uct_tcp_iface_t *iface,
     self->conn_retries = 0;
     self->fd           = fd;
     self->ctx_caps     = 0;
-    self->id           = iface->last_ep_id;
+    self->id           = (dest_addr == NULL) ? UCT_TCP_EP_ID_MAX : iface->last_ep_id;
     self->conn_state   = UCT_TCP_EP_CONN_STATE_CLOSED;
 
     ucs_list_head_init(&self->list);
@@ -472,6 +478,7 @@ ucs_status_t uct_tcp_ep_create(const uct_ep_params_t *params,
 
 done:
     iface->last_ep_id++;
+    ucs_assert(iface->last_ep_id != UCT_TCP_EP_ID_MAX);
     return status;
 }
 
@@ -651,8 +658,7 @@ ucs_status_t uct_tcp_ep_handle_dropped_connect(uct_tcp_ep_t *ep,
     /* if connection establishment fails, the system limits
      * may not be big enough */
     if (((ep->conn_state == UCT_TCP_EP_CONN_STATE_CONNECTING) ||
-         (ep->conn_state == UCT_TCP_EP_CONN_STATE_WAITING_ACK) ||
-         (ep->conn_state == UCT_TCP_EP_CONN_STATE_WAITING_REQ)) &&
+         (ep->conn_state == UCT_TCP_EP_CONN_STATE_WAITING_MAGIC_NUMBER_ACK)) &&
         (uct_tcp_ep_is_conn_closed_by_peer(io_status) ||
          (io_status == UCS_ERR_TIMED_OUT))) {
         uct_tcp_ep_mod_events(ep, 0, ep->events);
@@ -1037,6 +1043,7 @@ static unsigned uct_tcp_ep_progress_magic_number_rx(uct_tcp_ep_t *ep)
     char str_remote_addr[UCS_SOCKADDR_STRING_LEN];
     size_t recv_length, prev_length;
     uint64_t magic_number;
+    ucs_status_t status;
 
     if (ep->rx.buf == NULL) {
         ep->rx.buf = ucs_mpool_get_inline(&iface->rx_mpool);
@@ -1070,6 +1077,11 @@ static unsigned uct_tcp_ep_progress_magic_number_rx(uct_tcp_ep_t *ep)
                   UCT_TCP_MAGIC_NUMBER, magic_number, ep,
                   ep->fd, ucs_socket_getname_str(ep->fd, str_remote_addr,
                                                  UCS_SOCKADDR_STRING_LEN));
+        goto err;
+    }
+
+    status = uct_tcp_cm_send_event(ep, UCT_TCP_CM_CONN_MAGIC_NUMBER_ACK);
+    if (status != UCS_OK) {
         goto err;
     }
 

@@ -110,6 +110,11 @@ void test_uct_event::test_recv_am(unsigned arm_flags, unsigned send_flags)
     recv_desc_t *recv_buffer;
     ucs_status_t status;
 
+    if (m_async_event_ctx.wait_for_event(*m_e2, 0)) {
+        flush();
+        std::cout << "why?" << std::endl;
+    }
+
     recv_buffer = (recv_desc_t *)malloc(sizeof(*recv_buffer) +
                                         sizeof(m_send_data));
     recv_buffer->length = 0; /* Initialize length to 0 */

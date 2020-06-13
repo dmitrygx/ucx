@@ -56,6 +56,8 @@
 #define UCT_TCP_EP_CTX_CAPS                  (UCS_BIT(UCT_TCP_EP_CTX_TYPE_TX) | \
                                               UCS_BIT(UCT_TCP_EP_CTX_TYPE_RX))
 
+#define UCT_TCP_EP_ID_MAX                    UINT16_MAX
+
 
 /**
  * TCP context type
@@ -96,6 +98,8 @@ typedef enum uct_tcp_ep_conn_state {
      * After it is done, it sends `UCT_TCP_CM_CONN_REQ` to the peer.
      * All AM operations return `UCS_ERR_NO_RESOURCE` error to a caller. */
     UCT_TCP_EP_CONN_STATE_CONNECTING,
+    /* EP is waiting for the magic number. */
+    UCT_TCP_EP_CONN_STATE_WAITING_MAGIC_NUMBER_ACK,
     /* EP is receiving the magic number in order to verify a peer. EP is moved
      * to this state after accept() completed. */
     UCT_TCP_EP_CONN_STATE_RECV_MAGIC_NUMBER,
@@ -166,16 +170,18 @@ typedef struct uct_tcp_cm_state {
  * TCP Connection Manager event
  */
 typedef enum uct_tcp_cm_conn_event {
+    /* Acknowledgment for the packet with magic number. */
+    UCT_TCP_CM_CONN_MAGIC_NUMBER_ACK  = UCS_BIT(0),
     /* Connection request from a EP that has TX capability to a EP that
      * has to be able to receive AM data (i.e. has to have RX capability). */
-    UCT_TCP_CM_CONN_REQ               = UCS_BIT(0),
+    UCT_TCP_CM_CONN_REQ               = UCS_BIT(1),
     /* Connection acknowledgment from a EP that accepts a conenction from
      * initiator of a connection request. */
-    UCT_TCP_CM_CONN_ACK               = UCS_BIT(1),
+    UCT_TCP_CM_CONN_ACK               = UCS_BIT(2),
     /* Request for waiting of a connection request.
      * The mesage is not sent separately (only along with a connection
      * acknowledgment.) */
-    UCT_TCP_CM_CONN_WAIT_REQ          = UCS_BIT(2),
+    UCT_TCP_CM_CONN_WAIT_REQ          = UCS_BIT(3),
     /* Connection acknowledgment + Connection request. The mesasge is sent
      * from a EP that accepts remote conenction when it was in
      * `UCT_TCP_EP_CONN_STATE_CONNECTING` state (i.e. original
