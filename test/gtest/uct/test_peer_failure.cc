@@ -35,6 +35,64 @@ public:
 
     virtual void init();
 
+    void test_purge_failed_peer(bool fill_resources) {
+        set_am_handlers();
+
+        send_recv_am(0);
+        send_recv_am(1);
+
+        const ucs_time_t loop_end_limit = ucs::get_deadline();
+        const size_t num_pend_sends = 3ul;
+        size_t num_pend_added = 0;
+        uct_pending_req_t reqs[num_pend_sends];
+        {
+            scoped_log_handler slh(wrap_errors_logger);
+
+            if (!fill_resources) {
+                kill_receiver();
+            }
+
+            ucs_status_t status;
+            do {
+                uint64_t send_data;
+                status = uct_ep_am_short(ep0(), 0, 0, &send_data, sizeof(send_data));
+            } while ((status == UCS_OK) && (ucs_get_time() < loop_end_limit));
+
+            if (fill_resources) {
+                kill_receiver();
+            }
+
+            for (size_t i = 0; i < num_pend_sends; i ++) {
+                reqs[i].func = pending_cb;
+                status = uct_ep_pending_add(ep0(), &reqs[i], 0);
+                if (status != UCS_OK) {
+                    EXPECT_EQ(UCS_ERR_BUSY, status);
+                    break;
+                }
+                num_pend_added++;
+            }
+
+            flush();
+
+            if (fill_resources) {
+                /* if was requested to fill UCT resources, need to progress
+                 * until EP timeout error isn't returned */
+                do {
+                    status = uct_ep_am_short(ep0(), 0, 0, NULL, 0);
+                    if (status != UCS_ERR_ENDPOINT_TIMEOUT) {
+                        progress();
+                    }
+                } while (status != UCS_ERR_ENDPOINT_TIMEOUT);
+            }
+        }
+
+        EXPECT_EQ(uct_ep_am_short(ep0(), 0, 0, NULL, 0), UCS_ERR_ENDPOINT_TIMEOUT);
+
+        uct_ep_pending_purge(ep0(), purge_cb, NULL);
+        EXPECT_EQ(num_pend_added, m_req_count);
+        EXPECT_GE(m_err_count, 0ul);
+    }
+
     inline uct_iface_params_t entity_params() {
         static uct_iface_params_t params;
         params.field_mask = UCT_IFACE_PARAM_FIELD_ERR_HANDLER     |
@@ -184,14 +242,13 @@ void test_uct_peer_failure::init()
 {
     uct_test::init();
 
+    reduce_tl_send_queues();
+
     /* To reduce test execution time decrease retransmition timeouts
      * where it is relevant */
-    if (has_rc_or_dc()) {
-        set_config("RC_TIMEOUT=100us"); /* 100 us should be enough */
-        set_config("RC_RETRY_COUNT=4");
-    } else if (has_ud()) {
-        set_config("UD_TIMEOUT=3s");
-    }
+    set_config("RC_TIMEOUT?=100us"); /* 100 us should be enough */
+    set_config("RC_RETRY_COUNT?=4");
+    set_config("UD_TIMEOUT?=3s");
 
     uct_iface_params_t p = entity_params();
     p.field_mask |= UCT_IFACE_PARAM_FIELD_OPEN_MODE;
@@ -258,36 +315,14 @@ UCS_TEST_SKIP_COND_P(test_uct_peer_failure, peer_failure,
 UCS_TEST_SKIP_COND_P(test_uct_peer_failure, purge_failed_peer,
                      !check_caps(m_required_caps))
 {
-    set_am_handlers();
+    test_purge_failed_peer(true);
+}
 
-    send_recv_am(0);
-    send_recv_am(1);
+UCS_TEST_SKIP_COND_P(test_uct_peer_failure, fill_resources_and_purge_failed_peer,
+                     !check_caps(m_required_caps))
+{
+    test_purge_failed_peer(false);
 
-    const size_t num_pend_sends = 3ul;
-    uct_pending_req_t reqs[num_pend_sends];
-    {
-        scoped_log_handler slh(wrap_errors_logger);
-
-        kill_receiver();
-
-        ucs_status_t status;
-        do {
-            status = uct_ep_am_short(ep0(), 0, 0, NULL, 0);
-        } while (status == UCS_OK);
-
-        for (size_t i = 0; i < num_pend_sends; i ++) {
-            reqs[i].func = pending_cb;
-            EXPECT_EQ(uct_ep_pending_add(ep0(), &reqs[i], 0), UCS_OK);
-        }
-
-        flush();
-    }
-
-    EXPECT_EQ(uct_ep_am_short(ep0(), 0, 0, NULL, 0), UCS_ERR_ENDPOINT_TIMEOUT);
-
-    uct_ep_pending_purge(ep0(), purge_cb, NULL);
-    EXPECT_EQ(num_pend_sends, m_req_count);
-    EXPECT_GE(m_err_count, 0ul);
 }
 
 UCS_TEST_SKIP_COND_P(test_uct_peer_failure, two_pairs_send,

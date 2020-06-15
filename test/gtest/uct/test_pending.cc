@@ -18,12 +18,7 @@ public:
         m_e1 = NULL;
         m_e2 = NULL;
 
-        /* Try to reduce send queues of UCT TLs to shorten tests time */
-        modify_config("RC_TX_QUEUE_LEN", "32", true);
-        modify_config("UD_TX_QUEUE_LEN", "128", true);
-        modify_config("RC_FC_ENABLE", "n", true);
-        modify_config("SNDBUF", "1k", true);
-        modify_config("RCVBUF", "128", true);
+        reduce_tl_send_queues();
     }
 
     virtual void init() {
