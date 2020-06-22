@@ -14,10 +14,10 @@
 
 #include <ucp/core/ucp_am.h>
 #include <ucp/tag/tag_match.h>
-#include <ucp/wireup/ep_match.h>
 #include <ucs/datastruct/mpool.h>
 #include <ucs/datastruct/queue_types.h>
 #include <ucs/datastruct/strided_alloc.h>
+#include <ucs/datastruct/ep_match.h>
 #include <ucs/arch/bitops.h>
 
 
@@ -219,7 +219,7 @@ typedef struct ucp_worker {
     ucs_strided_alloc_t           ep_alloc;      /* Endpoint allocator */
     ucs_list_link_t               stream_ready_eps; /* List of EPs with received stream data */
     ucs_list_link_t               all_eps;       /* List of all endpoints */
-    ucp_ep_match_ctx_t            ep_match_ctx;  /* Endpoint-to-endpoint matching context */
+    ucs_ep_match_ctx_t            ep_match_ctx;  /* Endpoint-to-endpoint matching context */
     ucp_worker_iface_t            **ifaces;      /* Array of pointers to interfaces,
                                                     one for each resource */
     unsigned                      num_ifaces;    /* Number of elements in ifaces array  */
@@ -286,6 +286,22 @@ int ucp_worker_err_handle_remove_filter(const ucs_callbackq_elem_t *elem,
 ucs_status_t ucp_worker_set_ep_failed(ucp_worker_h worker, ucp_ep_h ucp_ep,
                                       uct_ep_h uct_ep, ucp_lane_index_t lane,
                                       ucs_status_t status);
+
+void ucp_worker_ep_match_insert_exp(ucp_worker_h worker, ucp_ep_h ep,
+                                    uint64_t dest_uuid);
+
+void ucp_worker_ep_match_insert_unexp(ucp_worker_h worker, ucp_ep_h ep,
+                                      uint64_t dest_uuid);
+
+ucp_ep_h ucp_worker_ep_match_retrieve_exp(ucp_worker_h worker,
+                                          uint64_t dest_uuid,
+                                          ucs_ep_conn_sn_t conn_sn);
+
+ucp_ep_h ucp_worker_ep_match_retrieve_unexp(ucp_worker_h worker,
+                                            uint64_t dest_uuid,
+                                            ucs_ep_conn_sn_t conn_sn);
+
+void ucp_worker_ep_match_remove_ep(ucp_worker_h worker, ucp_ep_h ep);
 
 static inline const char* ucp_worker_get_name(ucp_worker_h worker)
 {

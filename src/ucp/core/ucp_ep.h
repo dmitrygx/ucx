@@ -11,11 +11,11 @@
 #include "ucp_types.h"
 
 #include <ucp/proto/lane_type.h>
-#include <ucp/wireup/ep_match.h>
 #include <uct/api/uct.h>
 #include <ucs/datastruct/queue.h>
 #include <ucs/stats/stats.h>
 #include <ucs/datastruct/strided_alloc.h>
+#include <ucs/datastruct/ep_match.h>
 #include <ucs/debug/assert.h>
 
 
@@ -321,7 +321,6 @@ typedef struct ucp_ep {
     ucp_worker_h                  worker;        /* Worker this endpoint belongs to */
 
     ucp_ep_cfg_index_t            cfg_index;     /* Configuration index */
-    ucp_ep_conn_sn_t              conn_sn;       /* Sequence number for remote connection */
     ucp_lane_index_t              am_lane;       /* Cached value */
     ucp_ep_flags_t                flags;         /* Endpoint flags */
 
@@ -370,7 +369,7 @@ typedef struct {
      * matched to a remote peer.
      */
     union {
-        ucp_ep_match_t            ep_match;      /* Matching with remote endpoints */
+        ucs_ep_match_t            ep_match;      /* Matching with remote endpoints */
         ucp_ep_flush_state_t      flush_state;   /* Remove completion status */
         ucp_listener_h            listener;      /* Listener that may be associated with ep */
         ucp_ep_close_proto_req_t  close_req;     /* Close protocol request */
