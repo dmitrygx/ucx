@@ -435,6 +435,8 @@ static unsigned ucp_worker_iface_err_handle_progress(void *arg)
             continue;
         }
 
+        ucp_wireup_cm_tmp_ep_destroy_used_uct_ep(ucp_ep, lane);
+
         /* Purge pending queue */
         ucs_trace("ep %p: purge pending on uct_ep[%d]=%p", ucp_ep, lane,
                   ucp_ep->uct_eps[lane]);
@@ -2293,7 +2295,6 @@ void ucp_worker_release_address(ucp_worker_h worker, ucp_address_t *address)
     ucs_free(address);
 }
 
-
 void ucp_worker_print_info(ucp_worker_h worker, FILE *stream)
 {
     ucp_context_h context = worker->context;
@@ -2336,4 +2337,66 @@ void ucp_worker_print_info(ucp_worker_h worker, FILE *stream)
     fprintf(stream, "#\n");
 
     UCP_WORKER_THREAD_CS_EXIT_CONDITIONAL(worker);
+}
+
+static void
+ucp_worker_discard_uct_ep_flush_comp(uct_completion_t *self,
+                                     ucs_status_t status)
+{
+    ucp_request_t *req = ucs_container_of(self, ucp_request_t,
+                                          send.state.uct_comp);
+    uct_ep_h uct_ep    = req->send.discard_uct_ep.uct_ep;
+
+    ucs_trace_req("flush completion req=%p status=%d", req, status);
+
+    ucs_debug("destroy uct_ep=%p", uct_ep);
+    uct_ep_destroy(uct_ep);
+
+    ucp_request_put(req);
+}
+
+static unsigned ucp_worker_discard_uct_ep_progress(void *arg)
+{
+    ucp_request_t *req = (ucp_request_t*)arg;
+    uct_ep_h uct_ep    = req->send.discard_uct_ep.uct_ep;
+    ucs_status_t status;
+
+    req->send.state.uct_comp.func  = ucp_worker_discard_uct_ep_flush_comp;
+    req->send.state.uct_comp.count = 1;
+
+    for (;;) {
+        status = uct_ep_flush(uct_ep, 0, &req->send.state.uct_comp);
+        if (status == UCS_ERR_NO_RESOURCE) {
+            status = uct_ep_pending_add(uct_ep, &req->send.uct, 0);
+            if (status == UCS_OK) {
+                break;
+            }
+        } else {
+            if (status != UCS_INPROGRESS) {
+                ucp_worker_discard_uct_ep_flush_comp(&req->send.state.uct_comp,
+                                                     status);
+            }
+            break;
+        }
+    }
+
+    return 1;
+}
+
+void ucp_worker_discard_uct_ep(ucp_worker_h worker, uct_ep_h uct_ep)
+{
+    uct_worker_cb_id_t cb_id = UCS_CALLBACKQ_ID_NULL;
+    ucp_request_t *req;
+
+    req = ucp_request_get(worker);
+    if (ucs_unlikely(req == NULL)) {
+        ucs_error("unable to allocate reqquest");
+        return;
+    }
+
+    req->send.discard_uct_ep.uct_ep = uct_ep;
+    uct_worker_progress_register_safe(worker->uct,
+                                      ucp_worker_discard_uct_ep_progress,
+                                      req, UCS_CALLBACKQ_FLAG_ONESHOT,
+                                      &cb_id);
 }

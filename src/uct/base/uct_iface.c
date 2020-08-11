@@ -543,6 +543,7 @@ ucs_status_t uct_ep_disconnect(uct_ep_h ep, unsigned flags)
 
 void uct_ep_destroy(uct_ep_h ep)
 {
+    ucs_info("destroy: %p", ep);
     ep->iface->ops.ep_destroy(ep);
 }
 
