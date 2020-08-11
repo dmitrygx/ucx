@@ -94,9 +94,15 @@ static unsigned ucp_wireup_ep_progress(void *arg)
     /* Replay pending requests */
     ucs_queue_for_each_extract(uct_req, &tmp_pending_queue, priv, 1) {
         req = ucs_container_of(uct_req, ucp_request_t, send.uct);
-        ucs_assert(req->send.ep == ucp_ep);
+        ucs_assert((req->send.ep == ucp_ep) ||
+                   /* it may happen that UCP EPs are not the same, it happens
+                    * when some operation was scheduled on the main UCP EP
+                    * and then after reconfiguration the transport choosen for
+                    * send was removed from the main EP and moved to CM tmp EP
+                    * that is responsible for this UCT EP now */
+                   ucp_ep_has_cm_lane(req->send.ep));
         ucp_request_send(req, 0);
-        --ucp_ep->worker->flush_ops_count;
+        --req->send.ep->worker->flush_ops_count;
     }
 
     return 0;
@@ -672,10 +678,11 @@ void ucp_wireup_ep_remote_connected(uct_ep_h uct_ep)
     ucp_ep_h ucp_ep;
 
     ucs_assert(wireup_ep != NULL);
-    ucs_assert(wireup_ep->super.uct_ep != NULL);
-    ucs_assert(wireup_ep->flags & UCP_WIREUP_EP_FLAG_LOCAL_CONNECTED);
 
     ucp_ep = wireup_ep->super.ucp_ep;
+
+    ucs_assert(wireup_ep->super.uct_ep != NULL);
+    ucs_assert(wireup_ep->flags & UCP_WIREUP_EP_FLAG_LOCAL_CONNECTED);
 
     ucs_trace("ep %p: wireup ep %p is remote-connected", ucp_ep, wireup_ep);
     wireup_ep->flags |= UCP_WIREUP_EP_FLAG_READY;

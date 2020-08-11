@@ -205,6 +205,10 @@ struct ucp_request {
                 } disconnect;
 
                 struct {
+                    uct_ep_h              uct_ep;
+                } discard_uct_ep;
+
+                struct {
                     uint64_t              remote_addr; /* Remote address */
                     ucp_rkey_h            rkey;        /* Remote memory key */
                     uint64_t              value;       /* Atomic argument */

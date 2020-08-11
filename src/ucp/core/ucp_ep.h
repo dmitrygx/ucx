@@ -65,7 +65,9 @@ enum {
     UCP_EP_FLAG_SOCKADDR_PARTIAL_ADDR  = UCS_BIT(21),/* DEBUG: Partial worker address was sent
                                                                to the remote peer when starting
                                                                connection establishment on this EP */
-    UCP_EP_FLAG_FLUSH_STATE_VALID      = UCS_BIT(22) /* DEBUG: flush_state is valid */
+    UCP_EP_FLAG_FLUSH_STATE_VALID      = UCS_BIT(22),/* DEBUG: flush_state is valid */
+    UCP_EP_FLAG_DISCONNECTED_CM_LANE   = UCS_BIT(23) /* DEBUG: CM lane was disconnected, i.e.
+                                                               @uct_ep_disconnect was called for CM EP */
 };
 
 
@@ -503,7 +505,7 @@ void ucp_ep_disconnected(ucp_ep_h ep, int force);
 
 void ucp_ep_destroy_internal(ucp_ep_h ep);
 
-void ucp_ep_cleanup_lanes(ucp_ep_h ep);
+void ucp_ep_cleanup_lanes(ucp_ep_h ep, int flush_uct_eps_prior);
 
 int ucp_ep_is_sockaddr_stub(ucp_ep_h ep);
 
