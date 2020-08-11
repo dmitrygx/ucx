@@ -749,7 +749,8 @@ UCS_TEST_SKIP_COND_P(test_ucp_sockaddr_destroy_ep_on_err, bidi,
 UCS_TEST_SKIP_COND_P(test_ucp_sockaddr_destroy_ep_on_err, onesided_client_cforce,
                      no_close_protocol()) {
     listen_and_communicate(false, 0);
-    scoped_log_handler slh(wrap_errors_logger);
+    scoped_log_handler slh_warn(hide_warns_logger);
+    scoped_log_handler slh_err(wrap_errors_logger);
     one_sided_disconnect(sender(),   UCP_EP_CLOSE_MODE_FORCE);
     one_sided_disconnect(receiver(), UCP_EP_CLOSE_MODE_FLUSH);
 }
@@ -757,7 +758,8 @@ UCS_TEST_SKIP_COND_P(test_ucp_sockaddr_destroy_ep_on_err, onesided_client_cforce
 UCS_TEST_SKIP_COND_P(test_ucp_sockaddr_destroy_ep_on_err, onesided_c2s_cforce,
                      no_close_protocol()) {
     listen_and_communicate(false, SEND_DIRECTION_C2S);
-    scoped_log_handler slh(wrap_errors_logger);
+    scoped_log_handler slh_warn(hide_warns_logger);
+    scoped_log_handler slh_err(wrap_errors_logger);
     one_sided_disconnect(sender(),   UCP_EP_CLOSE_MODE_FORCE);
     one_sided_disconnect(receiver(), UCP_EP_CLOSE_MODE_FLUSH);
 }
@@ -765,7 +767,8 @@ UCS_TEST_SKIP_COND_P(test_ucp_sockaddr_destroy_ep_on_err, onesided_c2s_cforce,
 UCS_TEST_SKIP_COND_P(test_ucp_sockaddr_destroy_ep_on_err, onesided_s2c_cforce,
                      no_close_protocol()) {
     listen_and_communicate(false, SEND_DIRECTION_S2C);
-    scoped_log_handler slh(wrap_errors_logger);
+    scoped_log_handler slh_warn(hide_warns_logger);
+    scoped_log_handler slh_err(wrap_errors_logger);
     one_sided_disconnect(sender(),   UCP_EP_CLOSE_MODE_FORCE);
     one_sided_disconnect(receiver(), UCP_EP_CLOSE_MODE_FLUSH);
 }
@@ -773,7 +776,8 @@ UCS_TEST_SKIP_COND_P(test_ucp_sockaddr_destroy_ep_on_err, onesided_s2c_cforce,
 UCS_TEST_SKIP_COND_P(test_ucp_sockaddr_destroy_ep_on_err, onesided_bidi_cforce,
                      no_close_protocol()) {
     listen_and_communicate(false, SEND_DIRECTION_BIDI);
-    scoped_log_handler slh(wrap_errors_logger);
+    scoped_log_handler slh_warn(hide_warns_logger);
+    scoped_log_handler slh_err(wrap_errors_logger);
     one_sided_disconnect(sender(),   UCP_EP_CLOSE_MODE_FORCE);
     one_sided_disconnect(receiver(), UCP_EP_CLOSE_MODE_FLUSH);
 }
@@ -781,7 +785,8 @@ UCS_TEST_SKIP_COND_P(test_ucp_sockaddr_destroy_ep_on_err, onesided_bidi_cforce,
 UCS_TEST_SKIP_COND_P(test_ucp_sockaddr_destroy_ep_on_err, onesided_client_sforce,
                      no_close_protocol()) {
     listen_and_communicate(false, 0);
-    scoped_log_handler slh(wrap_errors_logger);
+    scoped_log_handler slh_warn(hide_warns_logger);
+    scoped_log_handler slh_err(wrap_errors_logger);
     one_sided_disconnect(receiver(), UCP_EP_CLOSE_MODE_FORCE);
     one_sided_disconnect(sender(),   UCP_EP_CLOSE_MODE_FLUSH);
 }
@@ -789,7 +794,8 @@ UCS_TEST_SKIP_COND_P(test_ucp_sockaddr_destroy_ep_on_err, onesided_client_sforce
 UCS_TEST_SKIP_COND_P(test_ucp_sockaddr_destroy_ep_on_err, onesided_c2s_sforce,
                      no_close_protocol()) {
     listen_and_communicate(false, SEND_DIRECTION_C2S);
-    scoped_log_handler slh(wrap_errors_logger);
+    scoped_log_handler slh_warn(hide_warns_logger);
+    scoped_log_handler slh_err(wrap_errors_logger);
     one_sided_disconnect(receiver(), UCP_EP_CLOSE_MODE_FORCE);
     one_sided_disconnect(sender(),   UCP_EP_CLOSE_MODE_FLUSH);
 }
@@ -797,7 +803,8 @@ UCS_TEST_SKIP_COND_P(test_ucp_sockaddr_destroy_ep_on_err, onesided_c2s_sforce,
 UCS_TEST_SKIP_COND_P(test_ucp_sockaddr_destroy_ep_on_err, onesided_s2c_sforce,
                      no_close_protocol()) {
     listen_and_communicate(false, SEND_DIRECTION_S2C);
-    scoped_log_handler slh(wrap_errors_logger);
+    scoped_log_handler slh_warn(hide_warns_logger);
+    scoped_log_handler slh_err(wrap_errors_logger);
     one_sided_disconnect(receiver(), UCP_EP_CLOSE_MODE_FORCE);
     one_sided_disconnect(sender(),   UCP_EP_CLOSE_MODE_FLUSH);
 }
@@ -805,7 +812,8 @@ UCS_TEST_SKIP_COND_P(test_ucp_sockaddr_destroy_ep_on_err, onesided_s2c_sforce,
 UCS_TEST_SKIP_COND_P(test_ucp_sockaddr_destroy_ep_on_err, onesided_bidi_sforce,
                      no_close_protocol()) {
     listen_and_communicate(false, SEND_DIRECTION_BIDI);
-    scoped_log_handler slh(wrap_errors_logger);
+    scoped_log_handler slh_warn(hide_warns_logger);
+    scoped_log_handler slh_err(wrap_errors_logger);
     one_sided_disconnect(receiver(), UCP_EP_CLOSE_MODE_FORCE);
     one_sided_disconnect(sender(),   UCP_EP_CLOSE_MODE_FLUSH);
 }

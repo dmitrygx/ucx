@@ -2293,7 +2293,6 @@ void ucp_worker_release_address(ucp_worker_h worker, ucp_address_t *address)
     ucs_free(address);
 }
 
-
 void ucp_worker_print_info(ucp_worker_h worker, FILE *stream)
 {
     ucp_context_h context = worker->context;
