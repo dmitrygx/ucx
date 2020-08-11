@@ -264,9 +264,6 @@ static void ucp_cm_client_restore_ep(ucp_wireup_ep_t *wireup_cm_ep,
             w_ep->super.ucp_ep = ucp_ep;
         }
     }
-
-    ucp_ep_delete(tmp_ep); /* not needed anymore */
-    wireup_cm_ep->tmp_ep = NULL;
 }
 
 /*
@@ -279,7 +276,7 @@ static unsigned ucp_cm_client_connect_progress(void *arg)
     ucp_worker_h worker                                = ucp_ep->worker;
     ucp_context_h context                              = worker->context;
     uct_ep_h uct_cm_ep                                 = ucp_ep_get_cm_uct_ep(ucp_ep);
-    ucp_wireup_ep_t *wireup_ep;
+    ucp_wireup_ep_t *cm_wireup_ep;
     ucp_unpacked_address_t addr;
     uint64_t tl_bitmap;
     ucp_rsc_index_t dev_index;
@@ -290,9 +287,9 @@ static unsigned ucp_cm_client_connect_progress(void *arg)
 
     UCS_ASYNC_BLOCK(&worker->async);
 
-    wireup_ep = ucp_ep_get_cm_wireup_ep(ucp_ep);
-    ucs_assert(wireup_ep != NULL);
-    ucs_assert(wireup_ep->ep_init_flags & UCP_EP_INIT_CM_WIREUP_CLIENT);
+    cm_wireup_ep = ucp_ep_get_cm_wireup_ep(ucp_ep);
+    ucs_assert(cm_wireup_ep != NULL);
+    ucs_assert(cm_wireup_ep->ep_init_flags & UCP_EP_INIT_CM_WIREUP_CLIENT);
 
     status = ucp_address_unpack(worker, progress_arg->sa_data + 1,
                                 UCP_ADDRESS_PACK_FLAG_IFACE_ADDR |
@@ -315,14 +312,14 @@ static unsigned ucp_cm_client_connect_progress(void *arg)
     ucp_ep_update_dest_ep_ptr(ucp_ep, progress_arg->sa_data->ep_ptr);
 
     /* Get tl bitmap from tmp_ep, because it contains initial configuration. */
-    tl_bitmap = ucp_ep_get_tl_bitmap(wireup_ep->tmp_ep);
+    tl_bitmap = ucp_ep_get_tl_bitmap(cm_wireup_ep->tmp_ep);
     ucs_assert(tl_bitmap != 0);
     rsc_index = ucs_ffs64(tl_bitmap);
     dev_index = context->tl_rscs[rsc_index].dev_index;
 
     /* Restore initial configuration from tmp_ep created for packing local
      * addresses. */
-    ucp_cm_client_restore_ep(wireup_ep, ucp_ep);
+    ucp_cm_client_restore_ep(cm_wireup_ep, ucp_ep);
 
 #ifdef ENABLE_ASSERT
     ucs_for_each_bit(rsc_index, tl_bitmap) {
@@ -331,7 +328,7 @@ static unsigned ucp_cm_client_connect_progress(void *arg)
 #endif
 
     tl_bitmap = ucp_context_dev_idx_tl_bitmap(context, dev_index);
-    status    = ucp_wireup_init_lanes(ucp_ep, wireup_ep->ep_init_flags,
+    status    = ucp_wireup_init_lanes(ucp_ep, cm_wireup_ep->ep_init_flags,
                                       tl_bitmap, &addr, addr_indices);
     if (status != UCS_OK) {
         goto out_free_addr;
@@ -349,13 +346,11 @@ static unsigned ucp_cm_client_connect_progress(void *arg)
         goto out_free_addr;
     }
 
-    ucp_wireup_remote_connected(ucp_ep);
-
 out_free_addr:
     ucs_free(addr.address_list);
 out:
     if (status != UCS_OK) {
-        ucp_worker_set_ep_failed(worker, ucp_ep, &wireup_ep->super.super,
+        ucp_worker_set_ep_failed(worker, ucp_ep, &cm_wireup_ep->super.super,
                                  ucp_ep_get_cm_lane(ucp_ep), status);
     }
 
@@ -874,9 +869,12 @@ out:
 static unsigned ucp_cm_server_conn_notify_progress(void *arg)
 {
     ucp_ep_h ucp_ep = arg;
+    ucs_status_t status;
 
     UCS_ASYNC_BLOCK(&ucp_ep->worker->async);
-    ucp_wireup_remote_connected(ucp_ep);
+    ucp_ep->flags |= UCP_EP_FLAG_LISTENER;
+    status         = ucp_wireup_send_pre_request(ucp_ep);
+    ucs_assert_always(status == UCS_OK);
     UCS_ASYNC_UNBLOCK(&ucp_ep->worker->async);
     return 1;
 }
@@ -917,17 +915,20 @@ ucs_status_t ucp_ep_cm_connect_server_lane(ucp_ep_h ep,
                                            uct_listener_h uct_listener,
                                            uct_conn_request_h uct_conn_req)
 {
-    ucp_worker_h worker   = ep->worker;
-    ucp_lane_index_t lane = ucp_ep_get_cm_lane(ep);
+    ucp_worker_h worker      = ep->worker;
+    ucp_lane_index_t cm_lane = ucp_ep_get_cm_lane(ep);
+    ucp_lane_index_t lane;
     uct_ep_params_t uct_ep_params;
     uct_ep_h uct_ep;
     ucs_status_t status;
+    ucp_wireup_ep_t *cm_wireup_ep;
+    ucp_ep_h tmp_ep;
 
-    ucs_assert(lane != UCP_NULL_LANE);
-    ucs_assert(ep->uct_eps[lane] == NULL);
+    ucs_assert(cm_lane != UCP_NULL_LANE);
+    ucs_assert(ep->uct_eps[cm_lane] == NULL);
 
     /* TODO: split CM and wireup lanes */
-    status = ucp_wireup_ep_create(ep, &ep->uct_eps[lane]);
+    status = ucp_wireup_ep_create(ep, &ep->uct_eps[cm_lane]);
     if (status != UCS_OK) {
         ucs_warn("server ep %p failed to create wireup CM lane, status %s",
                  ep, ucs_status_string(status));
@@ -935,8 +936,28 @@ ucs_status_t ucp_ep_cm_connect_server_lane(ucp_ep_h ep,
         return status;
     }
 
+    cm_wireup_ep = ucp_ep_get_cm_wireup_ep(ep);
+    ucs_assert(cm_wireup_ep != NULL);
+
+    /* Create tmp ep which will hold local intial CM configuration until
+     * connection wasn't fully established. AM lane will be used to send
+     * WIREUP MSG events */
+    status = ucp_ep_create_base(worker, "tmp_cm", "tmp cm client", &tmp_ep);
+    if (status != UCS_OK) {
+        return status;
+    }
+    cm_wireup_ep->tmp_ep = tmp_ep;
+    tmp_ep->cfg_index    = ep->cfg_index;
+
+    for (lane = 0; lane < ucp_ep_num_lanes(tmp_ep); ++lane) {
+        if (ep->uct_eps[lane] != NULL) {
+            ucs_assert(tmp_ep->uct_eps[lane] == NULL);
+            tmp_ep->uct_eps[lane] = ep->uct_eps[lane];
+        }
+    }
+
     /* create a server side CM endpoint */
-    ucs_trace("ep %p: uct_ep[%d]", ep, lane);
+    ucs_trace("ep %p: uct_ep[%d]", ep, cm_lane);
     uct_ep_params.field_mask = UCT_EP_PARAM_FIELD_CM                        |
                                UCT_EP_PARAM_FIELD_CONN_REQUEST              |
                                UCT_EP_PARAM_FIELD_USER_DATA                 |
@@ -961,7 +982,7 @@ ucs_status_t ucp_ep_cm_connect_server_lane(ucp_ep_h ep,
         return status;
     }
 
-    ucp_wireup_ep_set_next_ep(ep->uct_eps[lane], uct_ep);
+    ucp_wireup_ep_set_next_ep(ep->uct_eps[cm_lane], uct_ep);
     return UCS_OK;
 }
 
@@ -976,6 +997,7 @@ void ucp_ep_cm_disconnect_cm_lane(ucp_ep_h ucp_ep)
     ucs_assert(!(ucp_ep->flags & UCP_EP_FLAG_FAILED));
 
     ucp_ep->flags &= ~UCP_EP_FLAG_LOCAL_CONNECTED;
+    ucp_ep->flags |= UCP_EP_FLAG_DISCONNECTED_CM_LANE;
     /* this will invoke @ref ucp_cm_disconnect_cb on remote side */
     status = uct_ep_disconnect(uct_cm_ep, 0);
     if (status != UCS_OK) {

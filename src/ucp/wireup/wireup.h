@@ -137,7 +137,12 @@ ucp_wireup_connect_lane(ucp_ep_h ep, unsigned ep_init_flags,
                         const ucp_unpacked_address_t *remote_address,
                         unsigned addr_index);
 
+ucp_lane_index_t
+ucp_wireup_ep_cm_lane_used_by_tmp_ep(ucp_ep_h ep, ucp_lane_index_t lane);
+
 ucs_status_t ucp_wireup_resolve_proxy_lanes(ucp_ep_h ep);
+
+void ucp_wireup_destroy_cm_tmp_ep(ucp_ep_h ep);
 
 void ucp_wireup_remote_connected(ucp_ep_h ep);
 

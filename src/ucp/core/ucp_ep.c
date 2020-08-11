@@ -745,6 +745,11 @@ void ucp_ep_cleanup_lanes(ucp_ep_h ep)
         }
     }
 
+    if (ucp_ep_has_cm_lane(ep) &&
+        !(ep->flags & UCP_EP_FLAG_REMOTE_CONNECTED)) {
+        ucp_wireup_destroy_cm_tmp_ep(ep);
+    }
+
     for (lane = 0; lane < ucp_ep_num_lanes(ep); ++lane) {
         uct_ep = ep->uct_eps[lane];
         if (uct_ep == NULL) {
@@ -786,11 +791,10 @@ void ucp_ep_disconnected(ucp_ep_h ep, int force)
 
     ep->flags &= ~UCP_EP_FLAG_USED;
 
-    if ((ep->flags & (UCP_EP_FLAG_CONNECT_REQ_QUEUED |
+    /* in case of CM connection ep has to be disconnected */
+    if (!ucp_ep_has_cm_lane(ep) &&
+        (ep->flags & (UCP_EP_FLAG_CONNECT_REQ_QUEUED |
                       UCP_EP_FLAG_REMOTE_CONNECTED)) && !force) {
-        /* in case of CM connection ep has to be disconnected */
-        ucs_assert(!ucp_ep_has_cm_lane(ep));
-
         /* Endpoints which have remote connection are destroyed only when the
          * worker is destroyed, to enable remote endpoints keep sending
          * TODO negotiate disconnect.
@@ -2106,7 +2110,8 @@ ucp_wireup_ep_t * ucp_ep_get_cm_wireup_ep(ucp_ep_h ep)
         return NULL;
     }
 
-    return ucp_wireup_ep_test(ep->uct_eps[lane]) ?
+    return ((ep->uct_eps[lane] != NULL) &&
+            ucp_wireup_ep_test(ep->uct_eps[lane])) ?
            ucs_derived_of(ep->uct_eps[lane], ucp_wireup_ep_t) : NULL;
 }
 
