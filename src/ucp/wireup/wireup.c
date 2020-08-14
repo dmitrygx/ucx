@@ -466,8 +466,7 @@ ucp_wireup_init_lanes_by_request(ucp_worker_h worker, ucp_ep_h ep,
     return status;
 }
 
-static void
-ucp_wireup_update_cm_tmp_ep_lanes(ucp_ep_h ep)
+static void ucp_wireup_update_cm_tmp_ep_lanes(ucp_ep_h ep)
 {
     ucp_ep_h tmp_ep;
     ucp_lane_index_t lane;
@@ -481,7 +480,9 @@ ucp_wireup_update_cm_tmp_ep_lanes(ucp_ep_h ep)
     ucs_assert(tmp_ep != NULL);
 
     for (lane = 0; lane < ucp_ep_num_lanes(tmp_ep); ++lane) {
-        if (ucp_wireup_ep_lane_used_by_another_ep(tmp_ep, ep,
+        if (lane == ucp_ep_get_cm_lane(tmp_ep)) {
+            tmp_ep->uct_eps[lane] = NULL;
+        } else if (ucp_wireup_ep_lane_used_by_another_ep(tmp_ep, ep,
                                                   lane) == UCP_NULL_LANE) {
             /* UCT EP is owned by tmp EP only, i.e. it was not selected for
              * the main EP */
@@ -523,6 +524,9 @@ ucp_wireup_process_pre_request(ucp_worker_h worker, const ucp_wireup_msg_t *msg,
     if (ucp_ep_has_cm_lane(ep)) {
         ep_init_flags |= UCP_EP_INIT_CM_WIREUP_CLIENT;
     }
+
+    ucp_ep_h tmp_ep = ucp_ep_get_cm_wireup_ep(ep)->tmp_ep;
+    (void)tmp_ep;
 
     /* initialize transport endpoints */
     status = ucp_wireup_init_lanes_by_request(worker, ep, ep_init_flags,
@@ -869,6 +873,13 @@ ucp_wireup_connect_lane_to_iface(ucp_ep_h ep, ucp_lane_index_t lane,
     ucs_status_t status;
 
     ucs_assert(wiface->attr.cap.flags & UCT_IFACE_FLAG_CONNECT_TO_IFACE);
+
+    if ((ep->uct_eps[lane] != NULL) &&
+        !ucp_wireup_ep_test(ep->uct_eps[lane]) &&
+        ucp_ep_has_cm_lane(ep)) {
+        /* the ep has already been conencted by CM */
+        return UCS_OK;
+    }
 
     if ((ep->uct_eps[lane] == NULL) || ucp_wireup_ep_test(ep->uct_eps[lane])) {
         if ((proxy_lane == UCP_NULL_LANE) || (proxy_lane == lane)) {

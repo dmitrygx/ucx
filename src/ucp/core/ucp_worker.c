@@ -415,23 +415,25 @@ static unsigned ucp_worker_iface_err_handle_progress(void *arg)
     ucp_worker_err_handle_arg_t *err_handle_arg = arg;
     ucp_worker_h worker                         = err_handle_arg->worker;
     ucp_ep_h ucp_ep                             = err_handle_arg->ucp_ep;
-    uct_ep_h uct_ep                             = err_handle_arg->uct_ep;
+    uct_ep_h failed_uct_ep                      = err_handle_arg->uct_ep;
     ucs_status_t status                         = err_handle_arg->status;
     ucp_lane_index_t failed_lane                = err_handle_arg->failed_lane;
     ucp_lane_index_t lane, tmp_lane;
     ucp_ep_config_key_t key;
     ucp_request_t *close_req;
+    uct_ep_h uct_ep;
 
     UCS_ASYNC_BLOCK(&worker->async);
 
     ucs_debug("ep %p: handle error on lane[%d]=%p: %s",
-              ucp_ep, failed_lane, uct_ep, ucs_status_string(status));
+              ucp_ep, failed_lane, failed_uct_ep, ucs_status_string(status));
 
     ucs_assert(ucp_ep->flags & UCP_EP_FLAG_FAILED);
 
     /* Destroy all lanes except failed one since ucp_ep becomes unusable as well */
     for (lane = 0; lane < ucp_ep_num_lanes(ucp_ep); ++lane) {
-        if (ucp_ep->uct_eps[lane] == NULL) {
+        uct_ep = ucp_ep->uct_eps[lane];
+        if (uct_ep == NULL) {
             continue;
         }
 
@@ -443,15 +445,14 @@ static unsigned ucp_worker_iface_err_handle_progress(void *arg)
         /* Purge pending queue */
         ucs_trace("ep %p: purge pending on uct_ep[%d]=%p", ucp_ep, lane,
                   ucp_ep->uct_eps[lane]);
-        uct_ep_pending_purge(ucp_ep->uct_eps[lane], ucp_ep_err_pending_purge,
+        uct_ep_pending_purge(uct_ep, ucp_ep_err_pending_purge,
                              UCS_STATUS_PTR(status));
 
         if (lane != failed_lane) {
-            ucs_trace("ep %p: destroy uct_ep[%d]=%p", ucp_ep, lane,
-                      ucp_ep->uct_eps[lane]);
-            ucs_error("destroying %p in %p", ucp_ep->uct_eps[lane], ucp_ep);
-            uct_ep_destroy(ucp_ep->uct_eps[lane]);
+            ucs_trace("ep %p: destroy uct_ep[%d]=%p", ucp_ep, lane, uct_ep);
+            ucs_error("destroying %p in %p", uct_ep, ucp_ep);
             ucp_ep->uct_eps[lane] = NULL;
+            uct_ep_destroy(uct_ep);
         }
     }
 
@@ -466,12 +467,12 @@ static unsigned ucp_worker_iface_err_handle_progress(void *arg)
     /* NOTE: if failed ep is wireup auxiliary/sockaddr then we need to replace
      *       the lane with failed ep and destroy wireup ep
      */
-    if (ucp_ep->uct_eps[0] != uct_ep) {
-        ucs_assert(ucp_wireup_ep_is_owner(ucp_ep->uct_eps[0], uct_ep));
-        ucp_wireup_ep_disown(ucp_ep->uct_eps[0], uct_ep);
+    if (ucp_ep->uct_eps[0] != failed_uct_ep) {
+        ucs_assert(ucp_wireup_ep_is_owner(ucp_ep->uct_eps[0], failed_uct_ep));
+        ucp_wireup_ep_disown(ucp_ep->uct_eps[0], failed_uct_ep);
         ucs_trace("ep %p: destroy failed wireup ep %p", ucp_ep, ucp_ep->uct_eps[0]);
         uct_ep_destroy(ucp_ep->uct_eps[0]);
-        ucp_ep->uct_eps[0] = uct_ep;
+        ucp_ep->uct_eps[0] = failed_uct_ep;
     }
 
     /* Redirect all lanes to failed one */

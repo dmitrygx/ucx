@@ -747,16 +747,12 @@ void ucp_ep_cleanup_lanes(ucp_ep_h ep, int flush_uct_eps_prior)
         }
     }
 
-    if (ucp_ep_has_cm_lane(ep) &&
-        !(ep->flags & UCP_EP_FLAG_REMOTE_CONNECTED)) {
-        ucp_wireup_destroy_cm_tmp_ep(ep, flush_uct_eps_prior);
-    }
-
     for (lane = 0; lane < ucp_ep_num_lanes(ep); ++lane) {
         uct_ep = ep->uct_eps[lane];
         if (uct_ep == NULL) {
             continue;
         }
+        ep->uct_eps[lane] = NULL;
 
         proxy_lane = ucp_ep_get_proxy_lane(ep, lane);
         if ((proxy_lane != UCP_NULL_LANE) && (proxy_lane != lane) &&
@@ -767,17 +763,13 @@ void ucp_ep_cleanup_lanes(ucp_ep_h ep, int flush_uct_eps_prior)
         }
 
         if (flush_uct_eps_prior) {
-            ucs_debug("ep %p: scheduled flush+destroy uct_ep[%d]=%p", ep, lane, uct_ep);
-            ep->uct_eps[lane] = NULL;
+            ucs_debug("ep %p: scheduled flush+destroy uct_ep[%d]=%p",
+                      ep, lane, uct_ep);
             ucp_worker_discard_uct_ep(ep->worker, uct_ep);
         } else {
             ucs_debug("ep %p: destroy uct_ep[%d]=%p", ep, lane, uct_ep);
             uct_ep_destroy(uct_ep);
         }
-    }
-
-    for (lane = 0; lane < ucp_ep_num_lanes(ep); ++lane) {
-        ep->uct_eps[lane] = NULL;
     }
 }
 

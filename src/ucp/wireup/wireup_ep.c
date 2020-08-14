@@ -54,6 +54,7 @@ static unsigned ucp_wireup_ep_progress(void *arg)
     ucs_queue_head_t tmp_pending_queue;
     uct_pending_req_t *uct_req;
     ucp_request_t *req;
+    ucp_lane_index_t lane, tmp_lane;
 
     UCS_ASYNC_BLOCK(&ucp_ep->worker->async);
 
@@ -87,6 +88,15 @@ static unsigned ucp_wireup_ep_progress(void *arg)
 
     if (wireup_ep->tmp_ep != NULL) {
         ucp_wireup_destroy_cm_tmp_ep(ucp_ep, 1);
+    }
+
+    for (lane = 0; lane < ucp_ep_num_lanes(ucp_ep); ++lane) {
+        if (ucp_ep->uct_eps[lane] == &wireup_ep->super.super) {
+            tmp_lane = ucp_wireup_ep_cm_lane_used_by_tmp_ep(ucp_ep, lane);
+            if (tmp_lane != UCP_NULL_LANE) {
+                ucp_ep_get_cm_wireup_ep(ucp_ep)->tmp_ep->uct_eps[tmp_lane] = NULL;
+            }
+        }
     }
 
     /* Switch to real transport and destroy proxy endpoint (aux_ep as well) */
@@ -380,6 +390,7 @@ static UCS_CLASS_CLEANUP_FUNC(ucp_wireup_ep_t)
 {
     ucp_ep_h ucp_ep     = self->super.ucp_ep;
     ucp_worker_h worker = ucp_ep->worker;
+    ucp_ep_h tmp_ep;
 
     ucs_assert(ucs_queue_is_empty(&self->pending_q));
     ucs_assert(self->pending_count == 0);
@@ -397,7 +408,10 @@ static UCS_CLASS_CLEANUP_FUNC(ucp_wireup_ep_t)
     }
 
     if (self->tmp_ep != NULL) {
-        ucp_ep_disconnected(self->tmp_ep, 1);
+        ucs_error("DISCONNECT: %p", self->tmp_ep);
+        tmp_ep       = self->tmp_ep;
+        self->tmp_ep = NULL;
+        ucp_ep_disconnected(tmp_ep, 1);
     }
 
     UCS_ASYNC_BLOCK(&worker->async);

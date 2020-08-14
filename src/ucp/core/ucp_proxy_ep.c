@@ -212,14 +212,13 @@ static void ucp_proxy_ep_replace_if_owned(uct_ep_h uct_ep, uct_ep_h owned_ep,
 void ucp_proxy_ep_replace(ucp_proxy_ep_t *proxy_ep)
 {
     ucp_ep_h ucp_ep = proxy_ep->ucp_ep;
+    uct_ep_h tl_ep  = NULL;
     ucp_lane_index_t lane;
-    uct_ep_h tl_ep = NULL;
 
     ucs_assert(proxy_ep->uct_ep != NULL);
     for (lane = 0; lane < ucp_ep_num_lanes(ucp_ep); ++lane) {
         if (ucp_ep->uct_eps[lane] == &proxy_ep->super) {
             ucs_assert(proxy_ep->uct_ep != NULL);    /* make sure there is only one match */
-            
             ucp_ep->uct_eps[lane] = proxy_ep->uct_ep;
             tl_ep = ucp_ep->uct_eps[lane];
             proxy_ep->uct_ep = NULL;
