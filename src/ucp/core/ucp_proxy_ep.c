@@ -219,6 +219,7 @@ void ucp_proxy_ep_replace(ucp_proxy_ep_t *proxy_ep)
     for (lane = 0; lane < ucp_ep_num_lanes(ucp_ep); ++lane) {
         if (ucp_ep->uct_eps[lane] == &proxy_ep->super) {
             ucs_assert(proxy_ep->uct_ep != NULL);    /* make sure there is only one match */
+            
             ucp_ep->uct_eps[lane] = proxy_ep->uct_ep;
             tl_ep = ucp_ep->uct_eps[lane];
             proxy_ep->uct_ep = NULL;

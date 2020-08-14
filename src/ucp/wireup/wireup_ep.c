@@ -50,7 +50,7 @@ ucp_wireup_ep_connect_to_ep(uct_ep_h uct_ep, const uct_device_addr_t *dev_addr,
 static unsigned ucp_wireup_ep_progress(void *arg)
 {
     ucp_wireup_ep_t *wireup_ep = arg;
-    ucp_ep_h ucp_ep = wireup_ep->super.ucp_ep;
+    ucp_ep_h ucp_ep            = wireup_ep->super.ucp_ep;
     ucs_queue_head_t tmp_pending_queue;
     uct_pending_req_t *uct_req;
     ucp_request_t *req;
@@ -83,6 +83,10 @@ static unsigned ucp_wireup_ep_progress(void *arg)
     ucs_queue_head_init(&tmp_pending_queue);
     ucs_queue_for_each_extract(uct_req, &wireup_ep->pending_q, priv, 1) {
         ucs_queue_push(&tmp_pending_queue, ucp_wireup_ep_req_priv(uct_req));
+    }
+
+    if (wireup_ep->tmp_ep != NULL) {
+        ucp_wireup_destroy_cm_tmp_ep(ucp_ep, 1);
     }
 
     /* Switch to real transport and destroy proxy endpoint (aux_ep as well) */

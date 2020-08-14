@@ -448,8 +448,6 @@ void ucp_wireup_remote_connected(ucp_ep_h ep)
     }
 
     ucs_assert(ep->flags & UCP_EP_FLAG_DEST_EP);
-
-    ucp_wireup_destroy_cm_tmp_ep(ep, 1);
 }
 
 static ucs_status_t

@@ -449,6 +449,7 @@ static unsigned ucp_worker_iface_err_handle_progress(void *arg)
         if (lane != failed_lane) {
             ucs_trace("ep %p: destroy uct_ep[%d]=%p", ucp_ep, lane,
                       ucp_ep->uct_eps[lane]);
+            ucs_error("destroying %p in %p", ucp_ep->uct_eps[lane], ucp_ep);
             uct_ep_destroy(ucp_ep->uct_eps[lane]);
             ucp_ep->uct_eps[lane] = NULL;
         }
