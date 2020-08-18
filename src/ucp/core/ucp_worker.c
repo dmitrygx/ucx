@@ -435,8 +435,6 @@ static unsigned ucp_worker_iface_err_handle_progress(void *arg)
             continue;
         }
 
-        ucp_wireup_cm_tmp_ep_destroy_used_uct_ep(ucp_ep, lane);
-
         /* Purge pending queue */
         ucs_trace("ep %p: purge pending on uct_ep[%d]=%p", ucp_ep, lane,
                   ucp_ep->uct_eps[lane]);
