@@ -310,7 +310,9 @@ ucp_wireup_ep_lane_used_by_another_ep_config(ucp_ep_config_key_t *ep_config_key,
         if ((another_ep_config_key->lanes[another_lane].rsc_index ==
              ep_config_key->lanes[lane].rsc_index) &&
             (another_ep_config_key->lanes[another_lane].proxy_lane ==
-             ep_config_key->lanes[lane].proxy_lane)) {
+             ep_config_key->lanes[lane].proxy_lane) &&
+            (another_ep_config_key->lanes[another_lane].path_index ==
+             ep_config_key->lanes[lane].path_index)) {
             return another_lane;
         }
     }
