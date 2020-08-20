@@ -319,7 +319,9 @@ ucp_wireup_ep_lane_used_by_another_ep_config(ucp_ep_config_key_t *ep_config_key,
             (another_ep_config_key->lanes[another_lane].proxy_lane ==
              ep_config_key->lanes[lane].proxy_lane) &&
             (another_ep_config_key->lanes[another_lane].path_index ==
-             ep_config_key->lanes[lane].path_index)) {
+             ep_config_key->lanes[lane].path_index) &&
+            (another_ep_config_key->lanes[another_lane].dst_md_index ==
+             ep_config_key->lanes[lane].dst_md_index)) {
             return another_lane;
         }
     }
@@ -423,15 +425,27 @@ void ucp_wireup_cm_tmp_ep_destroy_used_uct_ep(ucp_ep_h ep,
     }
 }
 
-static void ucp_wireup_flushed_cm_tmp_ep_cb(ucp_request_t *req)
+static unsigned ucp_wireup_cm_tmp_ep_disconnect_progress(void *arg)
 {
-    ucp_ep_h tmp_ep            = req->send.ep;
+    ucp_ep_h tmp_ep            = (ucp_ep_h)arg;
     ucs_async_context_t *async = &tmp_ep->worker->async;
 
     UCS_ASYNC_BLOCK(async);
     ucp_ep_disconnected(tmp_ep, 1);
-    ucp_request_put(req);
     UCS_ASYNC_UNBLOCK(async);
+
+    return 1;
+}
+
+static void ucp_wireup_flushed_cm_tmp_ep_cb(ucp_request_t *req)
+{
+    uct_worker_cb_id_t cb_id = UCS_CALLBACKQ_ID_NULL;
+    ucp_ep_h tmp_ep          = req->send.ep;
+
+    uct_worker_progress_register_safe(tmp_ep->worker->uct,
+                                      ucp_wireup_cm_tmp_ep_disconnect_progress,
+                                      tmp_ep, UCS_CALLBACKQ_FLAG_ONESHOT, &cb_id);
+    ucp_request_put(req);
 }
 
 void ucp_wireup_destroy_cm_tmp_ep(ucp_ep_h ep)
@@ -549,15 +563,19 @@ static void ucp_wireup_update_cm_tmp_ep_lanes(ucp_ep_h ep,
                                          ucp_wireup_move_uct_pending_reqs_cb,
                                          tmp_ep->uct_eps[lane]);
 
-                    /* extract the UCT EP from the old WIREUP EP to not
-                     * destroy it during destroying of the old WIREUP EP
-                     * that was an owner of this UCT EP */
-                    tmp_uct_ep =
-                        ucp_wireup_ep_extract_next_ep(old_uct_eps[found_lane]);
-                    ucs_assert(tmp_uct_ep == uct_ep);
+                    if (ucp_wireup_ep_test(old_uct_eps[found_lane])) {
+                        /* extract the UCT EP from the old WIREUP EP to not
+                         * destroy it during destroying of the old WIREUP EP
+                         * that was an owner of this UCT EP */
+                        tmp_uct_ep = ucp_wireup_ep_extract_next_ep(
+                                             old_uct_eps[found_lane]);
+                        ucs_assert(tmp_uct_ep == uct_ep);
+                        /* destroy the old WIREUP EP */
+                        uct_ep_destroy(old_uct_eps[found_lane]);
+                    } else {
+                        ucs_assert(old_uct_eps[found_lane] == uct_ep);
+                    }
 
-                    /* destroy the old WIREUP EP */
-                    uct_ep_destroy(old_uct_eps[found_lane]);
                     old_uct_eps[found_lane] = NULL;
                 }
             }
