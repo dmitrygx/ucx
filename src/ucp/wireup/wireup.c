@@ -431,7 +431,9 @@ static unsigned ucp_wireup_cm_tmp_ep_disconnect_progress(void *arg)
     ucs_async_context_t *async = &tmp_ep->worker->async;
 
     UCS_ASYNC_BLOCK(async);
-    ucp_ep_disconnected(tmp_ep, 1);
+    ucs_debug("ep %p: destroy", tmp_ep);
+    ucp_ep_cleanup_lanes(tmp_ep);
+    ucp_ep_delete(tmp_ep);
     UCS_ASYNC_UNBLOCK(async);
 
     return 1;
@@ -475,7 +477,9 @@ void ucp_wireup_destroy_cm_tmp_ep(ucp_ep_h ep)
                                 ucp_wireup_flushed_cm_tmp_ep_cb,
                                 "flushed_cm_tmp_ep_cb");
     if (req == NULL) {
-        ucp_ep_disconnected(tmp_ep, 1);
+    ucs_debug("ep %p: destroy", tmp_ep);
+    ucp_ep_cleanup_lanes(tmp_ep);
+    ucp_ep_delete(tmp_ep);
     } else if (UCS_PTR_IS_ERR(req)) {
         ucs_error("ucp_ep_flush_internal completed with error: %s",
                   ucs_status_string(UCS_PTR_STATUS(req)));
