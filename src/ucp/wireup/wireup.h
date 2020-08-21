@@ -144,7 +144,9 @@ ucp_wireup_ep_cm_lane_used_by_tmp_ep(ucp_ep_h ep, ucp_lane_index_t lane);
 
 ucs_status_t ucp_wireup_resolve_proxy_lanes(ucp_ep_h ep);
 
-void ucp_wireup_destroy_tmp_ep(ucp_ep_h ep, ucp_wireup_ep_t *wireup_ep);
+int ucp_wireup_destroy_tmp_ep(ucp_ep_h ep, ucp_wireup_ep_t *wireup_ep,
+                              unsigned ep_flush_flags,
+                              ucp_send_nbx_callback_t complete_cb);
 
 void ucp_wireup_remote_connected(ucp_ep_h ep);
 

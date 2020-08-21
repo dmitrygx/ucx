@@ -399,12 +399,14 @@ ucp_wireup_connect_local(ucp_ep_h ep,
 
 static unsigned ucp_wireup_tmp_ep_disconnect_progress(void *arg)
 {
-    ucp_ep_h tmp_ep            = (ucp_ep_h)arg;
+    ucp_request_t *req         = (ucp_request_t*)arg;
+    ucp_ep_h tmp_ep            = req->send.ep;
     ucs_async_context_t *async = &tmp_ep->worker->async;
 
     UCS_ASYNC_BLOCK(async);
     ucp_ep_disconnected(tmp_ep, 1);
     --tmp_ep->worker->flush_ops_count;
+    ucp_request_complete_send(req, req->status);
     UCS_ASYNC_UNBLOCK(async);
 
     return 1;
@@ -417,19 +419,26 @@ static void ucp_wireup_flushed_tmp_ep_cb(ucp_request_t *req)
 
     uct_worker_progress_register_safe(tmp_ep->worker->uct,
                                       ucp_wireup_tmp_ep_disconnect_progress,
-                                      tmp_ep, UCS_CALLBACKQ_FLAG_ONESHOT, &cb_id);
-    ucp_request_put(req);
+                                      req, UCS_CALLBACKQ_FLAG_ONESHOT, &cb_id);
 }
 
-void ucp_wireup_destroy_tmp_ep(ucp_ep_h ep, ucp_wireup_ep_t *wireup_ep)
+/* the following values could be returned from the function:
+ * - true:  destroying of the TMP EP was completed inplace, if the complete_cb
+ *          was specified, it wouldn't be called
+ * - false: destroying of the TMP EP is in progress now, if the complete_cb
+ *          was specified, it would be called upon completion the destroying
+ *          of the TMP EP */
+int ucp_wireup_destroy_tmp_ep(ucp_ep_h ep, ucp_wireup_ep_t *wireup_ep,
+                              unsigned ep_flush_flags,
+                              ucp_send_nbx_callback_t complete_cb)
 {
-    ucp_ep_h tmp_ep     = wireup_ep->tmp_ep;
-    ucp_worker_h worker = tmp_ep->worker;
+    ucp_ep_h tmp_ep           = wireup_ep->tmp_ep;
+    ucp_worker_h worker       = tmp_ep->worker;
+    ucp_request_param_t param = ucp_request_null_param;
     ucp_lane_index_t lane, found_lane;
     uct_ep_h uct_ep;
     void *req;
 
-    UCS_ASYNC_BLOCK(&worker->async);
     ucs_assert((tmp_ep != NULL) && (tmp_ep != ep));
 
     /* to prevent flush+destroy UCT EPs that are used by the main EP,
@@ -450,15 +459,21 @@ void ucp_wireup_destroy_tmp_ep(ucp_ep_h ep, ucp_wireup_ep_t *wireup_ep)
         }
     }
 
+    if (complete_cb != NULL) {
+        param.op_attr_mask |= UCP_OP_ATTR_FIELD_CALLBACK |
+                              UCP_OP_ATTR_FIELD_USER_DATA;
+        param.cb.send       = complete_cb;
+        param.user_data     = wireup_ep;
+    }
+
     wireup_ep->tmp_ep = NULL;
 
-    req = ucp_ep_flush_internal(tmp_ep, UCT_FLUSH_FLAG_LOCAL, 0,
-                                &ucp_request_null_param, NULL,
+    req = ucp_ep_flush_internal(tmp_ep, ep_flush_flags, 0, &param, NULL,
                                 ucp_wireup_flushed_tmp_ep_cb,
                                 "flushed_tmp_ep_cb");
     if (req != NULL) {
         if (!UCS_PTR_IS_ERR(req)) {
-            goto out;
+            return 0;
         }
 
         ucs_error("ucp_ep_flush_internal() completed with error: %s",
@@ -467,9 +482,7 @@ void ucp_wireup_destroy_tmp_ep(ucp_ep_h ep, ucp_wireup_ep_t *wireup_ep)
 
     ucp_ep_disconnected(tmp_ep, 1);
     --worker->flush_ops_count;
-
-out:
-    UCS_ASYNC_UNBLOCK(&worker->async);
+    return 1;
 }
 
 void ucp_wireup_remote_connected(ucp_ep_h ep)

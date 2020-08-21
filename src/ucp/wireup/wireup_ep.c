@@ -43,6 +43,17 @@ ucp_wireup_ep_connect_to_ep(uct_ep_h uct_ep, const uct_device_addr_t *dev_addr,
     return uct_ep_connect_to_ep(wireup_ep->super.uct_ep, dev_addr, ep_addr);
 }
 
+static void
+ucp_wireup_destroy_tmp_ep_complete_cb(void *request, ucs_status_t status,
+                                      void *user_data)
+{
+    ucp_wireup_ep_t *wireup_ep = (ucp_wireup_ep_t*)user_data;
+
+    wireup_ep->flags &= ~UCP_WIREUP_EP_FLAG_DESTROY_TMP_EP;
+    ucs_assert(wireup_ep->tmp_ep == NULL);
+    ucp_request_release(request);
+}
+
 /*
  * We switch the endpoint in this function (instead in wireup code) since
  * this is guaranteed to run from the main thread.
@@ -55,6 +66,7 @@ static unsigned ucp_wireup_ep_progress(void *arg)
     uct_pending_req_t *uct_req;
     ucp_request_t *req;
     ucp_ep_h flushed_ep;
+    int ret;
 
     UCS_ASYNC_BLOCK(&ucp_ep->worker->async);
 
@@ -74,6 +86,20 @@ static unsigned ucp_wireup_ep_progress(void *arg)
         ucs_trace("ep %p: not switching wireup_ep %p to ready state because of error",
                   ucp_ep, wireup_ep);
         goto out_unblock;
+    }
+
+    if (wireup_ep->flags & UCP_WIREUP_EP_FLAG_DESTROY_TMP_EP) {
+        goto out_unblock;
+    }
+
+    if (wireup_ep->tmp_ep != NULL) {
+        ++ucp_ep->worker->flush_ops_count;
+        ret = ucp_wireup_destroy_tmp_ep(ucp_ep, wireup_ep, UCT_FLUSH_FLAG_LOCAL,
+                                        ucp_wireup_destroy_tmp_ep_complete_cb);
+        if (!ret) {
+            wireup_ep->flags |= UCP_WIREUP_EP_FLAG_DESTROY_TMP_EP;
+            goto out_unblock;
+        }
     }
 
     ucs_trace("ep %p: switching wireup_ep %p to ready state", ucp_ep, wireup_ep);
@@ -396,14 +422,12 @@ static UCS_CLASS_CLEANUP_FUNC(ucp_wireup_ep_t)
         uct_ep_destroy(self->sockaddr_ep);
     }
 
+    UCS_ASYNC_BLOCK(&worker->async);
     if (self->tmp_ep != NULL) {
-        UCS_ASYNC_BLOCK(&worker->async);
         ++worker->flush_ops_count;
-        UCS_ASYNC_UNBLOCK(&worker->async);
-        ucp_wireup_destroy_tmp_ep(ucp_ep, self);
+        ucp_wireup_destroy_tmp_ep(ucp_ep, self, UCT_FLUSH_FLAG_CANCEL, NULL);
     }
 
-    UCS_ASYNC_BLOCK(&worker->async);
     --worker->flush_ops_count;
     UCS_ASYNC_UNBLOCK(&worker->async);
 }
