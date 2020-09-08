@@ -41,6 +41,23 @@ int ucp_ep_init_flags_has_cm(unsigned ep_init_flags)
                                UCP_EP_INIT_CM_WIREUP_SERVER));
 }
 
+int ucp_cm_tl_bitmap_use_same_device(ucp_context_h context, uint64_t tl_bitmap)
+{
+    ucp_rsc_index_t rsc_index;
+    ucp_rsc_index_t dev_index;
+
+    rsc_index = ucs_ffs64_safe(tl_bitmap);
+    dev_index = context->tl_rscs[rsc_index].dev_index;
+
+    ucs_for_each_bit(rsc_index, tl_bitmap) {
+        if (dev_index != context->tl_rscs[rsc_index].dev_index) {
+            return 0;
+        }
+    }
+
+    return 1;
+}
+
 static const char* ucp_context_cm_name(ucp_context_h context,
                                        ucp_rsc_index_t cm_idx, char *name,
                                        size_t max_length)
@@ -181,8 +198,8 @@ ucp_cm_ep_client_initial_config_get(ucp_ep_h ucp_ep, const char *dev_name,
     ucp_ep_config_key_reset(key);
     ucp_ep_config_key_set_err_mode(key, wireup_ep->ep_init_flags);
     status = ucp_wireup_select_lanes(ucp_ep, wireup_ep->ep_init_flags,
-                                     tl_bitmap, &unpacked_addr, addr_indices,
-                                     key);
+                                     tl_bitmap, &unpacked_addr,
+                                     addr_indices, key);
 
     ucs_free(unpacked_addr.address_list);
 free_ucp_addr:
@@ -416,6 +433,8 @@ static void ucp_cm_client_restore_ep(ucp_wireup_ep_t *wireup_cm_ep,
     ucp_wireup_ep_t *w_ep;
     ucp_lane_index_t lane_idx;
 
+    ucp_ep->cfg_index = tmp_ep->cfg_index;
+
     for (lane_idx = 0; lane_idx < ucp_ep_num_lanes(tmp_ep); ++lane_idx) {
         if (tmp_ep->uct_eps[lane_idx] != NULL) {
             ucs_assert(ucp_ep->uct_eps[lane_idx] == NULL);
@@ -500,8 +519,6 @@ static unsigned ucp_cm_client_connect_progress(void *arg)
         ucp_ep->flags &= ~UCP_EP_FLAG_LOCAL_CONNECTED;
         goto out_free_addr;
     }
-
-    ucp_wireup_remote_connected(ucp_ep);
 
 out_free_addr:
     ucs_free(addr.address_list);
@@ -1102,9 +1119,12 @@ out:
 static unsigned ucp_cm_server_conn_notify_progress(void *arg)
 {
     ucp_ep_h ucp_ep = arg;
+    ucs_status_t status;
 
     UCS_ASYNC_BLOCK(&ucp_ep->worker->async);
-    ucp_wireup_remote_connected(ucp_ep);
+    ucp_ep->flags |= UCP_EP_FLAG_LISTENER;
+    status         = ucp_wireup_send_pre_request(ucp_ep);
+    ucs_assert_always(status == UCS_OK);
     UCS_ASYNC_UNBLOCK(&ucp_ep->worker->async);
     return 1;
 }

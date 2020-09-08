@@ -44,17 +44,24 @@ ucp_wireup_ep_connect_to_ep(uct_ep_h uct_ep, const uct_device_addr_t *dev_addr,
     return uct_ep_connect_to_ep(wireup_ep->super.uct_ep, dev_addr, ep_addr);
 }
 
+static void
+ucp_wireup_ep_replay_pending_request_cb(uct_pending_req_t *self, void *arg)
+{
+    ucp_request_t *req = ucs_container_of(self, ucp_request_t, send.uct);
+    ucp_ep_h ucp_ep    = (ucp_ep_h)arg;
+
+    ucs_assert(req->send.ep == ucp_ep);
+    ucp_request_send(req, 0);
+}
+
 void ucp_wireup_ep_replay_pending_requests(ucp_ep_h ucp_ep,
                                            ucs_queue_head_t *tmp_pending_queue)
 {
     uct_pending_req_t *uct_req;
-    ucp_request_t *req;
 
     /* Replay pending requests */
     ucs_queue_for_each_extract(uct_req, tmp_pending_queue, priv, 1) {
-        req = ucs_container_of(uct_req, ucp_request_t, send.uct);
-        ucs_assert(req->send.ep == ucp_ep);
-        ucp_request_send(req, 0);
+        ucp_wireup_ep_replay_pending_request_cb(uct_req, ucp_ep);
         --ucp_ep->worker->flush_ops_count;
     }
 }
@@ -278,7 +285,7 @@ ucp_wireup_ep_connect_aux(ucp_wireup_ep_t *wireup_ep, unsigned ep_init_flags,
     /* select an auxiliary transport which would be used to pass connection
      * establishment messages.
      */
-    status = ucp_wireup_select_aux_transport(ucp_ep, ep_init_flags,
+    status = ucp_wireup_select_aux_transport(ucp_ep, ep_init_flags, UINT64_MAX,
                                              remote_address, &select_info);
     if (status != UCS_OK) {
         return status;
@@ -391,7 +398,10 @@ static UCS_CLASS_CLEANUP_FUNC(ucp_wireup_ep_t)
     if (self->aux_ep != NULL) {
         ucp_worker_iface_unprogress_ep(ucp_worker_iface(worker,
                                                         self->aux_rsc_index));
-        uct_ep_destroy(self->aux_ep);
+        ucp_worker_discard_uct_ep(worker, self->aux_ep, UCT_FLUSH_FLAG_LOCAL,
+                                  ucp_wireup_ep_replay_pending_request_cb,
+                                  ucp_ep);
+        self->aux_ep = NULL;
     }
     if (self->sockaddr_ep != NULL) {
         uct_ep_destroy(self->sockaddr_ep);

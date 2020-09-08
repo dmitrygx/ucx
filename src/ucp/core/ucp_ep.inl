@@ -256,6 +256,12 @@ static inline int ucp_ep_has_cm_lane(ucp_ep_h ep)
            ucp_ep_config_key_has_cm_lane(&ucp_ep_config(ep)->key);
 }
 
+static inline int
+ucp_ep_config_key_get_cm_lane(const ucp_ep_config_key_t *config_key)
+{
+    return config_key->cm_lane;
+}
+
 static UCS_F_ALWAYS_INLINE ucp_lane_index_t ucp_ep_get_cm_lane(ucp_ep_h ep)
 {
     return ucp_ep_config(ep)->key.cm_lane;
