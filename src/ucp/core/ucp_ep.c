@@ -857,9 +857,6 @@ void ucp_ep_disconnected(ucp_ep_h ep, int force)
 
     if ((ep->flags & (UCP_EP_FLAG_CONNECT_REQ_QUEUED |
                       UCP_EP_FLAG_REMOTE_CONNECTED)) && !force) {
-        /* in case of CM connection ep has to be disconnected */
-        ucs_assert(!ucp_ep_has_cm_lane(ep));
-
         /* Endpoints which have remote connection are destroyed only when the
          * worker is destroyed, to enable remote endpoints keep sending
          * TODO negotiate disconnect.
@@ -1032,16 +1029,39 @@ out:
     return;
 }
 
-int ucp_ep_config_lane_is_equal(const ucp_ep_config_key_t *key1,
-                                const ucp_ep_config_key_t *key2,
-                                ucp_lane_index_t lane, int compare_types)
+int ucp_ep_config_lane_is_same_peer(const ucp_ep_config_key_t *key1,
+                                    ucp_lane_index_t lane1,
+                                    const ucp_ep_config_key_t *key2,
+                                    ucp_lane_index_t lane2)
 {
-    return (key1->lanes[lane].rsc_index    == key2->lanes[lane].rsc_index)    &&
+    if ((key1->lanes[lane1].rsc_index    != key2->lanes[lane2].rsc_index)    ||
+        (key1->lanes[lane1].dst_md_index != key2->lanes[lane2].dst_md_index) ||
+        (key1->lanes[lane1].path_index   != key2->lanes[lane2].path_index)) {
+        return 0;
+    }
+
+    return (/* both lanes are proxies for themselves */
+            (key1->lanes[lane1].proxy_lane == lane1) &&
+            (key1->lanes[lane2].proxy_lane == lane2))                             ||
+           (/* both lanes are proxies for the same peer */
+            (key1->lanes[lane1].proxy_lane != UCP_NULL_RESOURCE) &&
+            (key2->lanes[lane2].proxy_lane != UCP_NULL_RESOURCE) &&
+            ucp_ep_config_lane_is_same_peer(key1, key1->lanes[lane1].proxy_lane,
+                                            key2, key2->lanes[lane2].proxy_lane)) ||
+           
+           (/* both lanes are not proxies */
+            (key1->lanes[lane1].proxy_lane == UCP_NULL_RESOURCE)  &&
+            (key2->lanes[lane2].proxy_lane == UCP_NULL_RESOURCE));
+}
+
+static  int ucp_ep_config_lane_is_equal(const ucp_ep_config_key_t *key1,
+                                        const ucp_ep_config_key_t *key2,
+                                        ucp_lane_index_t lane)
+{
+    return ucp_ep_config_lane_is_same_peer(key1, lane, key2, lane)            &&
            (key1->lanes[lane].proxy_lane   == key2->lanes[lane].proxy_lane)   &&
            (key1->lanes[lane].dst_md_index == key2->lanes[lane].dst_md_index) &&
-           (key1->lanes[lane].path_index   == key2->lanes[lane].path_index)   &&
-           ((key1->lanes[lane].lane_types  == key2->lanes[lane].lane_types) ||
-            !compare_types);
+           (key1->lanes[lane].lane_types   == key2->lanes[lane].lane_types);
 }
 
 int ucp_ep_config_is_equal(const ucp_ep_config_key_t *key1,
@@ -1070,7 +1090,7 @@ int ucp_ep_config_is_equal(const ucp_ep_config_key_t *key1,
     }
 
     for (lane = 0; lane < key1->num_lanes; ++lane) {
-        if (!ucp_ep_config_lane_is_equal(key1, key2, lane, 1))
+        if (!ucp_ep_config_lane_is_equal(key1, key2, lane))
         {
             return 0;
         }
