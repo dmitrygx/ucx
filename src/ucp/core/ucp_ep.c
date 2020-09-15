@@ -2221,6 +2221,10 @@ uct_ep_h ucp_ep_get_cm_uct_ep(ucp_ep_h ep)
         return NULL;
     }
 
+    if (ep->uct_eps[lane] == NULL) {
+        return NULL;
+    }
+
     wireup_ep = ucp_ep_get_cm_wireup_ep(ep);
     return (wireup_ep == NULL) ? ep->uct_eps[lane] : wireup_ep->super.uct_ep;
 }
