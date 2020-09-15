@@ -135,7 +135,7 @@ static void uct_tcp_ep_cleanup(uct_tcp_ep_t *ep)
         uct_tcp_ep_ctx_reset(&ep->rx);
     }
 
-    if (ep->events && (ep->fd != -1)) {
+    if ((ep->events != 0) && !(ep->flags & UCT_TCP_EP_FLAG_FAILED)) {
         uct_tcp_ep_mod_events(ep, 0, ep->events);
     }
 
@@ -257,6 +257,14 @@ static UCS_CLASS_CLEANUP_FUNC(uct_tcp_ep_t)
         ucs_free(put_comp);
     }
 
+    if ((self->flags & UCT_TCP_EP_FLAG_FAILED) &&
+        (self->failed_cb_id != UCS_CALLBACKQ_ID_NULL)) {
+        /* a failed EP callback is still scheduled on UCT worker, unregister
+         * it to prevent a callback is being invoked for the destroyed EP */
+        uct_worker_progress_unregister_safe(&iface->super.worker->super,
+                                            &self->failed_cb_id);
+    }
+
     uct_tcp_cm_change_conn_state(self, UCT_TCP_EP_CONN_STATE_CLOSED);
     uct_tcp_ep_cleanup(self);
 
@@ -290,15 +298,43 @@ void uct_tcp_ep_destroy(uct_ep_h tl_ep)
     }
 }
 
-void uct_tcp_ep_set_failed(uct_tcp_ep_t *ep)
+static unsigned uct_tcp_ep_failed_progress(void *arg)
 {
+    uct_tcp_ep_t *ep       = (uct_tcp_ep_t*)arg;
     uct_tcp_iface_t *iface = ucs_derived_of(ep->super.super.iface,
                                             uct_tcp_iface_t);
+
+    ucs_assert(ep->flags & UCT_TCP_EP_FLAG_FAILED);
+
+    ep->failed_cb_id = UCS_CALLBACKQ_ID_NULL;
 
     uct_tcp_cm_change_conn_state(ep, UCT_TCP_EP_CONN_STATE_CLOSED);
     uct_set_ep_failed(&UCS_CLASS_NAME(uct_tcp_ep_t),
                       &ep->super.super, &iface->super.super,
                       UCS_ERR_ENDPOINT_TIMEOUT);
+
+    return 1;
+}
+
+void uct_tcp_ep_set_failed(uct_tcp_ep_t *ep)
+{
+    uct_tcp_iface_t *iface = ucs_derived_of(ep->super.super.iface,
+                                            uct_tcp_iface_t);
+
+    if (ep->flags & UCT_TCP_EP_FLAG_FAILED) {
+        /* error handling callback has already been scheduled and socket
+         * fd has been closed, no need do to these action one more time */
+        ucs_assert(ep->failed_cb_id != UCS_CALLBACKQ_ID_NULL);
+        return;
+    }
+
+    uct_tcp_ep_mod_events(ep, 0, ep->events);
+    ucs_close_fd(&ep->fd);
+    ep->flags |= UCT_TCP_EP_FLAG_FAILED;
+    uct_worker_progress_register_safe(&iface->super.worker->super,
+                                      uct_tcp_ep_failed_progress,
+                                      ep, UCS_CALLBACKQ_FLAG_ONESHOT,
+                                      &ep->failed_cb_id);
 }
 
 static ucs_status_t
@@ -545,9 +581,6 @@ static void uct_tcp_ep_handle_disconnected(uct_tcp_ep_t *ep, ucs_status_t status
             uct_tcp_ep_remove_ctx_cap(ep, UCT_TCP_EP_FLAG_CTX_TYPE_RX);
             ep->flags &= ~UCT_TCP_EP_FLAG_PUT_RX_SENDING_ACK;
         }
-
-        uct_tcp_ep_mod_events(ep, 0, ep->events);
-        ucs_close_fd(&ep->fd);
 
         if (ep->flags & UCT_TCP_EP_FLAG_ZCOPY_TX) {
             /* There is ongoing AM/PUT Zcopy operation, need to notify
@@ -1044,7 +1077,7 @@ uct_tcp_ep_am_prepare(uct_tcp_iface_t *iface, uct_tcp_ep_t *ep,
     return UCS_OK;
 
 err_no_res:
-    if (ep->fd != -1) {
+    if (!(ep->flags & UCT_TCP_EP_FLAG_FAILED)) {
         uct_tcp_ep_mod_events(ep, UCS_EVENT_SET_EVWRITE, 0);
     }
     UCS_STATS_UPDATE_COUNTER(ep->super.stats, UCT_EP_STAT_NO_RES, 1);

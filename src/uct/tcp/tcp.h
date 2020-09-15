@@ -89,7 +89,9 @@ enum {
      * for received PUT operations on a given EP. */
     UCT_TCP_EP_FLAG_PUT_RX_SENDING_ACK = UCS_BIT(5),
     /* EP is on connection matching context. */
-    UCT_TCP_EP_FLAG_ON_MATCH_CTX       = UCS_BIT(6)
+    UCT_TCP_EP_FLAG_ON_MATCH_CTX       = UCS_BIT(6),
+    /* EP failed and a callback for handling error is scheduled. */
+    UCT_TCP_EP_FLAG_FAILED             = UCS_BIT(7)
 };
 
 
@@ -255,7 +257,10 @@ struct uct_tcp_ep {
     uint8_t                       flags;            /* Endpoint flags */
     uint8_t                       conn_retries;     /* Number of connection attempts done */
     uct_tcp_ep_conn_state_t       conn_state;       /* State of connection with peer */
-    int                           fd;               /* Socket file descriptor */
+    union {
+        int                       fd;               /* Socket file descriptor */
+        uct_worker_cb_id_t        failed_cb_id;     /* Callback ID for progressing failed EP */
+    };
     int                           stale_fd;         /* Old file descriptor which should be
                                                      * closed as soon as the EP is connected
                                                      * using the new fd */
