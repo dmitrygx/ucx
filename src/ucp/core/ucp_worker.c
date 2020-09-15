@@ -635,16 +635,13 @@ ucp_worker_iface_error_handler(void *arg, uct_ep_h uct_ep, ucs_status_t status)
     ucs_status_t ret_status;
     ucp_ep_ext_gen_t *ep_ext;
     ucp_ep_h ucp_ep;
-    khiter_t iter;
 
     UCS_ASYNC_BLOCK(&worker->async);
 
     ucs_debug("worker %p: error handler called for UCT EP %p: %s",
               worker, uct_ep, ucs_status_string(status));
 
-    iter = kh_get(ucp_worker_discard_uct_ep_hash,
-                  &worker->discard_uct_ep_hash, uct_ep);
-    if (iter != kh_end(&worker->discard_uct_ep_hash)) {
+    if (ucp_worker_discard_uct_ep_in_progress(worker, uct_ep)) {
         ucs_debug("UCT EP %p is being discarded on UCP Worker %p",
                   uct_ep, worker);
         ret_status = UCS_OK;
@@ -2697,6 +2694,15 @@ ucp_worker_discard_wireup_ep(ucp_worker_h worker,
 
     /* do nothing, if this wireup EP is not an owner for UCT EP */
     return is_owner ? uct_ep : NULL;
+}
+
+/* must be called with async lock held */
+int ucp_worker_discard_uct_ep_in_progress(ucp_worker_h worker,
+                                          uct_ep_h uct_ep)
+{
+    return kh_get(ucp_worker_discard_uct_ep_hash,
+                  &worker->discard_uct_ep_hash, uct_ep) !=
+           kh_end(&worker->discard_uct_ep_hash);
 }
 
 /* must be called with async lock held */
