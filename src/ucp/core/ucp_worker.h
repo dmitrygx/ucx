@@ -329,6 +329,10 @@ void ucp_worker_keepalive_add_ep(ucp_ep_h );
 void ucp_worker_keepalive_remove_ep(ucp_ep_h ep);
 
 /* must be called with async lock held */
+int ucp_worker_discard_uct_ep_in_progress(ucp_worker_h worker,
+                                          uct_ep_h uct_ep);
+
+/* must be called with async lock held */
 void ucp_worker_discard_uct_ep(ucp_worker_h worker, uct_ep_h uct_ep,
                                unsigned ep_flush_flags,
                                uct_pending_purge_callback_t purge_cb,

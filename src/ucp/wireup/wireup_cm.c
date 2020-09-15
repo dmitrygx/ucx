@@ -658,9 +658,9 @@ static void ucp_ep_cm_disconnect_flushed_cb(ucp_request_t *req)
 
 static unsigned ucp_ep_cm_remote_disconnect_progress(void *arg)
 {
-    ucp_ep_h ucp_ep = arg;
+    ucs_status_t status = UCS_ERR_CONNECTION_RESET;
+    ucp_ep_h ucp_ep     = arg;
     void *req;
-    ucs_status_t status;
 
     ucs_trace("ep %p: flags 0x%x cm_remote_disconnect_progress", ucp_ep,
               ucp_ep->flags);
@@ -678,9 +678,13 @@ static unsigned ucp_ep_cm_remote_disconnect_progress(void *arg)
         /* the ep is closed by API but close req is not valid yet (checked
          * above), it will be set later from scheduled
          * @ref ucp_ep_close_flushed_callback */
-        ucs_debug("ep %p: ep closed but request is not set, waiting for the flush callback",
-                  ucp_ep);
-        return 1;
+        ucs_debug("ep %p: ep closed but request is not set, waiting for"
+                  " the flush callback", ucp_ep);
+        goto err;
+    }
+
+    if (!(ucp_ep->flags & UCP_EP_FLAG_REMOTE_CONNECTED)) {
+        goto err;
     }
 
     /*
@@ -738,9 +742,7 @@ static unsigned ucp_ep_cm_disconnect_progress(void *arg)
             ucs_assert(ucp_ep->flags & UCP_EP_FLAG_CLOSED);
         }
     } else if (ucp_ep->flags & UCP_EP_FLAG_LOCAL_CONNECTED) {
-        /* if the EP is local connected, need to flush it from main thread first */
         ucp_ep_cm_remote_disconnect_progress(ucp_ep);
-        ucp_ep_invoke_err_cb(ucp_ep, UCS_ERR_CONNECTION_RESET);
     } else if (ucp_ep->flags & UCP_EP_FLAG_CLOSE_REQ_VALID) {
         /* if the EP is not local connected, the EP has been closed and flushed,
            CM lane is disconnected, complete close request and destroy EP */
@@ -760,9 +762,32 @@ static void ucp_cm_disconnect_cb(uct_ep_h uct_cm_ep, void *arg)
 {
     ucp_ep_h ucp_ep            = arg;
     uct_worker_cb_id_t prog_id = UCS_CALLBACKQ_ID_NULL;
+    ucp_worker_h worker        = ucp_ep->worker;
+    uct_ep_h uct_ep;
+    int discard_uct_ep;
 
     ucs_trace("ep %p: CM remote disconnect callback invoked, flags 0x%x",
               ucp_ep, ucp_ep->flags);
+
+    uct_ep = ucp_ep_get_cm_uct_ep(ucp_ep);
+    if (uct_ep == NULL) {
+        UCS_ASYNC_BLOCK(&worker->async);
+        discard_uct_ep = ucp_worker_discard_uct_ep_in_progress(worker,
+                                                               uct_cm_ep);
+        UCS_ASYNC_UNBLOCK(&worker->async);
+
+        if (!discard_uct_ep) {
+            ucs_diag("ep %p: UCT EP %p for CM lane doesn't exist, it"
+                     "has already been discarded", ucp_ep, uct_cm_ep);
+            return;
+        }
+
+        ucs_fatal("ep %p: UCT EP for CM lane doesn't exist", ucp_ep);
+    }
+
+    ucs_assertv_always(uct_cm_ep == uct_ep,
+                       "%p: uct_cm_ep=%p vs found_uct_ep=%p",
+                       ucp_ep, uct_cm_ep, uct_ep);
 
     uct_worker_progress_register_safe(ucp_ep->worker->uct,
                                       ucp_ep_cm_disconnect_progress,
