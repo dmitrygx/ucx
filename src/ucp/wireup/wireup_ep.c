@@ -398,11 +398,12 @@ static UCS_CLASS_CLEANUP_FUNC(ucp_wireup_ep_t)
     if (self->aux_ep != NULL) {
         ucp_worker_iface_unprogress_ep(ucp_worker_iface(worker,
                                                         self->aux_rsc_index));
-        ucp_worker_discard_uct_ep(worker, self->aux_ep, UCT_FLUSH_FLAG_LOCAL,
-                                  ucp_wireup_ep_replay_pending_request_cb,
-                                  ucp_ep);
+        uct_ep_pending_purge(self->aux_ep,
+                             ucp_wireup_ep_replay_pending_request_cb, ucp_ep);
+        uct_ep_destroy(self->aux_ep);
         self->aux_ep = NULL;
     }
+
     if (self->sockaddr_ep != NULL) {
         uct_ep_destroy(self->sockaddr_ep);
     }
