@@ -377,6 +377,7 @@ static ssize_t ucp_cm_client_priv_pack_cb(void *arg,
      * uct_cm_remote_data_t */
     status = ucp_address_pack(worker, cm_wireup_ep->tmp_ep, tl_bitmap,
                               UCP_ADDRESS_PACK_FLAG_IFACE_ADDR |
+                              UCP_ADDRESS_PACK_FLAG_TL_RSC_IDX |
                               UCP_ADDRESS_PACK_FLAG_EP_ADDR,
                               NULL, &ucp_addr_size, &ucp_addr);
     if (status != UCS_OK) {
@@ -475,6 +476,7 @@ static unsigned ucp_cm_client_connect_progress(void *arg)
 
     status = ucp_address_unpack(worker, progress_arg->sa_data + 1,
                                 UCP_ADDRESS_PACK_FLAG_IFACE_ADDR |
+                                UCP_ADDRESS_PACK_FLAG_TL_RSC_IDX |
                                 UCP_ADDRESS_PACK_FLAG_EP_ADDR, &addr);
     if (status != UCS_OK) {
         goto out;
@@ -1111,6 +1113,7 @@ static ssize_t ucp_cm_server_priv_pack_cb(void *arg,
 
     status = ucp_address_pack(worker, ep, tl_bitmap,
                               UCP_ADDRESS_PACK_FLAG_IFACE_ADDR |
+                              UCP_ADDRESS_PACK_FLAG_TL_RSC_IDX |
                               UCP_ADDRESS_PACK_FLAG_EP_ADDR, NULL,
                               &ucp_addr_size, &ucp_addr);
     if (status != UCS_OK) {

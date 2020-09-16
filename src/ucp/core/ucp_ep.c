@@ -513,6 +513,7 @@ ucs_status_t ucp_ep_create_server_accept(ucp_worker_h worker,
 
     if (sa_data->addr_mode == UCP_WIREUP_SA_DATA_CM_ADDR) {
         addr_flags = UCP_ADDRESS_PACK_FLAG_IFACE_ADDR |
+                     UCP_ADDRESS_PACK_FLAG_TL_RSC_IDX |
                      UCP_ADDRESS_PACK_FLAG_EP_ADDR;
     } else {
         addr_flags = UCP_ADDRESS_PACK_FLAGS_ALL;
@@ -1034,9 +1035,12 @@ int ucp_ep_config_lane_is_same_peer(const ucp_ep_config_key_t *key1,
                                     const ucp_ep_config_key_t *key2,
                                     ucp_lane_index_t lane2)
 {
-    if ((key1->lanes[lane1].rsc_index     != key2->lanes[lane2].rsc_index)     ||
-        (key1->lanes[lane1].dst_rsc_index != key2->lanes[lane2].dst_rsc_index) ||
-        (key1->lanes[lane1].path_index    != key2->lanes[lane2].path_index)) {
+    if ((key1->lanes[lane1].rsc_index       != key2->lanes[lane2].rsc_index)      ||
+        ((/* compare resource indices, if both are specified */
+          (key1->lanes[lane1].dst_rsc_index != UCP_NULL_RESOURCE) ==
+          (key2->lanes[lane2].dst_rsc_index != UCP_NULL_RESOURCE)) &&
+         (key1->lanes[lane1].dst_rsc_index  != key2->lanes[lane2].dst_rsc_index)) ||
+        (key1->lanes[lane1].path_index      != key2->lanes[lane2].path_index)) {
         return 0;
     }
 

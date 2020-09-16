@@ -225,13 +225,12 @@ static int ucp_wireup_check_amo_flags(const uct_tl_resource_desc_t *resource,
 }
 
 static void
-ucp_wireup_init_select_info(ucp_context_h context, double score,
-                            unsigned addr_index, ucp_rsc_index_t rsc_index,
-                            uint8_t priority, ucp_rsc_index_t dst_rsc_index,
-                            const char *title,
+ucp_wireup_init_select_info(double score, unsigned addr_index,
+                            ucp_rsc_index_t rsc_index, uint8_t priority,
+                            ucp_rsc_index_t dst_rsc_index,
                             ucp_wireup_select_info_t *select_info)
 {
-    ucs_assert(score >= 0.0);
+    ucs_assert((score >= 0.0) || (rsc_index == UCP_NULL_RESOURCE));
 
     select_info->score         = score;
     select_info->addr_index    = addr_index;
@@ -418,10 +417,10 @@ ucp_wireup_select_transport(const ucp_wireup_select_params_t *select_params,
 
             if (!found || (ucp_score_prio_cmp(score, priority, sinfo.score,
                                               sinfo.priority) > 0)) {
-                ucp_wireup_init_select_info(context, score, addr_index,
-                                            rsc_index, priority,
+                ucp_wireup_init_select_info(score, addr_index, rsc_index,
+                                            priority,
                                             ae->iface_attr.dst_rsc_index,
-                                            criteria->title, &sinfo);
+                                            &sinfo);
                 found = 1;
             }
         }
@@ -494,10 +493,9 @@ ucp_wireup_add_lane_desc(const ucp_wireup_select_info_t *select_info,
             (lane_desc->path_index == select_info->path_index) )
         {
             lane = lane_desc - select_ctx->lane_descs;
-            ucs_assertv_always(select_info->rsc_index == lane_desc->dst_rsc_index,
+            ucs_assertv_always(select_info->dst_rsc_index == lane_desc->dst_rsc_index,
                                "lane[%d].dst_rsc_index=%d, dst_rsc_index=%d",
-                               lane, lane_desc->dst_md_index,
-                               select_info->rsc_index);
+                               lane, lane_desc->dst_rsc_index, select_info->dst_rsc_index);
             ucs_assertv_always(dst_md_index == lane_desc->dst_md_index,
                                "lane[%d].dst_md_index=%d, dst_md_index=%d",
                                lane, lane_desc->dst_md_index, dst_md_index);
@@ -834,12 +832,8 @@ ucp_wireup_add_cm_lane(const ucp_wireup_select_params_t *select_params,
         return UCS_OK;
     }
 
-    select_info.priority   = 0;  /**< Currently we have only 1 active CM */
-    select_info.rsc_index  = UCP_NULL_RESOURCE; /**< RSC doesn't matter for CM */
-    select_info.addr_index = 0;  /**< This makes sense only for transport
-                                      lanes */
-    select_info.score      = 0.; /**< TODO: when we have > 1 active CMs */
-    select_info.path_index = 0;  /**< Only one lane per CM device */
+    ucp_wireup_init_select_info(0., 0, UCP_NULL_RESOURCE, 0,
+                                UCP_NULL_RESOURCE, &select_info);
 
     /* server is not a proxy because it can create all lanes connected */
     return ucp_wireup_add_lane_desc(&select_info, UCP_NULL_RESOURCE,

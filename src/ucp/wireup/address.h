@@ -48,6 +48,8 @@ enum {
 
     UCP_ADDRESS_PACK_FLAG_LAST,
 
+    UCP_ADDRESS_PACK_FLAG_TL_RSC_IDX  = UCS_BIT(5), /* Pack TL resource index */
+
     /* A bitmap of all flags: UCP_ADDRESS_PACK_FLAG_LAST is the last bit plus 1,
      * so UCP_ADDRESS_PACK_FLAG_LAST<<1 is the next bit plus 2. If we subtract 3
      * we get the next bit minus 1.

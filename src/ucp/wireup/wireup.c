@@ -182,7 +182,9 @@ ucp_wireup_msg_send(ucp_ep_h ep, uint8_t type, uint64_t tl_bitmap,
     /* pack all addresses */
     status = ucp_address_pack(ep->worker,
                               ucp_wireup_is_ep_needed(ep) ? ep : NULL,
-                              tl_bitmap, UCP_ADDRESS_PACK_FLAGS_ALL,
+                              tl_bitmap,
+                              UCP_ADDRESS_PACK_FLAGS_ALL |
+                              UCP_ADDRESS_PACK_FLAG_TL_RSC_IDX,
                               lanes2remote, &req->send.length, &address);
     if (status != UCS_OK) {
         ucs_free(req);
@@ -298,6 +300,12 @@ ucp_wireup_ep_configs_can_reuse_lane(ucp_ep_config_key_t *key1,
                                      ucp_lane_index_t lane)
 {
     ucp_lane_index_t lane_idx;
+
+    if ((key1->lanes[lane].rsc_index     == UCP_NULL_RESOURCE) ||
+        (key1->lanes[lane].dst_rsc_index == UCP_NULL_RESOURCE)) {
+        /* sockaddr stub and CM lane are handled here */
+        return lane;
+    }
 
     for (lane_idx = 0; lane_idx < key2->num_lanes; ++lane_idx) {
         if (ucp_ep_config_lane_is_same_peer(key1, lane, key2, lane_idx)) {
@@ -703,7 +711,9 @@ static ucs_status_t ucp_wireup_msg_handler(void *arg, void *data,
         }
     }
 
-    status = ucp_address_unpack(worker, msg + 1, UCP_ADDRESS_PACK_FLAGS_ALL,
+    status = ucp_address_unpack(worker, msg + 1,
+                                UCP_ADDRESS_PACK_FLAGS_ALL |
+                                UCP_ADDRESS_PACK_FLAG_TL_RSC_IDX,
                                 &remote_address);
     if (status != UCS_OK) {
         ucs_error("failed to unpack address: %s", ucs_status_string(status));
@@ -1089,16 +1099,7 @@ ucp_wireup_ep_config_reuse_lane_map(ucp_ep_h ep,
     ucp_ep_config_key_t *old_key = &ucp_ep_config(ep)->key;
     ucp_lane_index_t old_lane_idx;
 
-    if (ucp_ep_is_sockaddr_stub(ep) && !ucp_ep_has_cm_lane(ep)) {
-        /* skip the first lane that indicates that UCP EP is a "stub",
-         * if CM functionality isn't enabled */
-        old_lane_idx         = 1;
-        reuse_lane_map[0]    = 0;
-    } else {
-        old_lane_idx         = 0;
-    }
-
-    for (; old_lane_idx < old_key->num_lanes; ++old_lane_idx) {
+    for (old_lane_idx = 0; old_lane_idx < old_key->num_lanes; ++old_lane_idx) {
         /* Go through the old configuration and check if the lanes selected for
          * the old configuration could be used for the new configuration */
         reuse_lane_map[old_lane_idx] =
@@ -1157,8 +1158,6 @@ ucs_status_t ucp_wireup_init_lanes(ucp_ep_h ep, unsigned ep_init_flags,
      */
     key.dst_md_cmpts = ucs_alloca(sizeof(*key.dst_md_cmpts) * UCP_MAX_MDS);
     ucp_wireup_get_reachable_mds(ep, remote_address, &key);
-
-    
 
     if (ep->cfg_index != UCP_WORKER_CFG_INDEX_NULL) {
         ucp_wireup_ep_config_reuse_lane_map(ep, &key, reuse_lane_map);
@@ -1428,7 +1427,8 @@ static void ucp_wireup_msg_dump(ucp_worker_h worker, uct_am_trace_type_t type,
     ucp_rsc_index_t tl;
 
     status = ucp_address_unpack(worker, msg + 1,
-                                UCP_ADDRESS_PACK_FLAGS_ALL |
+                                UCP_ADDRESS_PACK_FLAGS_ALL       |
+                                UCP_ADDRESS_PACK_FLAG_TL_RSC_IDX |
                                 UCP_ADDRESS_PACK_FLAG_NO_TRACE,
                                 &unpacked_address);
     if (status != UCS_OK) {
