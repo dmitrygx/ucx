@@ -257,10 +257,10 @@ static UCS_CLASS_CLEANUP_FUNC(uct_tcp_ep_t)
         ucs_free(put_comp);
     }
 
-    if ((self->flags & UCT_TCP_EP_FLAG_FAILED) &&
-        (self->failed_cb_id != UCS_CALLBACKQ_ID_NULL)) {
-        /* a failed EP callback is still scheduled on UCT worker, unregister
-         * it to prevent a callback is being invoked for the destroyed EP */
+    if (self->flags & UCT_TCP_EP_FLAG_FAILED) {
+        /* a failed EP callback can be still scheduled on the UCT worker,
+	 * unregister it to prevent a callback is being invoked for the
+	 * destroyed EP */
         uct_worker_progress_unregister_safe(&iface->super.worker->super,
                                             &self->failed_cb_id);
     }
@@ -330,7 +330,8 @@ void uct_tcp_ep_set_failed(uct_tcp_ep_t *ep)
 
     uct_tcp_ep_mod_events(ep, 0, ep->events);
     ucs_close_fd(&ep->fd);
-    ep->flags |= UCT_TCP_EP_FLAG_FAILED;
+    ep->flags        |= UCT_TCP_EP_FLAG_FAILED;
+    ep->failed_cb_id  = UCS_CALLBACKQ_ID_NULL;
     uct_worker_progress_register_safe(&iface->super.worker->super,
                                       uct_tcp_ep_failed_progress,
                                       ep, UCS_CALLBACKQ_FLAG_ONESHOT,
