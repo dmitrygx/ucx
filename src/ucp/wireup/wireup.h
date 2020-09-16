@@ -84,6 +84,7 @@ typedef struct {
     unsigned        addr_index;
     unsigned        path_index;
     ucp_rsc_index_t rsc_index;
+    ucp_rsc_index_t dst_rsc_index;
     uint8_t         priority;
 } ucp_wireup_select_info_t;
 

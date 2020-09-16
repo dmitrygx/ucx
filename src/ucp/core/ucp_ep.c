@@ -1034,9 +1034,9 @@ int ucp_ep_config_lane_is_same_peer(const ucp_ep_config_key_t *key1,
                                     const ucp_ep_config_key_t *key2,
                                     ucp_lane_index_t lane2)
 {
-    if ((key1->lanes[lane1].rsc_index    != key2->lanes[lane2].rsc_index)    ||
-        (key1->lanes[lane1].dst_md_index != key2->lanes[lane2].dst_md_index) ||
-        (key1->lanes[lane1].path_index   != key2->lanes[lane2].path_index)) {
+    if ((key1->lanes[lane1].rsc_index     != key2->lanes[lane2].rsc_index)     ||
+        (key1->lanes[lane1].dst_rsc_index != key2->lanes[lane2].dst_rsc_index) ||
+        (key1->lanes[lane1].path_index    != key2->lanes[lane2].path_index)) {
         return 0;
     }
 

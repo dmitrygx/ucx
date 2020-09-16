@@ -123,6 +123,7 @@ struct ucp_ep_config_key {
         ucp_lane_index_t     proxy_lane;    /* UCP_NULL_LANE - no proxy
                                                otherwise - in which lane the real
                                                transport endpoint is stored */
+        ucp_rsc_index_t      dst_rsc_index; /* Destination resource index */
         ucp_md_index_t       dst_md_index;  /* Destination memory domain index */
         uint8_t              path_index;    /* Device path index */
         ucp_lane_type_mask_t lane_types;    /* Which types of operations this lane
