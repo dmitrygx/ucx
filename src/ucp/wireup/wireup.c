@@ -1152,6 +1152,14 @@ ucs_status_t ucp_wireup_init_lanes(ucp_ep_h ep, unsigned ep_init_flags,
         return status;
     }
 
+    /* Get all reachable MDs from full remote address list and join with
+     * current ep configuration
+     */
+    key.dst_md_cmpts = ucs_alloca(sizeof(*key.dst_md_cmpts) * UCP_MAX_MDS);
+    ucp_wireup_get_reachable_mds(ep, remote_address, &key);
+
+    
+
     if (ep->cfg_index != UCP_WORKER_CFG_INDEX_NULL) {
         ucp_wireup_ep_config_reuse_lane_map(ep, &key, reuse_lane_map);
 
@@ -1206,12 +1214,6 @@ ucs_status_t ucp_wireup_init_lanes(ucp_ep_h ep, unsigned ep_init_flags,
         }
     }
 
-    /* Get all reachable MDs from full remote address list and join with
-     * current ep configuration
-     */
-    key.dst_md_cmpts = ucs_alloca(sizeof(*key.dst_md_cmpts) * UCP_MAX_MDS);
-    ucp_wireup_get_reachable_mds(ep, remote_address, &key);
-
     /* Load new configuration */
     status = ucp_worker_get_ep_config(worker, &key, 1, &new_cfg_index);
     if (status != UCS_OK) {
@@ -1248,7 +1250,7 @@ ucs_status_t ucp_wireup_init_lanes(ucp_ep_h ep, unsigned ep_init_flags,
 
     snprintf(str, sizeof(str), "ep %p", ep);
     ucp_wireup_print_config(worker, &ucp_ep_config(ep)->key, str,
-                            addr_indices, UCS_LOG_LEVEL_DEBUG);
+                            addr_indices, UCS_LOG_LEVEL_INFO);
 
     /* establish connections on all underlying endpoints */
     for (lane = 0; lane < ucp_ep_num_lanes(ep); ++lane) {
