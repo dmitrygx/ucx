@@ -270,8 +270,8 @@ static UCS_CLASS_CLEANUP_FUNC(uct_tcp_ep_t)
 
     if (self->flags & UCT_TCP_EP_FLAG_FAILED) {
         /* a failed EP callback can be still scheduled on the UCT worker,
-	 * remove it to prevent a callback is being invoked for the
-	 * destroyed EP */
+         * remove it to prevent a callback is being invoked for the
+         * destroyed EP */
         ucs_callbackq_remove_if(&iface->super.worker->super.progress_q,
                                 uct_tcp_ep_failed_remove_filter, self);
     }
