@@ -16,6 +16,7 @@
 static unsigned uct_tcp_ep_progress_data_tx(uct_tcp_ep_t *ep);
 static unsigned uct_tcp_ep_progress_data_rx(uct_tcp_ep_t *ep);
 static unsigned uct_tcp_ep_progress_magic_number_rx(uct_tcp_ep_t *ep);
+static unsigned uct_tcp_ep_failed_progress(void *arg);
 
 const uct_tcp_cm_state_t uct_tcp_ep_cm_state[] = {
     [UCT_TCP_EP_CONN_STATE_CLOSED] = {
@@ -135,7 +136,8 @@ static void uct_tcp_ep_cleanup(uct_tcp_ep_t *ep)
         uct_tcp_ep_ctx_reset(&ep->rx);
     }
 
-    if ((ep->events != 0) && !(ep->flags & UCT_TCP_EP_FLAG_FAILED)) {
+    if ((ep->events != 0) && (ep->fd != -1)) {
+        ucs_assert(!(ep->flags & UCT_TCP_EP_FLAG_FAILED));
         uct_tcp_ep_mod_events(ep, 0, ep->events);
     }
 
@@ -237,10 +239,19 @@ void uct_tcp_ep_move_ctx_cap(uct_tcp_ep_t *from_ep, uct_tcp_ep_t *to_ep,
     uct_tcp_ep_add_ctx_cap(to_ep, ctx_cap);
 }
 
+int uct_tcp_ep_failed_remove_filter(const ucs_callbackq_elem_t *elem,
+                                    void *arg)
+{
+    uct_tcp_ep_t *ep = (uct_tcp_ep_t*)arg;
+
+    ucs_assert(ep->flags & UCT_TCP_EP_FLAG_FAILED);
+    return (elem->cb == uct_tcp_ep_failed_progress) && (elem->arg == ep);
+}
+
 static UCS_CLASS_CLEANUP_FUNC(uct_tcp_ep_t)
 {
-    uct_tcp_iface_t UCS_V_UNUSED *iface =
-        ucs_derived_of(self->super.super.iface, uct_tcp_iface_t);
+    uct_tcp_iface_t *iface = ucs_derived_of(self->super.super.iface,
+                                            uct_tcp_iface_t);
     uct_tcp_ep_put_completion_t *put_comp;
 
     uct_tcp_ep_mod_events(self, 0, self->events);
@@ -259,10 +270,10 @@ static UCS_CLASS_CLEANUP_FUNC(uct_tcp_ep_t)
 
     if (self->flags & UCT_TCP_EP_FLAG_FAILED) {
         /* a failed EP callback can be still scheduled on the UCT worker,
-	 * unregister it to prevent a callback is being invoked for the
+	 * remove it to prevent a callback is being invoked for the
 	 * destroyed EP */
-        uct_worker_progress_unregister_safe(&iface->super.worker->super,
-                                            &self->failed_cb_id);
+        ucs_callbackq_remove_if(&iface->super.worker->super.progress_q,
+                                uct_tcp_ep_failed_remove_filter, self);
     }
 
     uct_tcp_cm_change_conn_state(self, UCT_TCP_EP_CONN_STATE_CLOSED);
@@ -306,8 +317,6 @@ static unsigned uct_tcp_ep_failed_progress(void *arg)
 
     ucs_assert(ep->flags & UCT_TCP_EP_FLAG_FAILED);
 
-    ep->failed_cb_id = UCS_CALLBACKQ_ID_NULL;
-
     uct_tcp_cm_change_conn_state(ep, UCT_TCP_EP_CONN_STATE_CLOSED);
     uct_set_ep_failed(&UCS_CLASS_NAME(uct_tcp_ep_t),
                       &ep->super.super, &iface->super.super,
@@ -318,24 +327,23 @@ static unsigned uct_tcp_ep_failed_progress(void *arg)
 
 void uct_tcp_ep_set_failed(uct_tcp_ep_t *ep)
 {
-    uct_tcp_iface_t *iface = ucs_derived_of(ep->super.super.iface,
-                                            uct_tcp_iface_t);
+    uct_tcp_iface_t *iface   = ucs_derived_of(ep->super.super.iface,
+                                              uct_tcp_iface_t);
+    uct_worker_cb_id_t cb_id = UCS_CALLBACKQ_ID_NULL;
 
     if (ep->flags & UCT_TCP_EP_FLAG_FAILED) {
         /* error handling callback has already been scheduled and socket
-         * fd has been closed, no need do to these action one more time */
-        ucs_assert(ep->failed_cb_id != UCS_CALLBACKQ_ID_NULL);
+         * fd has been closed, no need to do these actions one more time */
+        ucs_assert(ep->fd == -1);
         return;
     }
 
     uct_tcp_ep_mod_events(ep, 0, ep->events);
     ucs_close_fd(&ep->fd);
-    ep->flags        |= UCT_TCP_EP_FLAG_FAILED;
-    ep->failed_cb_id  = UCS_CALLBACKQ_ID_NULL;
+    ep->flags |= UCT_TCP_EP_FLAG_FAILED;
     uct_worker_progress_register_safe(&iface->super.worker->super,
-                                      uct_tcp_ep_failed_progress,
-                                      ep, UCS_CALLBACKQ_FLAG_ONESHOT,
-                                      &ep->failed_cb_id);
+                                      uct_tcp_ep_failed_progress, ep,
+                                      UCS_CALLBACKQ_FLAG_ONESHOT, &cb_id);
 }
 
 static ucs_status_t

@@ -257,10 +257,7 @@ struct uct_tcp_ep {
     uint8_t                       flags;            /* Endpoint flags */
     uint8_t                       conn_retries;     /* Number of connection attempts done */
     uct_tcp_ep_conn_state_t       conn_state;       /* State of connection with peer */
-    union {
-        int                       fd;               /* Socket file descriptor */
-        uct_worker_cb_id_t        failed_cb_id;     /* Callback ID for progressing failed EP */
-    };
+    int                           fd;               /* Socket file descriptor */
     int                           stale_fd;         /* Old file descriptor which should be
                                                      * closed as soon as the EP is connected
                                                      * using the new fd */
