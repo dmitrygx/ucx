@@ -1268,7 +1268,7 @@ ucs_status_t ucp_wireup_init_lanes(ucp_ep_h ep, unsigned ep_init_flags,
 
     snprintf(str, sizeof(str), "ep %p", ep);
     ucp_wireup_print_config(worker, &ucp_ep_config(ep)->key, str,
-                            addr_indices, cm_idx, UCS_LOG_LEVEL_DEBUG);
+                            addr_indices, cm_idx, UCS_LOG_LEVEL_INFO);
 
     /* establish connections on all underlying endpoints */
     for (lane = 0; lane < ucp_ep_num_lanes(ep); ++lane) {
