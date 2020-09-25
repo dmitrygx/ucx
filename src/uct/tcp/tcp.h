@@ -250,18 +250,28 @@ typedef struct uct_tcp_ep_zcopy_tx {
 
 
 /**
+ * TCP endpoint address
+ */
+typedef struct uct_tcp_ep_addr {
+    in_port_t                     iface_addr;       /* Interface address */
+    uct_tcp_cm_conn_sn_t          conn_sn;          /* Connection sequence number */
+} uct_tcp_ep_addr_t;
+
+
+/**
  * TCP endpoint
  */
 struct uct_tcp_ep {
     uct_base_ep_t                 super;
     uint8_t                       flags;            /* Endpoint flags */
     uint8_t                       conn_retries;     /* Number of connection attempts done */
-    uct_tcp_ep_conn_state_t       conn_state;       /* State of connection with peer */
+    uint8_t                       conn_state;       /* State of connection with peer */
     int                           fd;               /* Socket file descriptor */
     int                           stale_fd;         /* Old file descriptor which should be
                                                      * closed as soon as the EP is connected
                                                      * using the new fd */
     int                           events;           /* Current notifications */
+    uct_tcp_cm_conn_sn_t          peer_conn_sn;     /* Remove conenction sequence number */
     uct_tcp_cm_conn_sn_t          conn_sn;          /* Connection sequence number */
     uct_tcp_ep_ctx_t              tx;               /* TX resources */
     uct_tcp_ep_ctx_t              rx;               /* RX resources */
@@ -283,7 +293,9 @@ typedef struct uct_tcp_iface {
     uct_base_iface_t              super;             /* Parent class */
     int                           listen_fd;         /* Server socket */
     ucs_conn_match_ctx_t          conn_match_ctx;    /* Connection matching context */
+    uct_tcp_cm_conn_sn_t          local_conn_sn;
     ucs_list_link_t               ep_list;           /* List of endpoints */
+    ucs_list_link_t               unconn_ep_list;    /* List of unconnected endpoints */
     char                          if_name[IFNAMSIZ]; /* Network interface name */
     ucs_sys_event_set_t           *event_set;        /* Event set identifier */
     ucs_mpool_t                   tx_mpool;          /* TX memory pool */
@@ -376,7 +388,7 @@ size_t uct_tcp_iface_get_max_iov(const uct_tcp_iface_t *iface);
 
 size_t uct_tcp_iface_get_max_zcopy_header(const uct_tcp_iface_t *iface);
 
-void uct_tcp_iface_add_ep(uct_tcp_ep_t *ep);
+void uct_tcp_iface_add_ep(uct_tcp_ep_t *ep, int connected);
 
 void uct_tcp_iface_remove_ep(uct_tcp_ep_t *ep);
 
@@ -386,12 +398,22 @@ int uct_tcp_iface_is_self_addr(uct_tcp_iface_t *iface,
 ucs_status_t uct_tcp_ep_handle_io_err(uct_tcp_ep_t *ep, const char *op_str,
                                       ucs_status_t io_status);
 
+int uct_tcp_ep_is_unconnected(uct_tcp_ep_t *ep);
+
+void uct_tcp_ep_connect(uct_tcp_ep_t *ep);
+
 ucs_status_t uct_tcp_ep_init(uct_tcp_iface_t *iface, int fd,
                              const struct sockaddr_in *dest_addr,
                              uct_tcp_ep_t **ep_p);
 
 ucs_status_t uct_tcp_ep_create(const uct_ep_params_t *params,
                                uct_ep_h *ep_p);
+
+ucs_status_t uct_tcp_ep_get_address(uct_ep_h tl_ep, uct_ep_addr_t *ep_addr);
+
+ucs_status_t uct_tcp_ep_connect_to_ep(uct_ep_h ep,
+                                      const uct_device_addr_t *dev_addr,
+                                      const uct_ep_addr_t *ep_addr);
 
 const char *uct_tcp_ep_ctx_caps_str(uint8_t ep_ctx_caps, char *str_buffer);
 
@@ -477,7 +499,7 @@ ucs_status_t uct_tcp_cm_handle_incoming_conn(uct_tcp_iface_t *iface,
                                              const struct sockaddr_in *peer_addr,
                                              int fd);
 
-ucs_status_t uct_tcp_cm_conn_start(uct_tcp_ep_t *ep);
+void uct_tcp_cm_conn_start(uct_tcp_ep_t *ep);
 
 static inline void uct_tcp_iface_outstanding_inc(uct_tcp_iface_t *iface)
 {

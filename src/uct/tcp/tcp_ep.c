@@ -65,14 +65,185 @@ static inline int uct_tcp_ep_ctx_buf_need_progress(uct_tcp_ep_ctx_t *ctx)
     return ctx->offset < ctx->length;
 }
 
+static inline void uct_tcp_ep_ctx_move(uct_tcp_ep_ctx_t *to_ctx,
+                                       uct_tcp_ep_ctx_t *from_ctx)
+{
+    if (uct_tcp_ep_ctx_buf_need_progress(from_ctx)) {
+        memcpy(to_ctx, from_ctx, sizeof(*to_ctx));
+        memset(from_ctx, 0, sizeof(*from_ctx));
+    }
+}
+
+static unsigned
+uct_tcp_ep_create_socket_and_connect_progress(void *arg)
+{
+    uct_tcp_ep_t *ep       = (uct_tcp_ep_t*)arg;
+    uct_tcp_iface_t *iface = ucs_derived_of(ep->super.super.iface,
+                                            uct_tcp_iface_t);
+    ucs_status_t status;
+
+    status = ucs_socket_create(AF_INET, SOCK_STREAM, &ep->fd);
+    if (status != UCS_OK) {
+        goto err;
+    }
+
+    status = uct_tcp_iface_set_sockopt(iface, ep->fd);
+    if (status != UCS_OK) {
+        goto err;
+    }
+
+    uct_tcp_cm_conn_start(ep);
+
+out:
+    return 1;
+
+err:
+    uct_tcp_ep_set_failed(ep);
+    goto out;
+}
+
+static ucs_status_t
+uct_tcp_ep_create_socket_and_connect(uct_tcp_ep_t *ep)
+{
+    uct_tcp_iface_t *iface   = ucs_derived_of(ep->super.super.iface,
+                                              uct_tcp_iface_t);
+    uct_worker_cb_id_t cb_id = UCS_CALLBACKQ_ID_NULL;
+
+
+    if (ep->conn_retries++ > iface->config.max_conn_retries) {
+        ucs_error("tcp_ep %p: reached maximum number of connection retries "
+                  "(%u)", ep, iface->config.max_conn_retries);
+        uct_tcp_ep_set_failed(ep);
+        return UCS_ERR_TIMED_OUT;
+    }
+
+    uct_worker_progress_register_safe(&iface->super.worker->super,
+                                      uct_tcp_ep_create_socket_and_connect_progress,
+                                      ep, UCS_CALLBACKQ_FLAG_ONESHOT, &cb_id);
+
+    return UCS_OK;
+}
+
+int uct_tcp_ep_is_unconnected(uct_tcp_ep_t *ep)
+{
+    return (ep->conn_state == UCT_TCP_EP_CONN_STATE_CLOSED) &&
+           (ep->conn_retries == 0);
+}
+
+int uct_tcp_ep_is_connect_in_progress(uct_tcp_ep_t *ep)
+{
+    return (ep->conn_state == UCT_TCP_EP_CONN_STATE_CONNECTING) &&
+           (ep->conn_retries == 0);
+}
+
+static unsigned uct_tcp_ep_connect_progress(void *arg)
+{
+    uct_tcp_ep_t *ep       = (uct_tcp_ep_t*)arg;
+    uct_tcp_iface_t *iface = ucs_derived_of(ep->super.super.iface,
+                                            uct_tcp_iface_t);
+    uct_tcp_ep_t *peer_ep;
+
+    ucs_assert(uct_tcp_ep_is_connect_in_progress(ep));
+
+    if (uct_tcp_iface_is_self_addr(iface, &ep->peer_addr) ||
+        (peer_ep = uct_tcp_cm_get_ep(iface, &ep->peer_addr, ep->peer_conn_sn,
+                                     UCT_TCP_EP_FLAG_CTX_TYPE_RX)) == NULL) {
+        ucs_assert(!(ep->flags & UCT_TCP_EP_FLAG_CTX_TYPE_TX));
+        uct_tcp_ep_add_ctx_cap(ep, UCT_TCP_EP_FLAG_CTX_TYPE_TX);
+
+        uct_tcp_ep_create_socket_and_connect(ep);
+        if (!uct_tcp_ep_is_self(ep)) {
+            uct_tcp_iface_remove_ep(ep);
+            uct_tcp_cm_insert_ep(iface, ep);
+        }
+        return 1;
+    }
+
+    /* Found EP with RX, send the connection request to the peer */
+    uct_tcp_cm_change_conn_state(ep, UCT_TCP_EP_CONN_STATE_CONNECTED);
+
+    ucs_assert(!(peer_ep->flags & UCT_TCP_EP_FLAG_CTX_TYPE_TX) &&
+               (peer_ep->fd != -1));
+    uct_tcp_ep_move_ctx_cap(peer_ep, ep, UCT_TCP_EP_FLAG_CTX_TYPE_RX);
+
+    ep->fd          = peer_ep->fd;
+    ep->events      = peer_ep->events;
+    peer_ep->fd     = -1;
+    peer_ep->events = 0;
+
+    ep->conn_retries++;
+
+    uct_tcp_ep_ctx_move(&ep->tx, &peer_ep->tx);
+    uct_tcp_ep_ctx_move(&ep->rx, &peer_ep->rx);
+
+    ucs_queue_splice(&ep->pending_q, &peer_ep->pending_q);
+    ucs_queue_splice(&ep->put_comp_q, &peer_ep->put_comp_q);
+
+    /* The internal EP is not needed anymore */
+    uct_tcp_ep_set_failed(peer_ep);
+    peer_ep = NULL;
+
+    (void)uct_tcp_cm_send_event(ep, UCT_TCP_CM_CONN_REQ, 0);
+
+    ucs_assert(!(ep->flags & UCT_TCP_EP_FLAG_CTX_TYPE_TX));
+    uct_tcp_ep_add_ctx_cap(ep, UCT_TCP_EP_FLAG_CTX_TYPE_TX);
+
+    /* The EP with RX capability was found, now we could move the EP
+     * to the expected queue in order to detect ghost connections */
+    uct_tcp_iface_remove_ep(ep);
+    uct_tcp_cm_insert_ep(iface, ep);
+
+    uct_tcp_ep_mod_events(ep, UCS_EVENT_SET_EVWRITE, 0);
+
+    return 1;
+}
+
+int uct_tcp_ep_connect_remove_filter(const ucs_callbackq_elem_t *elem,
+                                     void *arg)
+{
+    return (elem->cb == uct_tcp_ep_connect_progress) &&
+           (elem->arg == arg);
+}
+
+void uct_tcp_ep_connect(uct_tcp_ep_t *ep)
+{
+    uct_tcp_iface_t *iface   = ucs_derived_of(ep->super.super.iface,
+                                              uct_tcp_iface_t);
+    uct_worker_cb_id_t cb_id = UCS_CALLBACKQ_ID_NULL;
+
+    ucs_assert(uct_tcp_ep_is_unconnected(ep));
+
+    iface->outstanding--;
+    uct_tcp_iface_remove_ep(ep);
+    uct_tcp_iface_add_ep(ep, 1);
+
+    if (ep->peer_conn_sn == UCT_TCP_CM_CONN_SN_MAX) {
+        ep->peer_conn_sn = ep->conn_sn;
+    }
+
+    uct_tcp_cm_change_conn_state(ep, UCT_TCP_EP_CONN_STATE_CONNECTING);
+    uct_worker_progress_register_safe(&iface->super.worker->super,
+                                      uct_tcp_ep_connect_progress, ep,
+                                      UCS_CALLBACKQ_FLAG_ONESHOT, &cb_id);
+}
+
 static inline ucs_status_t uct_tcp_ep_check_tx_res(uct_tcp_ep_t *ep)
 {
     if (ucs_unlikely(ep->conn_state != UCT_TCP_EP_CONN_STATE_CONNECTED)) {
         if (ep->conn_state == UCT_TCP_EP_CONN_STATE_CLOSED) {
-            return UCS_ERR_UNREACHABLE;
+            if (ep->conn_retries != 0) {
+                return UCS_ERR_UNREACHABLE;
+            }
+
+            uct_tcp_ep_connect(ep);
         }
 
-        ucs_assertv((ep->conn_state == UCT_TCP_EP_CONN_STATE_CONNECTING) ||
+        if (uct_tcp_ep_is_connect_in_progress(ep)) {
+            return UCS_INPROGRESS;
+        }
+
+        ucs_assertv((ep->conn_state == UCT_TCP_EP_CONN_STATE_CLOSED) ||
+                    (ep->conn_state == UCT_TCP_EP_CONN_STATE_CONNECTING) ||
                     (ep->conn_state == UCT_TCP_EP_CONN_STATE_WAITING_ACK),
                     "ep=%p", ep);
         return UCS_ERR_NO_RESOURCE;
@@ -146,8 +317,6 @@ static UCS_CLASS_INIT_FUNC(uct_tcp_ep_t, uct_tcp_iface_t *iface,
 {
     ucs_status_t status;
 
-    ucs_assertv(fd >= 0, "iface=%p", iface);
-
     UCS_CLASS_CALL_SUPER_INIT(uct_base_ep_t, &iface->super)
 
     uct_tcp_ep_addr_init(&self->peer_addr, dest_addr);
@@ -162,6 +331,7 @@ static UCS_CLASS_INIT_FUNC(uct_tcp_ep_t, uct_tcp_iface_t *iface,
     self->flags        = 0;
     self->conn_state   = UCT_TCP_EP_CONN_STATE_CLOSED;
     self->conn_sn      = UCT_TCP_CM_CONN_SN_MAX;
+    self->peer_conn_sn = UCT_TCP_CM_CONN_SN_MAX;
 
     ucs_list_head_init(&self->list);
     ucs_queue_head_init(&self->pending_q);
@@ -169,19 +339,24 @@ static UCS_CLASS_INIT_FUNC(uct_tcp_ep_t, uct_tcp_iface_t *iface,
 
     /* Make a socket non-blocking if an EP is created during accepting
      * a connection or non-blocking connection mode is requested */
-    if ((dest_addr == NULL) || iface->config.conn_nb) {
+    if ((fd != -1) || iface->config.conn_nb) {
         status = ucs_sys_fcntl_modfl(self->fd, O_NONBLOCK, 0);
         if (status != UCS_OK) {
             goto err_cleanup;
         }
     }
 
-    status = uct_tcp_iface_set_sockopt(iface, self->fd);
-    if (status != UCS_OK) {
-        goto err_cleanup;
-    }
+    if (fd != -1) {
+        status = uct_tcp_iface_set_sockopt(iface, self->fd);
+        if (status != UCS_OK) {
+            goto err_cleanup;
+        }
 
-    uct_tcp_iface_add_ep(self);
+        self->conn_retries++;
+        uct_tcp_iface_add_ep(self, 1);
+    } else {
+        uct_tcp_iface_add_ep(self, 0);
+    }
 
     ucs_debug("tcp_ep %p: created on iface %p, fd %d", self, iface, self->fd);
     return UCS_OK;
@@ -262,6 +437,13 @@ static UCS_CLASS_CLEANUP_FUNC(uct_tcp_ep_t)
         ucs_free(put_comp);
     }
 
+    if (uct_tcp_ep_is_connect_in_progress(self)) {
+        ucs_callbackq_remove_if(&iface->super.worker->super.progress_q,
+                                uct_tcp_ep_connect_remove_filter, self);
+    } else if (uct_tcp_ep_is_unconnected(self)) {
+        iface->outstanding--;
+    }
+
     if (self->flags & UCT_TCP_EP_FLAG_FAILED) {
         /* a failed EP callback can be still scheduled on the UCT worker,
          * remove it to prevent a callback is being invoked for the
@@ -311,10 +493,14 @@ static unsigned uct_tcp_ep_failed_progress(void *arg)
 
     ucs_assert(ep->flags & UCT_TCP_EP_FLAG_FAILED);
 
-    uct_tcp_cm_change_conn_state(ep, UCT_TCP_EP_CONN_STATE_CLOSED);
-    uct_set_ep_failed(&UCS_CLASS_NAME(uct_tcp_ep_t),
-                      &ep->super.super, &iface->super.super,
-                      UCS_ERR_ENDPOINT_TIMEOUT);
+    if (ep->flags & UCT_TCP_EP_FLAG_CTX_TYPE_TX) {
+        uct_tcp_cm_change_conn_state(ep, UCT_TCP_EP_CONN_STATE_CLOSED);
+        uct_set_ep_failed(&UCS_CLASS_NAME(uct_tcp_ep_t),
+                          &ep->super.super, &iface->super.super,
+                          UCS_ERR_ENDPOINT_TIMEOUT);
+    } else {
+        uct_tcp_ep_destroy_internal(&ep->super.super);
+    }
 
     return 1;
 }
@@ -329,6 +515,14 @@ void uct_tcp_ep_set_failed(uct_tcp_ep_t *ep)
         return;
     }
 
+    if (ep->flags & UCT_TCP_EP_FLAG_ON_MATCH_CTX) {
+        /* If the EP is on the matching context, remove it and insert to the
+         * EP list, since this EP is no longer valid for being returned from
+         * the matching context */
+        uct_tcp_cm_remove_ep(iface, ep);
+        uct_tcp_iface_add_ep(ep, 1);
+    }
+
     uct_tcp_ep_mod_events(ep, 0, ep->events);
     ep->flags |= UCT_TCP_EP_FLAG_FAILED;
     uct_worker_progress_register_safe(&iface->super.worker->super,
@@ -336,138 +530,79 @@ void uct_tcp_ep_set_failed(uct_tcp_ep_t *ep)
                                       UCS_CALLBACKQ_FLAG_ONESHOT, &cb_id);
 }
 
-static ucs_status_t
-uct_tcp_ep_create_socket_and_connect(uct_tcp_iface_t *iface,
-                                     const struct sockaddr_in *dest_addr,
-                                     uct_tcp_cm_conn_sn_t conn_sn,
-                                     uct_tcp_ep_t **ep_p)
+void uct_tcp_ep_set_dest_addr(const uct_device_addr_t *dev_addr,
+                              const uct_iface_addr_t *iface_addr,
+                              struct sockaddr_in *dest_addr)
 {
-    uct_tcp_ep_t *ep = NULL;
-    ucs_status_t status;
-    int fd;
-
-    /* if EP is already allocated, dest_addr can be NULL */
-    ucs_assert((*ep_p != NULL) || (dest_addr != NULL));
-
-    status = ucs_socket_create(AF_INET, SOCK_STREAM, &fd);
-    if (status != UCS_OK) {
-        goto err;
-    }
-
-    if (*ep_p == NULL) {
-        status = uct_tcp_ep_init(iface, fd, dest_addr, &ep);
-        if (status != UCS_OK) {
-            ucs_close_fd(&fd);
-            goto err;
-        }
-
-        ep->conn_sn = conn_sn;
-
-        /* EP is responsible for this socket fd from now */
-        fd = -1;
-    } else {
-        ep     = *ep_p;
-        ep->fd = fd;
-    }
-
-    status = uct_tcp_cm_conn_start(ep);
-    if (status != UCS_OK) {
-        goto err_ep_destroy;
-    }
-
-    if (*ep_p == NULL) {
-        *ep_p = ep;
-    }
-
-    return UCS_OK;
-
-err_ep_destroy:
-    if (*ep_p == NULL) {
-        uct_tcp_ep_destroy_internal(&ep->super.super);
-    }
-    ucs_assert(ep != NULL);
-    ucs_close_fd(&ep->fd);
-err:
-    return status;
-}
-
-static ucs_status_t uct_tcp_ep_create_connected(uct_tcp_iface_t *iface,
-                                                const struct sockaddr_in *dest_addr,
-                                                uct_tcp_cm_conn_sn_t conn_sn,
-                                                uct_tcp_ep_t **ep_p)
-{
-    ucs_status_t status;
-
-    status = uct_tcp_ep_create_socket_and_connect(iface, dest_addr,
-                                                  conn_sn, ep_p);
-    if (status != UCS_OK) {
-        return status;
-    }
-
-    uct_tcp_ep_add_ctx_cap(*ep_p, UCT_TCP_EP_FLAG_CTX_TYPE_TX);
-
-    if (!uct_tcp_ep_is_self(*ep_p)) {
-        uct_tcp_iface_remove_ep(*ep_p);
-        uct_tcp_cm_insert_ep(iface, *ep_p);
-    }
-
-    return UCS_OK;
+    memset(dest_addr, 0, sizeof(*dest_addr));
+    /* TODO: handle AF_INET6 */
+    dest_addr->sin_family = AF_INET;
+    dest_addr->sin_port   = *(const in_port_t*)iface_addr;
+    dest_addr->sin_addr   = *(const struct in_addr*)
+                            ucs_sockaddr_get_inet_addr((const struct sockaddr*)
+                                                       dev_addr);
 }
 
 ucs_status_t uct_tcp_ep_create(const uct_ep_params_t *params,
                                uct_ep_h *ep_p)
 {
-    uct_tcp_iface_t *iface = ucs_derived_of(params->iface, uct_tcp_iface_t);
-    uct_tcp_ep_t *ep       = NULL;
+    uct_tcp_iface_t *iface           = ucs_derived_of(params->iface,
+                                                      uct_tcp_iface_t);
+    uct_tcp_ep_t *ep                 = NULL;
+    struct sockaddr_in *ep_dest_addr = NULL;
     struct sockaddr_in dest_addr;
-    uct_tcp_cm_conn_sn_t conn_sn;
     ucs_status_t status;
 
-    UCT_EP_PARAMS_CHECK_DEV_IFACE_ADDRS(params);
-    memset(&dest_addr, 0, sizeof(dest_addr));
-    /* TODO: handle AF_INET6 */
-    dest_addr.sin_family = AF_INET;
-    dest_addr.sin_port   = *(in_port_t*)params->iface_addr;
-    dest_addr.sin_addr   = *(const struct in_addr*)ucs_sockaddr_get_inet_addr
-                                                   ((struct sockaddr*)params->dev_addr);
-
-    conn_sn = uct_tcp_cm_get_conn_sn(iface, &dest_addr);
-
-    if (uct_tcp_iface_is_self_addr(iface, &dest_addr)) {
-        goto out_create_ep;
+    if (ucs_test_all_flags(params->field_mask,
+                           UCT_EP_PARAM_FIELD_DEV_ADDR |
+                           UCT_EP_PARAM_FIELD_IFACE_ADDR)) {
+        uct_tcp_ep_set_dest_addr(params->dev_addr, params->iface_addr,
+                                 &dest_addr);
+        ep_dest_addr = &dest_addr;
     }
 
-    ep = uct_tcp_cm_get_ep(iface, &dest_addr, conn_sn,
-                           UCT_TCP_EP_FLAG_CTX_TYPE_RX);
-    if (ep == NULL) {
-        goto out_create_ep;
-    }
-
-    ucs_assert(!(ep->flags & UCT_TCP_EP_FLAG_CTX_TYPE_TX));
-    /* Found EP with RX ctx, try to send the connection request
-     * to the remote peer, if it successful - assign TX to this EP
-     * and return the EP to the user */
-    status = uct_tcp_cm_send_event(ep, UCT_TCP_CM_CONN_REQ, 0);
+    status = uct_tcp_ep_init(iface, -1, ep_dest_addr, &ep);
     if (status != UCS_OK) {
-        uct_tcp_ep_destroy_internal(&ep->super.super);
-        ep = NULL;
-    } else {
-        uct_tcp_ep_add_ctx_cap(ep, UCT_TCP_EP_FLAG_CTX_TYPE_TX);
-        /* The EP was found with RX capability, now we could move the EP
-         * to the expected queue in order to detect ghost connections */
-        uct_tcp_cm_insert_ep(iface, ep);
+        return status;
     }
 
-out_create_ep:
-    if (ep == NULL) {
-        status = uct_tcp_ep_create_connected(iface, &dest_addr, conn_sn, &ep);
-        if (status != UCS_OK) {
-            return status;
-        }
-    }
+    ep->conn_sn = uct_tcp_cm_get_conn_sn(iface, ep_dest_addr);
+    /* TCP EP doesn't initiate TCP connct() to the remote peer, since the
+     * socket address (UCT device address) and port (UCT iface address)
+     * could be unknown in case of CONNECT_TO_EP and we have to know
+     * connection sequence number (UCT EP address) to be connected to a given
+     * TCP EP. TCP connect() will be initiated in the first flush/transmit
+     * operation. */
+    iface->outstanding++;
 
     /* cppcheck-suppress autoVariables */
     *ep_p = &ep->super.super;
+    return UCS_OK;
+}
+
+ucs_status_t uct_tcp_ep_get_address(uct_ep_h tl_ep, uct_ep_addr_t *ep_addr)
+{
+    uct_tcp_ep_t *ep        = ucs_derived_of(tl_ep, uct_tcp_ep_t);
+    uct_tcp_ep_addr_t *addr = (uct_tcp_ep_addr_t*)ep_addr;
+
+    addr->conn_sn = ep->conn_sn;
+    tl_ep->iface->ops.iface_get_address(tl_ep->iface,
+                                        (uct_iface_addr_t*)&addr->iface_addr);
+    
+    return UCS_OK;
+}
+
+ucs_status_t uct_tcp_ep_connect_to_ep(uct_ep_h tl_ep,
+                                      const uct_device_addr_t *dev_addr,
+                                      const uct_ep_addr_t *ep_addr)
+{
+    uct_tcp_ep_t *ep        = ucs_derived_of(tl_ep, uct_tcp_ep_t);
+    uct_tcp_ep_addr_t *addr = (uct_tcp_ep_addr_t*)ep_addr;
+
+    ep->peer_conn_sn = addr->conn_sn;
+    uct_tcp_ep_set_dest_addr(dev_addr, (uct_iface_addr_t*)&addr->iface_addr,
+                             &ep->peer_addr);
+
     return UCS_OK;
 }
 
@@ -597,11 +732,9 @@ static void uct_tcp_ep_handle_disconnected(uct_tcp_ep_t *ep, ucs_status_t status
         }
 
         uct_tcp_ep_tx_completed(ep, ep->tx.length - ep->tx.offset);
-        uct_tcp_ep_set_failed(ep);
-    } else {
-        /* If the EP supports RX only or no capabilities set, destroy it */
-        uct_tcp_ep_destroy_internal(&ep->super.super);
     }
+
+    uct_tcp_ep_set_failed(ep);
 }
 
 static inline ucs_status_t uct_tcp_ep_handle_send_err(uct_tcp_ep_t *ep,
@@ -751,11 +884,9 @@ ucs_status_t uct_tcp_ep_handle_io_err(uct_tcp_ep_t *ep, const char *op_str,
         uct_tcp_ep_mod_events(ep, 0, ep->events);
         ucs_close_fd(&ep->fd);
 
-        uct_tcp_cm_change_conn_state(ep, UCT_TCP_EP_CONN_STATE_CLOSED);
+        uct_tcp_cm_change_conn_state(ep, UCT_TCP_EP_CONN_STATE_CONNECTING);
 
-        status = uct_tcp_ep_create_socket_and_connect(iface, NULL,
-                                                      UCT_TCP_CM_CONN_SN_MAX,
-                                                      &ep);
+        status = uct_tcp_ep_create_socket_and_connect(ep);
         if (status == UCS_OK) {
             return UCS_ERR_CANCELED;
         }
@@ -1072,8 +1203,12 @@ uct_tcp_ep_am_prepare(uct_tcp_iface_t *iface, uct_tcp_ep_t *ep,
     status = uct_tcp_ep_check_tx_res(ep);
     if (ucs_unlikely(status != UCS_OK)) {
         if (ucs_likely(status == UCS_ERR_NO_RESOURCE)) {
+            goto err_no_res_mod_events;
+        } else if (status == UCS_INPROGRESS) {
             goto err_no_res;
         }
+
+        uct_tcp_ep_set_failed(ep);
         return status;
     }
 
@@ -1081,7 +1216,7 @@ uct_tcp_ep_am_prepare(uct_tcp_iface_t *iface, uct_tcp_ep_t *ep,
 
     ep->tx.buf = ucs_mpool_get_inline(&iface->tx_mpool);
     if (ucs_unlikely(ep->tx.buf == NULL)) {
-        goto err_no_res;
+        goto err_no_res_mod_events;
     }
 
     *hdr          = ep->tx.buf;
@@ -1089,10 +1224,11 @@ uct_tcp_ep_am_prepare(uct_tcp_iface_t *iface, uct_tcp_ep_t *ep,
 
     return UCS_OK;
 
-err_no_res:
-    if (!(ep->flags & UCT_TCP_EP_FLAG_FAILED)) {
+err_no_res_mod_events:
+    if (ucs_likely(!(ep->flags & UCT_TCP_EP_FLAG_FAILED))) {
         uct_tcp_ep_mod_events(ep, UCS_EVENT_SET_EVWRITE, 0);
     }
+err_no_res:
     UCS_STATS_UPDATE_COUNTER(ep->super.stats, UCT_EP_STAT_NO_RES, 1);
     return UCS_ERR_NO_RESOURCE;
 }
@@ -1609,6 +1745,7 @@ ucs_status_t uct_tcp_ep_flush(uct_ep_h tl_ep, unsigned flags,
 {
     uct_tcp_ep_t *ep = ucs_derived_of(tl_ep, uct_tcp_ep_t);
     uct_tcp_ep_put_completion_t *put_comp;
+    ucs_status_t status;
 
     if (ucs_unlikely(flags & UCT_FLUSH_FLAG_CANCEL)) {
         /* TCP is able to cancel only pending operations, posted TX operations
@@ -1620,7 +1757,8 @@ ucs_status_t uct_tcp_ep_flush(uct_ep_h tl_ep, unsigned flags,
         return UCS_OK;
     }
 
-    if (uct_tcp_ep_check_tx_res(ep) == UCS_ERR_NO_RESOURCE) {
+    status = uct_tcp_ep_check_tx_res(ep);
+    if ((status == UCS_ERR_NO_RESOURCE) || (status == UCS_INPROGRESS)) {
         UCT_TL_EP_STAT_FLUSH_WAIT(&ep->super);
         return UCS_ERR_NO_RESOURCE;
     }

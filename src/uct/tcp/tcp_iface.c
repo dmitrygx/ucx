@@ -132,9 +132,11 @@ static ucs_status_t uct_tcp_iface_query(uct_iface_h tl_iface, uct_iface_attr_t *
         return status;
     }
 
+    attr->ep_addr_len      = sizeof(uct_tcp_ep_addr_t);
     attr->iface_addr_len   = sizeof(in_port_t);
     attr->device_addr_len  = sizeof(struct sockaddr_in);
     attr->cap.flags        = UCT_IFACE_FLAG_CONNECT_TO_IFACE |
+                             UCT_IFACE_FLAG_CONNECT_TO_EP    |
                              UCT_IFACE_FLAG_AM_SHORT         |
                              UCT_IFACE_FLAG_AM_BCOPY         |
                              UCT_IFACE_FLAG_PENDING          |
@@ -237,12 +239,19 @@ static ucs_status_t uct_tcp_iface_flush(uct_iface_h tl_iface, unsigned flags,
                                         uct_completion_t *comp)
 {
     uct_tcp_iface_t *iface = ucs_derived_of(tl_iface, uct_tcp_iface_t);
+    uct_tcp_ep_t *ep, *tmp_ep;
 
     if (comp != NULL) {
         return UCS_ERR_UNSUPPORTED;
     }
 
     if (iface->outstanding != 0) {
+        if (ucs_unlikely(!ucs_list_is_empty(&iface->unconn_ep_list))) {
+            ucs_list_for_each_safe(ep, tmp_ep, &iface->unconn_ep_list, list) {
+                uct_tcp_ep_connect(ep);
+            }
+        }
+
         UCT_TL_IFACE_STAT_FLUSH_WAIT(&iface->super);
         return UCS_INPROGRESS;
     }
@@ -312,6 +321,8 @@ static uct_iface_ops_t uct_tcp_iface_ops = {
     .ep_fence                 = uct_base_ep_fence,
     .ep_create                = uct_tcp_ep_create,
     .ep_destroy               = uct_tcp_ep_destroy,
+    .ep_get_address           = uct_tcp_ep_get_address,
+    .ep_connect_to_ep         = uct_tcp_ep_connect_to_ep,
     .iface_flush              = uct_tcp_iface_flush,
     .iface_fence              = uct_base_iface_fence,
     .iface_progress_enable    = uct_base_iface_progress_enable,
@@ -489,6 +500,7 @@ static UCS_CLASS_INIT_FUNC(uct_tcp_iface_t, uct_md_h md, uct_worker_h worker,
 
     ucs_strncpy_zero(self->if_name, params->mode.device.dev_name,
                      sizeof(self->if_name));
+    self->local_conn_sn      = 0;
     self->outstanding        = 0;
     self->config.tx_seg_size = config->tx_seg_size +
                                sizeof(uct_tcp_am_hdr_t);
@@ -546,6 +558,7 @@ static UCS_CLASS_INIT_FUNC(uct_tcp_iface_t, uct_md_h md, uct_worker_h worker,
     }
 
     ucs_list_head_init(&self->ep_list);
+    ucs_list_head_init(&self->unconn_ep_list);
     ucs_conn_match_init(&self->conn_match_ctx,
                         ucs_field_sizeof(uct_tcp_ep_t, peer_addr),
                         &uct_tcp_cm_conn_match_ops);
@@ -605,22 +618,26 @@ err:
     return status;
 }
 
-static void uct_tcp_iface_ep_list_cleanup(uct_tcp_iface_t *iface)
+static void uct_tcp_iface_ep_list_cleanup(ucs_list_link_t *ep_list)
 {
     uct_tcp_ep_t *ep, *tmp;
 
-    ucs_list_for_each_safe(ep, tmp, &iface->ep_list, list) {
+    ucs_list_for_each_safe(ep, tmp, ep_list, list) {
         uct_tcp_ep_destroy_internal(&ep->super.super);
     }
 }
 
-void uct_tcp_iface_add_ep(uct_tcp_ep_t *ep)
+void uct_tcp_iface_add_ep(uct_tcp_ep_t *ep, int connected)
 {
     uct_tcp_iface_t *iface = ucs_derived_of(ep->super.super.iface,
                                             uct_tcp_iface_t);
     UCS_ASYNC_BLOCK(iface->super.worker->async);
     ucs_assert(!(ep->flags & UCT_TCP_EP_FLAG_ON_MATCH_CTX));
-    ucs_list_add_tail(&iface->ep_list, &ep->list);
+    if (connected) {
+        ucs_list_add_tail(&iface->ep_list, &ep->list);
+    } else {
+        ucs_list_add_tail(&iface->unconn_ep_list, &ep->list);
+    }
     UCS_ASYNC_UNBLOCK(iface->super.worker->async);
 }
 
@@ -661,7 +678,8 @@ static UCS_CLASS_CLEANUP_FUNC(uct_tcp_iface_t)
         ucs_warn("failed to remove handler for server socket fd=%d", self->listen_fd);
     }
 
-    uct_tcp_iface_ep_list_cleanup(self);
+    uct_tcp_iface_ep_list_cleanup(&self->ep_list);
+    uct_tcp_iface_ep_list_cleanup(&self->unconn_ep_list);
     ucs_conn_match_cleanup(&self->conn_match_ctx);
 
     ucs_mpool_cleanup(&self->rx_mpool, 1);
