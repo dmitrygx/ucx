@@ -24,6 +24,8 @@ unsigned ucp_cm_ep_init_flags(const ucp_worker_h worker,
 
 int ucp_ep_init_flags_has_cm(unsigned ep_init_flags);
 
+int ucp_cm_tl_bitmap_use_same_device(ucp_context_h context, uint64_t tl_bitmap);
+
 ucs_status_t ucp_ep_cm_connect_server_lane(ucp_ep_h ep,
                                            uct_listener_h uct_listener,
                                            uct_conn_request_h uct_conn_req,

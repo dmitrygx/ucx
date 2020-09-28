@@ -57,6 +57,12 @@ static ucs_stats_class_t ucp_ep_stats_class = {
 };
 #endif
 
+/* Forward declaration */
+static int
+ucp_ep_config_lane_is_peer_equal(const ucp_ep_config_key_t *key1,
+                                 ucp_lane_index_t lane1,
+                                 const ucp_ep_config_key_t *key2,
+                                 ucp_lane_index_t lane2);
 
 void ucp_ep_config_key_reset(ucp_ep_config_key_t *key)
 {
@@ -316,14 +322,15 @@ ucs_status_t ucp_worker_create_mem_type_endpoints(ucp_worker_h worker)
 
         status = ucp_address_pack(worker, NULL,
                                   context->mem_type_access_tls[mem_type],
-                                  UCP_ADDRESS_PACK_FLAGS_ALL, NULL,
+                                  UCP_ADDRESS_PACK_FLAGS_WORKER_DEFAULT, NULL,
                                   &address_length, &address_buffer);
         if (status != UCS_OK) {
             goto err_cleanup_eps;
         }
 
         status = ucp_address_unpack(worker, address_buffer,
-                                    UCP_ADDRESS_PACK_FLAGS_ALL, &local_address);
+                                    UCP_ADDRESS_PACK_FLAGS_WORKER_DEFAULT,
+                                    &local_address);
         if (status != UCS_OK) {
             goto err_free_address_buffer;
         }
@@ -512,8 +519,7 @@ ucs_status_t ucp_ep_create_server_accept(ucp_worker_h worker,
     }
 
     if (sa_data->addr_mode == UCP_WIREUP_SA_DATA_CM_ADDR) {
-        addr_flags = UCP_ADDRESS_PACK_FLAG_IFACE_ADDR |
-                     UCP_ADDRESS_PACK_FLAG_EP_ADDR;
+        addr_flags = UCP_ADDRESS_PACK_FLAGS_CM_DEFAULT;
     } else {
         addr_flags = UCP_ADDRESS_PACK_FLAGS_ALL;
     }
@@ -643,7 +649,8 @@ ucp_ep_create_api_to_worker_addr(ucp_worker_h worker,
     UCP_CHECK_PARAM_NON_NULL(params->address, status, goto out);
 
     status = ucp_address_unpack(worker, params->address,
-                                UCP_ADDRESS_PACK_FLAGS_ALL, &remote_address);
+                                UCP_ADDRESS_PACK_FLAGS_WORKER_DEFAULT,
+                                &remote_address);
     if (status != UCS_OK) {
         goto out;
     }
@@ -859,9 +866,6 @@ void ucp_ep_disconnected(ucp_ep_h ep, int force)
 
     if ((ep->flags & (UCP_EP_FLAG_CONNECT_REQ_QUEUED |
                       UCP_EP_FLAG_REMOTE_CONNECTED)) && !force) {
-        /* in case of CM connection ep has to be disconnected */
-        ucs_assert(!ucp_ep_has_cm_lane(ep));
-
         /* Endpoints which have remote connection are destroyed only when the
          * worker is destroyed, to enable remote endpoints keep sending
          * TODO negotiate disconnect.
@@ -1034,16 +1038,118 @@ out:
     return;
 }
 
-int ucp_ep_config_lane_is_equal(const ucp_ep_config_key_t *key1,
-                                const ucp_ep_config_key_t *key2,
-                                ucp_lane_index_t lane, int compare_types)
+static int
+ucp_ep_config_lane_is_proxy_equal(const ucp_ep_config_key_t *key1,
+                                  ucp_lane_index_t lane1,
+                                  const ucp_ep_config_key_t *key2,
+                                  ucp_lane_index_t lane2)
 {
-    return (key1->lanes[lane].rsc_index    == key2->lanes[lane].rsc_index)    &&
-           (key1->lanes[lane].proxy_lane   == key2->lanes[lane].proxy_lane)   &&
+    ucp_lane_index_t proxy_lane1 = key1->lanes[lane1].proxy_lane;
+    ucp_lane_index_t proxy_lane2 = key2->lanes[lane2].proxy_lane;
+
+    if ((proxy_lane1 == UCP_NULL_RESOURCE) !=
+        (proxy_lane2 == UCP_NULL_RESOURCE)) {
+        /* they have different proxy_lane configurations */
+        return 0;
+    }
+
+    return (/* both lanes are not proxies */
+            (proxy_lane1 == UCP_NULL_RESOURCE) &&
+            (proxy_lane2 == UCP_NULL_RESOURCE))               ||
+           (/* both lanes are proxies for themselves */
+            (proxy_lane1 == lane1) && (proxy_lane2 == lane2)) ||
+           /* both lanes are proxies for the same peer */
+           ucp_ep_config_lane_is_peer_equal(key1, proxy_lane1,
+                                            key2, proxy_lane2);
+}
+
+static int
+ucp_ep_config_lane_is_dst_rsc_index_equal(const ucp_ep_config_key_t *key1,
+                                          ucp_lane_index_t lane1,
+                                          const ucp_ep_config_key_t *key2,
+                                          ucp_lane_index_t lane2)
+{
+    return /* at least one of destination resource index is not specified */
+           (key1->lanes[lane1].dst_rsc_index == UCP_NULL_RESOURCE) ||
+           (key2->lanes[lane2].dst_rsc_index == UCP_NULL_RESOURCE) ||
+           /* both destination resource index are the same */
+           (key1->lanes[lane1].dst_rsc_index == key2->lanes[lane2].dst_rsc_index);
+}
+
+static int
+ucp_ep_config_lane_is_peer_equal(const ucp_ep_config_key_t *key1,
+                                 ucp_lane_index_t lane1,
+                                 const ucp_ep_config_key_t *key2,
+                                 ucp_lane_index_t lane2)
+{
+    if ((key1->lanes[lane1].rsc_index  != key2->lanes[lane2].rsc_index)      ||
+        !ucp_ep_config_lane_is_dst_rsc_index_equal(key1, lane1, key2, lane2) ||
+        (key1->lanes[lane1].path_index != key2->lanes[lane2].path_index)) {
+        return 0;
+    }
+
+    return ucp_ep_config_lane_is_proxy_equal(key1, lane1, key2, lane2);
+}
+
+static ucp_lane_index_t
+ucp_ep_config_find_match_lane(const ucp_ep_config_key_t *key1,
+                              ucp_lane_index_t lane1,
+                              const ucp_ep_config_key_t *key2)
+{
+    ucp_lane_index_t lane_idx;
+
+    if ((key1->lanes[lane1].rsc_index     == UCP_NULL_RESOURCE) ||
+        (key1->lanes[lane1].dst_rsc_index == UCP_NULL_RESOURCE)) {
+        /* sockaddr stub and CM lane are handled here */
+        return lane1;
+    }
+
+    for (lane_idx = 0; lane_idx < key2->num_lanes; ++lane_idx) {
+        if (ucp_ep_config_lane_is_peer_equal(key1, lane1, key2, lane_idx)) {
+            return lane_idx;
+        }
+    }
+
+    return UCP_NULL_LANE;
+}
+
+void ucp_ep_config_lanes_intersect(const ucp_ep_config_key_t *key1,
+                                   const ucp_ep_config_key_t *key2,
+                                   ucp_lane_index_t *intersect_map)
+{
+    ucp_lane_index_t lane1_idx;
+
+    for (lane1_idx = 0; lane1_idx < key1->num_lanes; ++lane1_idx) {
+        /* go through the first configuration and check if the lanes selected
+         * for this configuration could be used for the second configuration */
+        intersect_map[lane1_idx] =
+            ucp_ep_config_find_match_lane(key1, lane1_idx, key2);
+    }
+}
+
+ucp_lane_index_t
+ucp_ep_config_matched_lane(const ucp_ep_config_key_t *key,
+                           ucp_lane_index_t lane,
+                           const ucp_lane_index_t *lane_indexes)
+{
+    ucp_lane_index_t lane_idx;
+
+    for (lane_idx = 0; lane_idx < key->num_lanes; ++lane_idx) {
+        if (lane_indexes[lane_idx] == lane) {
+            return lane_idx;
+        }
+    }
+
+    return UCP_NULL_LANE;
+}
+
+static int ucp_ep_config_lane_is_equal(const ucp_ep_config_key_t *key1,
+                                       const ucp_ep_config_key_t *key2,
+                                       ucp_lane_index_t lane)
+{
+    return ucp_ep_config_lane_is_peer_equal(key1, lane, key2, lane)           &&
            (key1->lanes[lane].dst_md_index == key2->lanes[lane].dst_md_index) &&
-           (key1->lanes[lane].path_index   == key2->lanes[lane].path_index)   &&
-           ((key1->lanes[lane].lane_types  == key2->lanes[lane].lane_types) ||
-            !compare_types);
+           (key1->lanes[lane].lane_types   == key2->lanes[lane].lane_types);
 }
 
 int ucp_ep_config_is_equal(const ucp_ep_config_key_t *key1,
@@ -1072,7 +1178,7 @@ int ucp_ep_config_is_equal(const ucp_ep_config_key_t *key1,
     }
 
     for (lane = 0; lane < key1->num_lanes; ++lane) {
-        if (!ucp_ep_config_lane_is_equal(key1, key2, lane, 1))
+        if (!ucp_ep_config_lane_is_equal(key1, key2, lane))
         {
             return 0;
         }
@@ -2193,6 +2299,10 @@ uct_ep_h ucp_ep_get_cm_uct_ep(ucp_ep_h ep)
 
     lane = ucp_ep_get_cm_lane(ep);
     if (lane == UCP_NULL_LANE) {
+        return NULL;
+    }
+
+    if (ep->uct_eps[lane] == NULL) {
         return NULL;
     }
 
