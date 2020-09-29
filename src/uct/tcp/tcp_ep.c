@@ -145,12 +145,12 @@ static unsigned uct_tcp_ep_connect_progress(void *arg)
 
     ucs_assert(uct_tcp_ep_is_connect_in_progress(ep));
 
+    ucs_assert(!(ep->flags & UCT_TCP_EP_FLAG_CTX_TYPE_TX));
+    uct_tcp_ep_add_ctx_cap(ep, UCT_TCP_EP_FLAG_CTX_TYPE_TX);
+
     if (uct_tcp_iface_is_self_addr(iface, &ep->peer_addr) ||
         (peer_ep = uct_tcp_cm_get_ep(iface, &ep->peer_addr, ep->peer_conn_sn,
                                      UCT_TCP_EP_FLAG_CTX_TYPE_RX)) == NULL) {
-        ucs_assert(!(ep->flags & UCT_TCP_EP_FLAG_CTX_TYPE_TX));
-        uct_tcp_ep_add_ctx_cap(ep, UCT_TCP_EP_FLAG_CTX_TYPE_TX);
-
         uct_tcp_ep_create_socket_and_connect(ep);
         if (!uct_tcp_ep_is_self(ep)) {
             uct_tcp_iface_remove_ep(ep);
@@ -184,9 +184,6 @@ static unsigned uct_tcp_ep_connect_progress(void *arg)
     peer_ep = NULL;
 
     (void)uct_tcp_cm_send_event(ep, UCT_TCP_CM_CONN_REQ, 0);
-
-    ucs_assert(!(ep->flags & UCT_TCP_EP_FLAG_CTX_TYPE_TX));
-    uct_tcp_ep_add_ctx_cap(ep, UCT_TCP_EP_FLAG_CTX_TYPE_TX);
 
     /* The EP with RX capability was found, now we could move the EP
      * to the expected queue in order to detect ghost connections */
@@ -431,7 +428,7 @@ static UCS_CLASS_CLEANUP_FUNC(uct_tcp_ep_t)
         uct_tcp_iface_remove_ep(self);
     }
 
-    uct_tcp_ep_remove_ctx_cap(self, self->flags & UCT_TCP_EP_CTX_CAPS);
+    uct_tcp_ep_remove_ctx_cap(self, UCT_TCP_EP_CTX_CAPS);
 
     ucs_queue_for_each_extract(put_comp, &self->put_comp_q, elem, 1) {
         ucs_free(put_comp);
