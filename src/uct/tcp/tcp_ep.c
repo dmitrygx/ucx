@@ -142,24 +142,17 @@ static unsigned uct_tcp_ep_connect_progress(void *arg)
     uct_tcp_iface_t *iface = ucs_derived_of(ep->super.super.iface,
                                             uct_tcp_iface_t);
     uct_tcp_ep_t *peer_ep;
+    ucs_status_t status;
 
     ucs_assert(uct_tcp_ep_is_connect_in_progress(ep));
 
-    ucs_assert(!(ep->flags & UCT_TCP_EP_FLAG_CTX_TYPE_TX));
-    uct_tcp_ep_add_ctx_cap(ep, UCT_TCP_EP_FLAG_CTX_TYPE_TX);
-
-    if (uct_tcp_iface_is_self_addr(iface, &ep->peer_addr) ||
+    if (uct_tcp_ep_is_self(ep) ||
         (peer_ep = uct_tcp_cm_get_ep(iface, &ep->peer_addr, ep->peer_conn_sn,
                                      UCT_TCP_EP_FLAG_CTX_TYPE_RX)) == NULL) {
         uct_tcp_ep_create_socket_and_connect(ep);
-        if (!uct_tcp_ep_is_self(ep)) {
-            uct_tcp_iface_remove_ep(ep);
-            uct_tcp_cm_insert_ep(iface, ep);
-        }
-        return 1;
+        goto out;
     }
 
-    /* Found EP with RX, send the connection request to the peer */
     uct_tcp_cm_change_conn_state(ep, UCT_TCP_EP_CONN_STATE_CONNECTED);
 
     ucs_assert(!(peer_ep->flags & UCT_TCP_EP_FLAG_CTX_TYPE_TX) &&
@@ -183,15 +176,24 @@ static unsigned uct_tcp_ep_connect_progress(void *arg)
     uct_tcp_ep_set_failed(peer_ep);
     peer_ep = NULL;
 
-    (void)uct_tcp_cm_send_event(ep, UCT_TCP_CM_CONN_REQ, 0);
-
-    /* The EP with RX capability was found, now we could move the EP
-     * to the expected queue in order to detect ghost connections */
-    uct_tcp_iface_remove_ep(ep);
-    uct_tcp_cm_insert_ep(iface, ep);
+    /* Send the connection request to the peer */
+    status = uct_tcp_cm_send_event(ep, UCT_TCP_CM_CONN_REQ, 0);
+    if (status != UCS_OK) {
+        goto out;
+    }
 
     uct_tcp_ep_mod_events(ep, UCS_EVENT_SET_EVWRITE, 0);
 
+out:
+    ucs_assert(!(ep->flags & UCT_TCP_EP_FLAG_CTX_TYPE_TX));
+    uct_tcp_ep_add_ctx_cap(ep, UCT_TCP_EP_FLAG_CTX_TYPE_TX);
+
+    if (!uct_tcp_ep_is_self(ep)) {
+        /* Move the EP to the expected queue in order to detect ghost
+         * connections */
+        uct_tcp_iface_remove_ep(ep);
+        uct_tcp_cm_insert_ep(iface, ep);
+    }
     return 1;
 }
 
