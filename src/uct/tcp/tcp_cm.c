@@ -588,13 +588,13 @@ unsigned uct_tcp_cm_handle_conn_pkt(uct_tcp_ep_t **ep_p, void *pkt, uint32_t len
     return 0;
 }
 
-static unsigned uct_tcp_cm_conn_complete(uct_tcp_ep_t *ep)
+static void uct_tcp_cm_conn_complete(uct_tcp_ep_t *ep)
 {
     ucs_status_t status;
 
     status = uct_tcp_cm_send_event(ep, UCT_TCP_CM_CONN_REQ, 1);
     if (status != UCS_OK) {
-        goto out;
+        return;
     }
 
     uct_tcp_cm_change_conn_state(ep, UCT_TCP_EP_CONN_STATE_WAITING_ACK);
@@ -602,9 +602,6 @@ static unsigned uct_tcp_cm_conn_complete(uct_tcp_ep_t *ep)
 
     ucs_assertv((ep->tx.length == 0) && (ep->tx.offset == 0) &&
                 (ep->tx.buf == NULL), "ep=%p", ep);
-
-out:
-    return 1;
 }
 
 unsigned uct_tcp_cm_conn_progress(uct_tcp_ep_t *ep)
@@ -615,7 +612,8 @@ unsigned uct_tcp_cm_conn_progress(uct_tcp_ep_t *ep)
         goto err;
     }
 
-    return uct_tcp_cm_conn_complete(ep);
+    uct_tcp_cm_conn_complete(ep);
+    return 1;
 
 err:
     uct_tcp_ep_set_failed(ep);

@@ -399,7 +399,7 @@ void uct_tcp_ep_add_ctx_cap(uct_tcp_ep_t *ep, uint8_t ctx_cap)
 
 void uct_tcp_ep_remove_ctx_cap(uct_tcp_ep_t *ep, uint8_t ctx_cap)
 {
-    ucs_assert(ctx_cap & UCT_TCP_EP_CTX_CAPS);    
+    ucs_assert(ctx_cap & UCT_TCP_EP_CTX_CAPS);
     uct_tcp_ep_change_ctx_caps(ep, ep->flags & ~ctx_cap);
 }
 
@@ -431,7 +431,7 @@ static UCS_CLASS_CLEANUP_FUNC(uct_tcp_ep_t)
         uct_tcp_iface_remove_ep(self);
     }
 
-    uct_tcp_ep_remove_ctx_cap(self, UCT_TCP_EP_CTX_CAPS);
+    uct_tcp_ep_remove_ctx_cap(self, self->flags & UCT_TCP_EP_CTX_CAPS);
 
     ucs_queue_for_each_extract(put_comp, &self->put_comp_q, elem, 1) {
         ucs_free(put_comp);
