@@ -354,6 +354,8 @@ static unsigned
 uct_tcp_cm_simult_conn_accept_remote_conn(uct_tcp_ep_t *accept_ep,
                                           uct_tcp_ep_t *connect_ep)
 {
+    uct_tcp_iface_t *iface = ucs_derived_of(connect_ep->super.super.iface,
+                                            uct_tcp_iface_t);
     uct_tcp_cm_conn_event_t event;
     ucs_status_t status;
 
@@ -373,10 +375,17 @@ uct_tcp_cm_simult_conn_accept_remote_conn(uct_tcp_ep_t *accept_ep,
 
     /* 3. The EP allocated during accepting connection has to be destroyed
      *    upon return from this function (set its socket `fd` to -1 prior
-     *    to avoid closing this socket) */
+     *    to avoid closing this socket). If the found EP has in-progress
+     *    connection, stop it */
     uct_tcp_ep_mod_events(accept_ep, 0, UCS_EVENT_SET_EVREAD);
     accept_ep->fd = -1;
     accept_ep     = NULL;
+
+    ucs_assert(!uct_tcp_ep_is_unconnected(connect_ep));
+    if (uct_tcp_ep_is_connect_in_progress(connect_ep)) {
+        ucs_callbackq_remove_if(&iface->super.worker->super.progress_q,
+                                uct_tcp_ep_connect_remove_filter, connect_ep);
+    }
 
     /* 4. Send ACK to the peer */
     event = UCT_TCP_CM_CONN_ACK;

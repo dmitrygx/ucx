@@ -400,6 +400,11 @@ ucs_status_t uct_tcp_ep_handle_io_err(uct_tcp_ep_t *ep, const char *op_str,
 
 int uct_tcp_ep_is_unconnected(uct_tcp_ep_t *ep);
 
+int uct_tcp_ep_is_connect_in_progress(uct_tcp_ep_t *ep);
+
+int uct_tcp_ep_connect_remove_filter(const ucs_callbackq_elem_t *elem,
+                                     void *arg);
+
 void uct_tcp_ep_connect(uct_tcp_ep_t *ep);
 
 ucs_status_t uct_tcp_ep_init(uct_tcp_iface_t *iface, int fd,

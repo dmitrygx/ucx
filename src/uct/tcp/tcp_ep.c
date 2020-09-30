@@ -216,7 +216,7 @@ void uct_tcp_ep_connect(uct_tcp_ep_t *ep)
 
     ucs_assert(uct_tcp_ep_is_unconnected(ep));
 
-    iface->outstanding--;
+    uct_tcp_iface_outstanding_dec(iface);;
     uct_tcp_iface_remove_ep(ep);
     uct_tcp_iface_add_ep(ep, 1);
 
@@ -444,7 +444,7 @@ static UCS_CLASS_CLEANUP_FUNC(uct_tcp_ep_t)
         ucs_callbackq_remove_if(&iface->super.worker->super.progress_q,
                                 uct_tcp_ep_connect_remove_filter, self);
     } else if (uct_tcp_ep_is_unconnected(self)) {
-        iface->outstanding--;
+        uct_tcp_iface_outstanding_dec(iface);
     }
 
     if (self->flags & UCT_TCP_EP_FLAG_FAILED) {
@@ -576,7 +576,7 @@ ucs_status_t uct_tcp_ep_create(const uct_ep_params_t *params,
      * connection sequence number (UCT EP address) to be connected to a given
      * TCP EP. TCP connect() will be initiated in the first flush/transmit
      * operation. */
-    iface->outstanding++;
+    uct_tcp_iface_outstanding_inc(iface);
 
     /* cppcheck-suppress autoVariables */
     *ep_p = &ep->super.super;
