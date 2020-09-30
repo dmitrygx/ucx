@@ -258,9 +258,9 @@ uct_tcp_cm_get_conn_sn(uct_tcp_iface_t *iface,
         return (uct_tcp_cm_conn_sn_t)
                ucs_conn_match_get_next_sn(&iface->conn_match_ctx,
                                           dest_address);
-    } else {
-        return iface->local_conn_sn++;
     }
+
+    return iface->local_conn_sn++;
 }
 
 uct_tcp_ep_t *uct_tcp_cm_get_ep(uct_tcp_iface_t *iface,

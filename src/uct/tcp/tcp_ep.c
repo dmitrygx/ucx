@@ -109,8 +109,8 @@ uct_tcp_ep_create_socket_and_connect(uct_tcp_ep_t *ep)
                                               uct_tcp_iface_t);
     uct_worker_cb_id_t cb_id = UCS_CALLBACKQ_ID_NULL;
 
-
-    if (ep->conn_retries++ > iface->config.max_conn_retries) {
+    ep->conn_retries++;
+    if (ep->conn_retries > iface->config.max_conn_retries) {
         ucs_error("tcp_ep %p: reached maximum number of connection retries "
                   "(%u)", ep, iface->config.max_conn_retries);
         uct_tcp_ep_set_failed(ep);
@@ -141,8 +141,8 @@ static unsigned uct_tcp_ep_connect_progress(void *arg)
     uct_tcp_ep_t *ep       = (uct_tcp_ep_t*)arg;
     uct_tcp_iface_t *iface = ucs_derived_of(ep->super.super.iface,
                                             uct_tcp_iface_t);
+    ucs_status_t status    = UCS_OK;
     uct_tcp_ep_t *peer_ep;
-    ucs_status_t status;
 
     ucs_assert(uct_tcp_ep_is_connect_in_progress(ep));
 
@@ -172,7 +172,9 @@ static unsigned uct_tcp_ep_connect_progress(void *arg)
     ucs_queue_splice(&ep->pending_q, &peer_ep->pending_q);
     ucs_queue_splice(&ep->put_comp_q, &peer_ep->put_comp_q);
 
-    /* The internal EP is not needed anymore */
+    /* The internal EP is not needed anymore, start failed flow for the
+     * internal EP in order to destroy it from progress (to not dereference
+     * already destroyed EP) */
     uct_tcp_ep_set_failed(peer_ep);
     peer_ep = NULL;
 
@@ -185,10 +187,12 @@ static unsigned uct_tcp_ep_connect_progress(void *arg)
     uct_tcp_ep_mod_events(ep, UCS_EVENT_SET_EVWRITE, 0);
 
 out:
+    /* Set TX capability even if something is failed for the EP (e.g. sending
+     * CONN_REQ to the peer) */
     ucs_assert(!(ep->flags & UCT_TCP_EP_FLAG_CTX_TYPE_TX));
     uct_tcp_ep_add_ctx_cap(ep, UCT_TCP_EP_FLAG_CTX_TYPE_TX);
 
-    if (!uct_tcp_ep_is_self(ep)) {
+    if (!uct_tcp_ep_is_self(ep) && (status == UCS_OK)) {
         /* Move the EP to the expected queue in order to detect ghost
          * connections */
         uct_tcp_iface_remove_ep(ep);
@@ -566,7 +570,7 @@ ucs_status_t uct_tcp_ep_create(const uct_ep_params_t *params,
     }
 
     ep->conn_sn = uct_tcp_cm_get_conn_sn(iface, ep_dest_addr);
-    /* TCP EP doesn't initiate TCP connct() to the remote peer, since the
+    /* TCP EP doesn't initiate TCP connect() to the remote peer, since the
      * socket address (UCT device address) and port (UCT iface address)
      * could be unknown in case of CONNECT_TO_EP and we have to know
      * connection sequence number (UCT EP address) to be connected to a given

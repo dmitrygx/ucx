@@ -247,6 +247,8 @@ static ucs_status_t uct_tcp_iface_flush(uct_iface_h tl_iface, unsigned flags,
 
     if (iface->outstanding != 0) {
         if (ucs_unlikely(!ucs_list_is_empty(&iface->unconn_ep_list))) {
+            /* We have a check for list the emptiness above for optimization
+             * reason */
             ucs_list_for_each_safe(ep, tmp_ep, &iface->unconn_ep_list, list) {
                 uct_tcp_ep_connect(ep);
             }

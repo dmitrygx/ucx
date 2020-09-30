@@ -271,7 +271,7 @@ struct uct_tcp_ep {
                                                      * closed as soon as the EP is connected
                                                      * using the new fd */
     int                           events;           /* Current notifications */
-    uct_tcp_cm_conn_sn_t          peer_conn_sn;     /* Remove conenction sequence number */
+    uct_tcp_cm_conn_sn_t          peer_conn_sn;     /* Remote connection sequence number */
     uct_tcp_cm_conn_sn_t          conn_sn;          /* Connection sequence number */
     uct_tcp_ep_ctx_t              tx;               /* TX resources */
     uct_tcp_ep_ctx_t              rx;               /* RX resources */
