@@ -249,13 +249,19 @@ const ucs_conn_match_ops_t uct_tcp_cm_conn_match_ops = {
     .purge_cb    = uct_tcp_cm_conn_match_purge_cb
 };
 
-uct_tcp_cm_conn_sn_t
-uct_tcp_cm_get_conn_sn(uct_tcp_iface_t *iface,
-                       const struct sockaddr_in *dest_address)
+void uct_tcp_cm_ep_set_conn_sn(uct_tcp_ep_t *ep)
 {
-    return (uct_tcp_cm_conn_sn_t)
-           ucs_conn_match_get_next_sn(&iface->conn_match_ctx,
-                                      dest_address);
+    uct_tcp_iface_t *iface = ucs_derived_of(ep->super.super.iface,
+                                            uct_tcp_iface_t);
+
+    if (!(ep->flags & UCT_TCP_EP_FLAG_CONNECT_TO_EP)) {
+        ep->conn_sn = (uct_tcp_cm_conn_sn_t)
+                      ucs_conn_match_get_next_sn(&iface->conn_match_ctx,
+                                                 &ep->peer_addr);
+    } else {
+        ep->conn_sn = iface->conn_to_ep_ctx.local_conn_sn;
+        iface->conn_to_ep_ctx.local_conn_sn++;
+    }
 }
 
 uct_tcp_ep_t *uct_tcp_cm_get_ep(uct_tcp_iface_t *iface,
@@ -297,6 +303,7 @@ uct_tcp_ep_t *uct_tcp_cm_get_ep(uct_tcp_iface_t *iface,
 
     ep = ucs_container_of(elem, uct_tcp_ep_t, elem);
     ucs_assert(ep->flags & UCT_TCP_EP_FLAG_ON_MATCH_CTX);
+    ucs_assert(!(ep->flags & UCT_TCP_EP_FLAG_CONNECT_TO_EP));
 
     if (queue_type == UCS_CONN_MATCH_QUEUE_UNEXP) {
         ucs_assert(ep->flags & UCT_TCP_EP_FLAG_CTX_TYPE_RX);
@@ -324,6 +331,7 @@ void uct_tcp_cm_insert_ep(uct_tcp_iface_t *iface, uct_tcp_ep_t *ep)
     ucs_assert((ctx_caps & UCT_TCP_EP_FLAG_CTX_TYPE_TX) ||
                (ctx_caps == UCT_TCP_EP_FLAG_CTX_TYPE_RX));
     ucs_assert(!(ep->flags & UCT_TCP_EP_FLAG_ON_MATCH_CTX));
+    ucs_assert(!(ep->flags & UCT_TCP_EP_FLAG_CONNECT_TO_EP));
 
     ucs_conn_match_insert(&iface->conn_match_ctx, &ep->peer_addr,
                           ep->conn_sn, &ep->elem,
@@ -341,6 +349,7 @@ void uct_tcp_cm_remove_ep(uct_tcp_iface_t *iface, uct_tcp_ep_t *ep)
     ucs_assert(ep->conn_sn < UCT_TCP_CM_CONN_SN_MAX);
     ucs_assert(ctx_caps != 0);
     ucs_assert(ep->flags & UCT_TCP_EP_FLAG_ON_MATCH_CTX);
+    ucs_assert(!(ep->flags & UCT_TCP_EP_FLAG_CONNECT_TO_EP));
 
     ucs_conn_match_remove_elem(&iface->conn_match_ctx, &ep->elem,
                                (ctx_caps & UCT_TCP_EP_FLAG_CTX_TYPE_TX) ?
@@ -348,6 +357,31 @@ void uct_tcp_cm_remove_ep(uct_tcp_iface_t *iface, uct_tcp_ep_t *ep)
                                UCS_CONN_MATCH_QUEUE_UNEXP);
 
     ep->flags &= ~UCT_TCP_EP_FLAG_ON_MATCH_CTX;
+}
+
+int uct_tcp_cm_ep_accept_conn(uct_tcp_ep_t *ep)
+{
+    uct_tcp_iface_t *iface = ucs_derived_of(ep->super.super.iface,
+                                            uct_tcp_iface_t);
+    int cmp                = 0;
+    char str_local_addr[UCS_SOCKADDR_STRING_LEN];
+    char str_remote_addr[UCS_SOCKADDR_STRING_LEN];
+    ucs_status_t status;
+
+    if (ep->conn_state != UCT_TCP_EP_CONN_STATE_CONNECTED) {
+        cmp = ucs_sockaddr_cmp((const struct sockaddr*)&ep->peer_addr,
+                               (const struct sockaddr*)&iface->config.ifaddr,
+                               &status);
+        ucs_assertv_always(status == UCS_OK, "ucs_sockaddr_cmp(%s, %s) failed",
+                           ucs_sockaddr_str((const struct sockaddr*)&ep->peer_addr,
+                                            str_remote_addr, UCS_SOCKADDR_STRING_LEN),
+                           ucs_sockaddr_str((const struct sockaddr*)&iface->config.ifaddr,
+                                            str_local_addr, UCS_SOCKADDR_STRING_LEN));
+    }
+
+    /* Accept connection from a peer if the local iface address is greater
+     * than peer's one */
+    return cmp < 0;
 }
 
 static unsigned
@@ -408,25 +442,9 @@ static unsigned uct_tcp_cm_handle_simult_conn(uct_tcp_iface_t *iface,
                                               uct_tcp_ep_t *accept_ep,
                                               uct_tcp_ep_t *connect_ep)
 {
-    int accept_conn         = 0;
     unsigned progress_count = 0;
-    ucs_status_t status;
-    int cmp;
 
-    if (connect_ep->conn_state != UCT_TCP_EP_CONN_STATE_CONNECTED) {
-        cmp = ucs_sockaddr_cmp((const struct sockaddr*)&connect_ep->peer_addr,
-                               (const struct sockaddr*)&iface->config.ifaddr,
-                               &status);
-        if (status != UCS_OK) {
-            return 0;
-        }
-
-        /* Accept connection from a peer if our iface
-         * address is greater than peer's one */
-        accept_conn = (cmp < 0);
-    }
-
-    if (!accept_conn) {
+    if (!uct_tcp_cm_ep_accept_conn(connect_ep)) {
         /* Migrate RX from the EP allocated during accepting connection to
          * the found EP. */
         uct_tcp_ep_move_ctx_cap(accept_ep, connect_ep,
@@ -445,8 +463,6 @@ static unsigned uct_tcp_cm_handle_simult_conn(uct_tcp_iface_t *iface,
         }
     } else /* our iface address less than remote && we are not connected */ {
         /* Accept the remote connection and close the current one */
-        ucs_assertv(cmp != 0, "peer addresses for accepted tcp_ep %p and "
-                    "found tcp_ep %p mustn't be equal", accept_ep, connect_ep);
         progress_count = uct_tcp_cm_simult_conn_accept_remote_conn(accept_ep,
                                                                    connect_ep);
     }

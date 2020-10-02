@@ -312,6 +312,8 @@ static uct_iface_ops_t uct_tcp_iface_ops = {
     .ep_fence                 = uct_base_ep_fence,
     .ep_create                = uct_tcp_ep_create,
     .ep_destroy               = uct_tcp_ep_destroy,
+    .ep_get_address           = uct_tcp_ep_get_address,
+    .ep_connect_to_ep         = uct_tcp_ep_connect_to_ep,
     .iface_flush              = uct_tcp_iface_flush,
     .iface_fence              = uct_base_iface_fence,
     .iface_progress_enable    = uct_base_iface_progress_enable,
@@ -549,6 +551,9 @@ static UCS_CLASS_INIT_FUNC(uct_tcp_iface_t, uct_md_h md, uct_worker_h worker,
     ucs_conn_match_init(&self->conn_match_ctx,
                         ucs_field_sizeof(uct_tcp_ep_t, peer_addr),
                         &uct_tcp_cm_conn_match_ops);
+
+    self->conn_to_ep_ctx.local_conn_sn = 0;
+    
 
     if (self->config.tx_seg_size > self->config.rx_seg_size) {
         ucs_error("RX segment size (%zu) must be >= TX segment size (%zu)",
