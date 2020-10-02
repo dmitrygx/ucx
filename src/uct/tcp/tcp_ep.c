@@ -13,9 +13,9 @@
 
 
 /* Forward declarations */
-static unsigned uct_tcp_ep_progress_data_tx(uct_tcp_ep_t *ep);
-static unsigned uct_tcp_ep_progress_data_rx(uct_tcp_ep_t *ep);
-static unsigned uct_tcp_ep_progress_magic_number_rx(uct_tcp_ep_t *ep);
+static unsigned uct_tcp_ep_progress_data_tx(void *arg);
+static unsigned uct_tcp_ep_progress_data_rx(void *arg);
+static unsigned uct_tcp_ep_progress_magic_number_rx(void *arg);
 static unsigned uct_tcp_ep_failed_progress(void *arg);
 
 const uct_tcp_cm_state_t uct_tcp_ep_cm_state[] = {
@@ -65,11 +65,27 @@ static inline int uct_tcp_ep_ctx_buf_need_progress(uct_tcp_ep_ctx_t *ctx)
     return ctx->offset < ctx->length;
 }
 
+static inline int uct_tcp_ep_is_unconnected(uct_tcp_ep_t *ep)
+{
+    return (ep->conn_state == UCT_TCP_EP_CONN_STATE_CLOSED) &&
+           (ep->conn_retries == 0);
+}
+
+static inline int uct_tcp_ep_is_connect_in_progress(uct_tcp_ep_t *ep)
+{
+    return (ep->conn_state == UCT_TCP_EP_CONN_STATE_CONNECTING) &&
+        (ep->conn_retries == 0);
+}
+
 static inline ucs_status_t uct_tcp_ep_check_tx_res(uct_tcp_ep_t *ep)
 {
     if (ucs_unlikely(ep->conn_state != UCT_TCP_EP_CONN_STATE_CONNECTED)) {
         if (ep->conn_state == UCT_TCP_EP_CONN_STATE_CLOSED) {
             return UCS_ERR_UNREACHABLE;
+        }
+
+        if (ucs_unlikely(uct_tcp_ep_is_connect_in_progress(ep))) {
+            return UCS_INPROGRESS;
         }
 
         ucs_assertv((ep->conn_state == UCT_TCP_EP_CONN_STATE_CONNECTING) ||
@@ -207,7 +223,7 @@ const char *uct_tcp_ep_ctx_caps_str(uint8_t ep_ctx_caps, char *str_buffer)
     return str_buffer;
 }
 
-void uct_tcp_ep_change_ctx_caps(uct_tcp_ep_t *ep, uint8_t new_caps)
+void uct_tcp_ep_change_ctx_caps(uct_tcp_ep_t *ep, uint16_t new_caps)
 {
     char str_prev_ctx_caps[UCT_TCP_EP_CTX_CAPS_STR_MAX];
     char str_cur_ctx_caps[UCT_TCP_EP_CTX_CAPS_STR_MAX];
@@ -220,32 +236,41 @@ void uct_tcp_ep_change_ctx_caps(uct_tcp_ep_t *ep, uint8_t new_caps)
     }
 }
 
-void uct_tcp_ep_add_ctx_cap(uct_tcp_ep_t *ep, uint8_t ctx_cap)
+void uct_tcp_ep_add_ctx_cap(uct_tcp_ep_t *ep, uint16_t ctx_cap)
 {
     ucs_assert(ctx_cap & UCT_TCP_EP_CTX_CAPS);
     uct_tcp_ep_change_ctx_caps(ep, ep->flags | ctx_cap);
 }
 
-void uct_tcp_ep_remove_ctx_cap(uct_tcp_ep_t *ep, uint8_t ctx_cap)
+void uct_tcp_ep_remove_ctx_cap(uct_tcp_ep_t *ep, uint16_t ctx_cap)
 {
     ucs_assert(ctx_cap & UCT_TCP_EP_CTX_CAPS);
     uct_tcp_ep_change_ctx_caps(ep, ep->flags & ~ctx_cap);
 }
 
 void uct_tcp_ep_move_ctx_cap(uct_tcp_ep_t *from_ep, uct_tcp_ep_t *to_ep,
-                             uint8_t ctx_cap)
+                             uint16_t ctx_cap)
 {
     uct_tcp_ep_remove_ctx_cap(from_ep, ctx_cap);
     uct_tcp_ep_add_ctx_cap(to_ep, ctx_cap);
 }
 
-int uct_tcp_ep_failed_remove_filter(const ucs_callbackq_elem_t *elem,
-                                    void *arg)
+static int
+uct_tcp_ep_failed_remove_filter(const ucs_callbackq_elem_t *elem, void *arg)
 {
     uct_tcp_ep_t *ep = (uct_tcp_ep_t*)arg;
 
     ucs_assert(ep->flags & UCT_TCP_EP_FLAG_FAILED);
     return (elem->cb == uct_tcp_ep_failed_progress) && (elem->arg == ep);
+}
+
+static int
+uct_tcp_ep_progress_rx_remove_filter(const ucs_callbackq_elem_t *elem,
+                                     void *arg)
+{
+    uct_tcp_ep_t *ep = (uct_tcp_ep_t*)arg;
+
+    return (elem->cb == uct_tcp_ep_progress_data_rx) && (elem->arg == ep);
 }
 
 static UCS_CLASS_CLEANUP_FUNC(uct_tcp_ep_t)
@@ -274,6 +299,9 @@ static UCS_CLASS_CLEANUP_FUNC(uct_tcp_ep_t)
                                 uct_tcp_ep_failed_remove_filter, self);
     }
 
+    ucs_callbackq_remove_if(&iface->super.worker->super.progress_q,
+                            uct_tcp_ep_progress_rx_remove_filter, self);
+
     uct_tcp_cm_change_conn_state(self, UCT_TCP_EP_CONN_STATE_CLOSED);
     uct_tcp_ep_cleanup(self);
 
@@ -295,7 +323,9 @@ void uct_tcp_ep_destroy(uct_ep_h tl_ep)
                                             uct_tcp_iface_t);
 
     if ((ep->conn_state == UCT_TCP_EP_CONN_STATE_CONNECTED) &&
-        ucs_test_all_flags(ep->flags, UCT_TCP_EP_CTX_CAPS)) {
+        ucs_test_all_flags(ep->flags, UCT_TCP_EP_CTX_CAPS) &&
+        /* EPs that are connected as CONNECT_TO_EP has to be full duplex */
+        !(ep->flags & UCT_TCP_EP_FLAG_CONNECT_TO_EP)) {
         /* remove from the expected queue and then add it to the
          * unexpected queue */
         uct_tcp_cm_remove_ep(iface, ep);
@@ -355,12 +385,6 @@ static inline void uct_tcp_ep_ctx_move(uct_tcp_ep_ctx_t *to_ctx,
     memset(from_ctx, 0, sizeof(*from_ctx));
 }
 
-static int uct_tcp_ep_is_unconnected(uct_tcp_ep_t *ep)
-{
-    return (ep->conn_state == UCT_TCP_EP_CONN_STATE_CLOSED) &&
-           (ep->conn_retries == 0);
-}
-
 static ucs_status_t uct_tcp_ep_create_socket_and_connect(uct_tcp_ep_t *ep)
 {
     uct_tcp_iface_t *iface = ucs_derived_of(ep->super.super.iface,
@@ -400,6 +424,44 @@ err:
     goto out;
 }
 
+void uct_tcp_ep_replace_ep(uct_tcp_ep_t *ep, uct_tcp_ep_t *peer_ep)
+{
+    uct_tcp_iface_t *iface   = ucs_derived_of(ep->super.super.iface,
+                                              uct_tcp_iface_t);
+    int events               = peer_ep->events;
+    uct_worker_cb_id_t cb_id = UCS_CALLBACKQ_ID_NULL;
+
+    uct_tcp_ep_mod_events(peer_ep, 0, peer_ep->events);
+    ep->fd      = peer_ep->fd;
+    peer_ep->fd = -1;
+    uct_tcp_ep_mod_events(ep, events, 0);
+
+    ep->conn_retries++;
+
+    uct_tcp_ep_ctx_move(&ep->tx, &peer_ep->tx);
+    uct_tcp_ep_ctx_move(&ep->rx, &peer_ep->rx);
+
+    ucs_queue_splice(&ep->pending_q, &peer_ep->pending_q);
+    ucs_queue_splice(&ep->put_comp_q, &peer_ep->put_comp_q);
+
+    ep->flags |= peer_ep->flags & (UCT_TCP_EP_FLAG_ZCOPY_TX           |
+                                   UCT_TCP_EP_FLAG_PUT_RX             |
+                                   UCT_TCP_EP_FLAG_PUT_TX_WAITING_ACK |
+                                   UCT_TCP_EP_FLAG_PUT_RX_SENDING_ACK);
+
+    if (uct_tcp_ep_ctx_buf_need_progress(&ep->rx)) {
+        /* If some data was already read, we have to process it */
+        uct_worker_progress_register_safe(&iface->super.worker->super,
+                                          uct_tcp_ep_progress_data_rx, ep,
+                                          UCS_CALLBACKQ_FLAG_ONESHOT, &cb_id);
+    }
+
+    /* The internal EP is not needed anymore, start failed flow for the
+     * internal EP in order to destroy it from progress (to not dereference
+     * already destroyed EP) */
+    uct_tcp_ep_set_failed(peer_ep);
+}
+
 static ucs_status_t uct_tcp_ep_connect(uct_tcp_ep_t *ep)
 {
     uct_tcp_iface_t *iface = ucs_derived_of(ep->super.super.iface,
@@ -420,30 +482,13 @@ static ucs_status_t uct_tcp_ep_connect(uct_tcp_ep_t *ep)
         goto out;
     }
 
-    uct_tcp_cm_change_conn_state(ep, UCT_TCP_EP_CONN_STATE_CONNECTED);
-
     ucs_assert(!(peer_ep->flags & UCT_TCP_EP_FLAG_CTX_TYPE_TX) &&
                (peer_ep->fd != -1));
     uct_tcp_ep_move_ctx_cap(peer_ep, ep, UCT_TCP_EP_FLAG_CTX_TYPE_RX);
-
-    ep->fd          = peer_ep->fd;
-    ep->events      = peer_ep->events;
-    peer_ep->fd     = -1;
-    peer_ep->events = 0;
-
-    ep->conn_retries++;
-
-    uct_tcp_ep_ctx_move(&ep->tx, &peer_ep->tx);
-    uct_tcp_ep_ctx_move(&ep->rx, &peer_ep->rx);
-
-    ucs_queue_splice(&ep->pending_q, &peer_ep->pending_q);
-    ucs_queue_splice(&ep->put_comp_q, &peer_ep->put_comp_q);
-
-    /* The internal EP is not needed anymore, start failed flow for the
-     * internal EP in order to destroy it from progress (to not dereference
-     * already destroyed EP) */
-    uct_tcp_ep_set_failed(peer_ep);
+    uct_tcp_ep_replace_ep(ep, peer_ep);
     peer_ep = NULL;
+
+    uct_tcp_cm_change_conn_state(ep, UCT_TCP_EP_CONN_STATE_CONNECTED);
 
     /* Send the connection request to the peer */
     status = uct_tcp_cm_send_event(ep, UCT_TCP_CM_CONN_REQ, 0);
@@ -523,6 +568,8 @@ ucs_status_t uct_tcp_ep_get_address(uct_ep_h tl_ep, uct_ep_addr_t *ep_addr)
     uct_tcp_ep_t *ep        = ucs_derived_of(tl_ep, uct_tcp_ep_t);
     uct_tcp_ep_addr_t *addr = (uct_tcp_ep_addr_t*)ep_addr;
 
+    ucs_assert(ep->flags & UCT_TCP_EP_FLAG_CONNECT_TO_EP);
+
     addr->conn_sn = ep->conn_sn;
     uct_iface_get_address(tl_ep->iface, (uct_iface_addr_t*)&addr->iface_addr);
 
@@ -537,19 +584,46 @@ ucs_status_t uct_tcp_ep_connect_to_ep(uct_ep_h tl_ep,
     uct_tcp_iface_t *iface  = ucs_derived_of(ep->super.super.iface,
                                              uct_tcp_iface_t);
     uct_tcp_ep_addr_t *addr = (uct_tcp_ep_addr_t*)ep_addr;
+    uct_tcp_ep_t *peer_ep;
+    int connect_to_self;
 
     ucs_assert(ep->flags & UCT_TCP_EP_FLAG_CONNECT_TO_EP);
+
     uct_tcp_ep_set_dest_addr(dev_addr, (uct_iface_addr_t*)&addr->iface_addr,
                              &ep->peer_addr);
 
-    if (!uct_tcp_cm_ep_accept_conn(ep)) {
-        /* EP that are created as CONNECT_TO_EP has to be full-duplex, set RX
-         * capability as well as TX (that's set in uct_tcp_ep_connect()) */
-        uct_tcp_ep_add_ctx_cap(ep, UCT_TCP_EP_FLAG_CTX_TYPE_RX);
+    connect_to_self = uct_tcp_ep_is_self(ep);
+    if (!uct_tcp_cm_ep_accept_conn(ep) || connect_to_self) {
+        if (!connect_to_self) {
+            /* EP that are created as CONNECT_TO_EP has to be full-duplex, set RX
+             * capability as well as TX (that's set in uct_tcp_ep_connect()) */
+            uct_tcp_ep_add_ctx_cap(ep, UCT_TCP_EP_FLAG_CTX_TYPE_RX);
+        }
         return uct_tcp_ep_connect(ep);
     }
 
-    
+    /* Use remote peer connection sequence number value, since the EP has to
+     * accept the conenction */
+    ep->conn_sn = addr->conn_sn;
+
+    peer_ep = uct_tcp_cm_get_conn_to_ep(iface, &ep->peer_addr, ep->conn_sn,
+                                        UCT_TCP_EP_FLAG_CTX_TYPE_RX);
+    if (peer_ep != NULL) {
+        ucs_assert(!(peer_ep->flags & UCT_TCP_EP_FLAG_CTX_TYPE_TX) &&
+                   (peer_ep->fd != -1));
+        ep->conn_retries++;
+        uct_tcp_ep_move_ctx_cap(peer_ep, ep, UCT_TCP_EP_FLAG_CTX_TYPE_RX);
+        uct_tcp_ep_add_ctx_cap(ep, UCT_TCP_EP_FLAG_CTX_TYPE_TX);
+        uct_tcp_ep_replace_ep(ep, peer_ep);
+        peer_ep = NULL;
+
+        uct_tcp_cm_change_conn_state(ep, UCT_TCP_EP_CONN_STATE_CONNECTED);
+    } else {
+        uct_tcp_ep_add_ctx_cap(ep, UCT_TCP_EP_FLAG_CTX_TYPE_TX);
+        uct_tcp_cm_change_conn_state(ep, UCT_TCP_EP_CONN_STATE_CONNECTING);
+        uct_tcp_iface_remove_ep(ep);
+        uct_tcp_cm_insert_ep(iface, ep);
+    }
 
     return UCS_OK;
 }
@@ -896,7 +970,9 @@ static inline unsigned uct_tcp_ep_recv(uct_tcp_ep_t *ep, size_t recv_length)
                                                          uct_tcp_iface_t);
     ucs_status_t status;
 
-    ucs_assertv(recv_length != 0, "ep=%p", ep);
+    if (ucs_unlikely(recv_length == 0)) {
+        return 1;
+    }
 
     status = ucs_socket_recv_nb(ep->fd, UCS_PTR_BYTE_OFFSET(ep->rx.buf,
                                                             ep->rx.length),
@@ -906,7 +982,7 @@ static inline unsigned uct_tcp_ep_recv(uct_tcp_ep_t *ep, size_t recv_length)
         return 0;
     }
 
-    ucs_assertv(recv_length, "ep=%p", ep);
+    ucs_assertv(recv_length != 0, "ep=%p", ep);
 
     ep->rx.length += recv_length;
     ucs_trace_data("tcp_ep %p: recvd %zu bytes", ep, recv_length);
@@ -928,9 +1004,10 @@ static inline void uct_tcp_ep_check_tx_completion(uct_tcp_ep_t *ep)
  * functions implemented below */
 static void uct_tcp_ep_post_put_ack(uct_tcp_ep_t *ep);
 
-static unsigned uct_tcp_ep_progress_data_tx(uct_tcp_ep_t *ep)
+static unsigned uct_tcp_ep_progress_data_tx(void *arg)
 {
-    unsigned ret = 0;
+    uct_tcp_ep_t *ep = (uct_tcp_ep_t*)arg;
+    unsigned ret     = 0;
     ssize_t offset;
 
     ucs_trace_func("ep=%p", ep);
@@ -1151,6 +1228,8 @@ uct_tcp_ep_am_prepare(uct_tcp_iface_t *iface, uct_tcp_ep_t *ep,
     status = uct_tcp_ep_check_tx_res(ep);
     if (ucs_unlikely(status != UCS_OK)) {
         if (ucs_likely(status == UCS_ERR_NO_RESOURCE)) {
+            goto err_no_res_mod_events;
+        } else if (status == UCS_INPROGRESS) {
             goto err_no_res;
         }
 
@@ -1170,10 +1249,11 @@ uct_tcp_ep_am_prepare(uct_tcp_iface_t *iface, uct_tcp_ep_t *ep,
 
     return UCS_OK;
 
-err_no_res:
+err_no_res_mod_events:
     if (ucs_likely(!(ep->flags & UCT_TCP_EP_FLAG_FAILED))) {
         uct_tcp_ep_mod_events(ep, UCS_EVENT_SET_EVWRITE, 0);
     }
+err_no_res:
     UCS_STATS_UPDATE_COUNTER(ep->super.stats, UCT_EP_STAT_NO_RES, 1);
     return UCS_ERR_NO_RESOURCE;
 }
@@ -1200,8 +1280,10 @@ static unsigned uct_tcp_ep_progress_put_rx(uct_tcp_ep_t *ep)
     return 1;
 }
 
-static unsigned uct_tcp_ep_progress_data_rx(uct_tcp_ep_t *ep)
+static unsigned uct_tcp_ep_progress_data_rx(void *arg)
 {
+    uct_tcp_ep_t *ep = (uct_tcp_ep_t*)arg;
+
     if (!(ep->flags & UCT_TCP_EP_FLAG_PUT_RX)) {
         return uct_tcp_ep_progress_am_rx(ep);
     } else {
@@ -1209,8 +1291,9 @@ static unsigned uct_tcp_ep_progress_data_rx(uct_tcp_ep_t *ep)
     }
 }
 
-static unsigned uct_tcp_ep_progress_magic_number_rx(uct_tcp_ep_t *ep)
+static unsigned uct_tcp_ep_progress_magic_number_rx(void *arg)
 {
+    uct_tcp_ep_t *ep       = (uct_tcp_ep_t*)arg;
     uct_tcp_iface_t *iface = ucs_derived_of(ep->super.super.iface,
                                             uct_tcp_iface_t);
     char str_local_addr[UCS_SOCKADDR_STRING_LEN];
@@ -1690,6 +1773,7 @@ ucs_status_t uct_tcp_ep_flush(uct_ep_h tl_ep, unsigned flags,
 {
     uct_tcp_ep_t *ep = ucs_derived_of(tl_ep, uct_tcp_ep_t);
     uct_tcp_ep_put_completion_t *put_comp;
+    ucs_status_t status;
 
     if (ucs_unlikely(flags & UCT_FLUSH_FLAG_CANCEL)) {
         /* TCP is able to cancel only pending operations, posted TX operations
@@ -1701,7 +1785,8 @@ ucs_status_t uct_tcp_ep_flush(uct_ep_h tl_ep, unsigned flags,
         return UCS_OK;
     }
 
-    if (uct_tcp_ep_check_tx_res(ep) == UCS_ERR_NO_RESOURCE) {
+    status = uct_tcp_ep_check_tx_res(ep);
+    if ((status == UCS_ERR_NO_RESOURCE) || (status == UCS_INPROGRESS)) {
         UCT_TL_EP_STAT_FLUSH_WAIT(&ep->super);
         return UCS_ERR_NO_RESOURCE;
     }

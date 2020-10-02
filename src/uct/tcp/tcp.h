@@ -129,7 +129,7 @@ typedef enum uct_tcp_ep_conn_state {
 /* Forward declaration */
 typedef struct uct_tcp_ep uct_tcp_ep_t;
 
-typedef unsigned (*uct_tcp_ep_progress_t)(uct_tcp_ep_t *ep);
+typedef ucs_callback_t uct_tcp_ep_progress_t;
 
 
 /**
@@ -169,6 +169,9 @@ typedef struct uct_tcp_cm_conn_req_pkt {
     uct_tcp_cm_conn_event_t       event;      /* Connection event ID */
     struct sockaddr_in            iface_addr; /* Socket address of UCT local iface */
     uct_tcp_cm_conn_sn_t          conn_sn;    /* Connection sequence number */
+    int                           conn_to_ep; /* Flag that shows whether both EPs of the
+                                               * connection has to use CONNECT_TO_EP method
+                                               * of connection establishmnet */
 } UCS_S_PACKED uct_tcp_cm_conn_req_pkt_t;
 
 
@@ -295,12 +298,7 @@ typedef struct uct_tcp_iface {
     uct_base_iface_t              super;             /* Parent class */
     int                           listen_fd;         /* Server socket */
     ucs_conn_match_ctx_t          conn_match_ctx;    /* Connection matching context */
-    struct {
-        uct_tcp_cm_conn_sn_t      local_conn_sn;     /* Connection sequence number allocated
-                                                      * for EPs that are connected to EP directly
-                                                      * (i.e. through uct_ep_connect_to_ep() API
-                                                      * function) */
-    } conn_to_ep_ctx;
+    ucs_conn_match_ctx_t          conn_to_ep_ctx;    /* Connection to EPs matching context */
     ucs_list_link_t               ep_list;           /* List of endpoints */
     char                          if_name[IFNAMSIZ]; /* Network interface name */
     ucs_sys_event_set_t           *event_set;        /* Event set identifier */
@@ -421,20 +419,22 @@ ucs_status_t uct_tcp_ep_connect_to_ep(uct_ep_h ep,
 
 const char *uct_tcp_ep_ctx_caps_str(uint8_t ep_ctx_caps, char *str_buffer);
 
-void uct_tcp_ep_change_ctx_caps(uct_tcp_ep_t *ep, uint8_t new_caps);
+void uct_tcp_ep_change_ctx_caps(uct_tcp_ep_t *ep, uint16_t new_caps);
 
-void uct_tcp_ep_add_ctx_cap(uct_tcp_ep_t *ep, uint8_t cap);
+void uct_tcp_ep_add_ctx_cap(uct_tcp_ep_t *ep, uint16_t cap);
 
-void uct_tcp_ep_remove_ctx_cap(uct_tcp_ep_t *ep, uint8_t cap);
+void uct_tcp_ep_remove_ctx_cap(uct_tcp_ep_t *ep, uint16_t cap);
 
 void uct_tcp_ep_move_ctx_cap(uct_tcp_ep_t *from_ep, uct_tcp_ep_t *to_ep,
-                             uint8_t ctx_cap);
+                             uint16_t ctx_cap);
 
 void uct_tcp_ep_destroy_internal(uct_ep_h tl_ep);
 
 void uct_tcp_ep_destroy(uct_ep_h tl_ep);
 
 void uct_tcp_ep_set_failed(uct_tcp_ep_t *ep);
+
+void uct_tcp_ep_replace_ep(uct_tcp_ep_t *ep, uct_tcp_ep_t *peer_ep);
 
 int uct_tcp_ep_is_self(const uct_tcp_ep_t *ep);
 
@@ -477,7 +477,7 @@ ucs_status_t uct_tcp_cm_send_event(uct_tcp_ep_t *ep,
 
 unsigned uct_tcp_cm_handle_conn_pkt(uct_tcp_ep_t **ep_p, void *pkt, uint32_t length);
 
-unsigned uct_tcp_cm_conn_progress(uct_tcp_ep_t *ep);
+unsigned uct_tcp_cm_conn_progress(void *arg);
 
 uct_tcp_ep_conn_state_t
 uct_tcp_cm_set_conn_state(uct_tcp_ep_t *ep,
@@ -492,6 +492,11 @@ uct_tcp_ep_t *uct_tcp_cm_get_ep(uct_tcp_iface_t *iface,
                                 const struct sockaddr_in *dest_address,
                                 uct_tcp_cm_conn_sn_t conn_sn,
                                 uint8_t with_ctx_cap);
+
+uct_tcp_ep_t *uct_tcp_cm_get_conn_to_ep(uct_tcp_iface_t *iface,
+                                        const struct sockaddr_in *dest_address,
+                                        uct_tcp_cm_conn_sn_t conn_sn,
+                                        uint8_t with_ctx_cap);
 
 void uct_tcp_cm_insert_ep(uct_tcp_iface_t *iface, uct_tcp_ep_t *ep);
 
