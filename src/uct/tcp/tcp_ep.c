@@ -224,7 +224,7 @@ void uct_tcp_ep_add_ctx_cap(uct_tcp_ep_t *ep, uint8_t ctx_cap)
 
 void uct_tcp_ep_remove_ctx_cap(uct_tcp_ep_t *ep, uint8_t ctx_cap)
 {
-    ucs_assert(ctx_cap & UCT_TCP_EP_CTX_CAPS);    
+    ucs_assert(ctx_cap & UCT_TCP_EP_CTX_CAPS);
     uct_tcp_ep_change_ctx_caps(ep, ep->flags & ~ctx_cap);
 }
 
@@ -311,10 +311,14 @@ static unsigned uct_tcp_ep_failed_progress(void *arg)
 
     ucs_assert(ep->flags & UCT_TCP_EP_FLAG_FAILED);
 
-    uct_tcp_cm_change_conn_state(ep, UCT_TCP_EP_CONN_STATE_CLOSED);
-    uct_set_ep_failed(&UCS_CLASS_NAME(uct_tcp_ep_t),
-                      &ep->super.super, &iface->super.super,
-                      UCS_ERR_ENDPOINT_TIMEOUT);
+    if (ep->flags & UCT_TCP_EP_FLAG_CTX_TYPE_TX) {
+        uct_tcp_cm_change_conn_state(ep, UCT_TCP_EP_CONN_STATE_CLOSED);
+        uct_set_ep_failed(&UCS_CLASS_NAME(uct_tcp_ep_t),
+                          &ep->super.super, &iface->super.super,
+                          UCS_ERR_ENDPOINT_TIMEOUT);
+    } else {
+        uct_tcp_ep_destroy_internal(&ep->super.super);
+    }
 
     return 1;
 }
@@ -351,14 +355,14 @@ uct_tcp_ep_create_socket_and_connect(uct_tcp_iface_t *iface,
 
     status = ucs_socket_create(AF_INET, SOCK_STREAM, &fd);
     if (status != UCS_OK) {
-        goto err;
+        goto out;
     }
 
     if (*ep_p == NULL) {
         status = uct_tcp_ep_init(iface, fd, dest_addr, &ep);
         if (status != UCS_OK) {
             ucs_close_fd(&fd);
-            goto err;
+            goto out;
         }
 
         ep->conn_sn = conn_sn;
@@ -370,24 +374,21 @@ uct_tcp_ep_create_socket_and_connect(uct_tcp_iface_t *iface,
         ep->fd = fd;
     }
 
-    status = uct_tcp_cm_conn_start(ep);
-    if (status != UCS_OK) {
-        goto err_ep_destroy;
+    ep->conn_retries++;
+    if (ep->conn_retries > iface->config.max_conn_retries) {
+        ucs_error("tcp_ep %p: reached maximum number of connection retries "
+                  "(%u)", ep, iface->config.max_conn_retries);
+        uct_tcp_ep_set_failed(ep);
+        return UCS_ERR_TIMED_OUT;
     }
+
+    uct_tcp_cm_conn_start(ep);
 
     if (*ep_p == NULL) {
         *ep_p = ep;
     }
 
-    return UCS_OK;
-
-err_ep_destroy:
-    if (*ep_p == NULL) {
-        uct_tcp_ep_destroy_internal(&ep->super.super);
-    }
-    ucs_assert(ep != NULL);
-    ucs_close_fd(&ep->fd);
-err:
+out:
     return status;
 }
 
@@ -449,12 +450,13 @@ ucs_status_t uct_tcp_ep_create(const uct_ep_params_t *params,
      * and return the EP to the user */
     status = uct_tcp_cm_send_event(ep, UCT_TCP_CM_CONN_REQ, 0);
     if (status != UCS_OK) {
-        uct_tcp_ep_destroy_internal(&ep->super.super);
+        uct_tcp_ep_set_failed(ep);
         ep = NULL;
     } else {
         uct_tcp_ep_add_ctx_cap(ep, UCT_TCP_EP_FLAG_CTX_TYPE_TX);
         /* The EP was found with RX capability, now we could move the EP
          * to the expected queue in order to detect ghost connections */
+        uct_tcp_iface_remove_ep(ep);
         uct_tcp_cm_insert_ep(iface, ep);
     }
 
@@ -597,11 +599,9 @@ static void uct_tcp_ep_handle_disconnected(uct_tcp_ep_t *ep, ucs_status_t status
         }
 
         uct_tcp_ep_tx_completed(ep, ep->tx.length - ep->tx.offset);
-        uct_tcp_ep_set_failed(ep);
-    } else {
-        /* If the EP supports RX only or no capabilities set, destroy it */
-        uct_tcp_ep_destroy_internal(&ep->super.super);
     }
+
+    uct_tcp_ep_set_failed(ep);
 }
 
 static inline ucs_status_t uct_tcp_ep_handle_send_err(uct_tcp_ep_t *ep,
@@ -1074,6 +1074,8 @@ uct_tcp_ep_am_prepare(uct_tcp_iface_t *iface, uct_tcp_ep_t *ep,
         if (ucs_likely(status == UCS_ERR_NO_RESOURCE)) {
             goto err_no_res;
         }
+
+        uct_tcp_ep_set_failed(ep);
         return status;
     }
 
@@ -1090,7 +1092,7 @@ uct_tcp_ep_am_prepare(uct_tcp_iface_t *iface, uct_tcp_ep_t *ep,
     return UCS_OK;
 
 err_no_res:
-    if (!(ep->flags & UCT_TCP_EP_FLAG_FAILED)) {
+    if (ucs_likely(!(ep->flags & UCT_TCP_EP_FLAG_FAILED))) {
         uct_tcp_ep_mod_events(ep, UCS_EVENT_SET_EVWRITE, 0);
     }
     UCS_STATS_UPDATE_COUNTER(ep->super.stats, UCT_EP_STAT_NO_RES, 1);

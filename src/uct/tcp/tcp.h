@@ -477,7 +477,7 @@ ucs_status_t uct_tcp_cm_handle_incoming_conn(uct_tcp_iface_t *iface,
                                              const struct sockaddr_in *peer_addr,
                                              int fd);
 
-ucs_status_t uct_tcp_cm_conn_start(uct_tcp_ep_t *ep);
+void uct_tcp_cm_conn_start(uct_tcp_ep_t *ep);
 
 static inline void uct_tcp_iface_outstanding_inc(uct_tcp_iface_t *iface)
 {

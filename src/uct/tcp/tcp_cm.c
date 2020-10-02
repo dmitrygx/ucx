@@ -281,7 +281,10 @@ uct_tcp_ep_t *uct_tcp_cm_get_ep(uct_tcp_iface_t *iface,
         remove_from_ctx = 0;
     } else {
         /* when creating new endpoint from API, search for the arrived
-         * connection requests */
+         * connection requests and remove remove from the connection
+         * matching context, since the EP with RX-only capability will be
+         * destroyed or re-used for the EP created through uct_ep_create()
+         * and returned to the user (it will be inserted to expected queue) */
         queue_type      = UCS_CONN_MATCH_QUEUE_UNEXP;
         remove_from_ctx = 1;
     }
@@ -293,12 +296,21 @@ uct_tcp_ep_t *uct_tcp_cm_get_ep(uct_tcp_iface_t *iface,
     }
 
     ep = ucs_container_of(elem, uct_tcp_ep_t, elem);
-    ucs_assert(ep->flags & (with_ctx_cap | UCT_TCP_EP_FLAG_ON_MATCH_CTX));
+    ucs_assert(ep->flags & UCT_TCP_EP_FLAG_ON_MATCH_CTX);
+
+    if (queue_type == UCS_CONN_MATCH_QUEUE_UNEXP) {
+        ucs_assert(ep->flags & UCT_TCP_EP_FLAG_CTX_TYPE_RX);
+    } else if (!(ep->flags & UCT_TCP_EP_FLAG_CTX_TYPE_TX)) {
+        ucs_assert(ep->flags & UCT_TCP_EP_FLAG_CTX_TYPE_RX);
+    }
 
     if (remove_from_ctx) {
         ucs_assert((ep->flags & UCT_TCP_EP_CTX_CAPS) ==
                    UCT_TCP_EP_FLAG_CTX_TYPE_RX);
         ep->flags &= ~UCT_TCP_EP_FLAG_ON_MATCH_CTX;
+        /* The EP was removed from connection matching, move it to the EP list
+         * on iface to be able destroy it from iface cleanup */
+        uct_tcp_iface_add_ep(ep);
     }
 
     return ep;
@@ -527,7 +539,7 @@ accept_conn:
 
 out:
     if (!(ep->flags & UCT_TCP_EP_FLAG_CTX_TYPE_TX)) {
-        uct_tcp_ep_destroy_internal(&ep->super.super);
+        uct_tcp_ep_set_failed(ep);
         *ep_p = NULL;
     }
     return progress_count;
@@ -574,14 +586,14 @@ unsigned uct_tcp_cm_handle_conn_pkt(uct_tcp_ep_t **ep_p, void *pkt, uint32_t len
     return 0;
 }
 
-static ucs_status_t uct_tcp_cm_conn_complete(uct_tcp_ep_t *ep,
-                                             unsigned *progress_count_p)
+static void uct_tcp_cm_conn_complete(uct_tcp_ep_t *ep)
 {
     ucs_status_t status;
 
     status = uct_tcp_cm_send_event(ep, UCT_TCP_CM_CONN_REQ, 1);
     if (status != UCS_OK) {
-        goto out;
+        /* error handling was done inside sending event operation */
+        return;
     }
 
     uct_tcp_cm_change_conn_state(ep, UCT_TCP_EP_CONN_STATE_WAITING_ACK);
@@ -589,51 +601,38 @@ static ucs_status_t uct_tcp_cm_conn_complete(uct_tcp_ep_t *ep,
 
     ucs_assertv((ep->tx.length == 0) && (ep->tx.offset == 0) &&
                 (ep->tx.buf == NULL), "ep=%p", ep);
-out:
-    if (progress_count_p != NULL) {
-        *progress_count_p = (status == UCS_OK);
-    }
-    return status;
 }
 
 unsigned uct_tcp_cm_conn_progress(uct_tcp_ep_t *ep)
 {
-    unsigned progress_count;
-
     if (!ucs_socket_is_connected(ep->fd)) {
         ucs_error("tcp_ep %p: connection establishment for "
                   "socket fd %d was unsuccessful", ep, ep->fd);
         goto err;
     }
 
-    uct_tcp_cm_conn_complete(ep, &progress_count);
-    return progress_count;
+    uct_tcp_cm_conn_complete(ep);
+    return 1;
 
 err:
     uct_tcp_ep_set_failed(ep);
     return 0;
 }
 
-ucs_status_t uct_tcp_cm_conn_start(uct_tcp_ep_t *ep)
+void uct_tcp_cm_conn_start(uct_tcp_ep_t *ep)
 {
     uct_tcp_iface_t *iface = ucs_derived_of(ep->super.super.iface,
                                             uct_tcp_iface_t);
     ucs_status_t status;
 
-    if (ep->conn_retries++ > iface->config.max_conn_retries) {
-        ucs_error("tcp_ep %p: reached maximum number of connection retries "
-                  "(%u)", ep, iface->config.max_conn_retries);
-        return UCS_ERR_TIMED_OUT;
-    }
-
     uct_tcp_cm_change_conn_state(ep, UCT_TCP_EP_CONN_STATE_CONNECTING);
 
     status = ucs_socket_connect(ep->fd, (const struct sockaddr*)&ep->peer_addr);
     if (UCS_STATUS_IS_ERR(status)) {
-        return status;
+        goto err;
     } else if (status == UCS_INPROGRESS) {
         uct_tcp_ep_mod_events(ep, UCS_EVENT_SET_EVWRITE, 0);
-        return UCS_OK;
+        return;
     }
 
     ucs_assert(status == UCS_OK);
@@ -641,11 +640,15 @@ ucs_status_t uct_tcp_cm_conn_start(uct_tcp_ep_t *ep)
     if (!iface->config.conn_nb) {
         status = ucs_sys_fcntl_modfl(ep->fd, O_NONBLOCK, 0);
         if (status != UCS_OK) {
-            return status;
+            goto err;
         }
     }
 
-    return uct_tcp_cm_conn_complete(ep, NULL);
+    uct_tcp_cm_conn_complete(ep);
+    return;
+
+ err:
+    uct_tcp_ep_set_failed(ep);
 }
 
 /* This function is called from async thread */
