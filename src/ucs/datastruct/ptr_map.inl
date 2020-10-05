@@ -79,6 +79,7 @@ ucs_ptr_map_put(ucs_ptr_map_t *map, void *ptr, int indirect,
     if (ucs_likely(!indirect)) {
         *key = (uintptr_t)ptr;
         ucs_assert(!(*key & UCS_PTR_MAP_KEY_MIN_ALIGN));
+        ucs_assert(*key != 0);
         return UCS_OK;
     }
 
@@ -131,6 +132,7 @@ ucs_ptr_map_extract(ucs_ptr_map_t *map, ucs_ptr_map_key_t key)
     void *value;
 
     if (ucs_likely(!(key & UCS_PTR_MAP_KEY_INDIRECT_FLAG))) {
+        ucs_assert(key != 0);
         return (void*)key;
     }
 

@@ -137,8 +137,11 @@ struct ucp_request {
                 struct {
                     uint64_t               message_id;  /* used to identify matching parts
                                                            of a large message */
+                    ucs_ptr_map_key_t      sreq_id;     /* send request ID on the
+                                                           sender side */
                     ucs_ptr_map_key_t      rreq_id;     /* receive request ID on the
                                                            recv side (used in AM rndv) */
+
                     union {
                         struct {
                             ucp_tag_t      tag;
@@ -204,7 +207,7 @@ struct ucp_request {
                 } rkey_ptr;
 
                 struct {
-                    ucs_ptr_map_key_t req_id;         /* the send request ID on receiver side */
+                    ucs_ptr_map_key_t sreq_id;        /* the send request ID on receiver side */
                     size_t            length;         /* the length of the data that should be fetched
                                                        * from sender side */
                     size_t            offset;         /* offset in recv buffer */
@@ -294,6 +297,7 @@ struct ucp_request {
             uct_tag_context_t     uct_ctx;  /* Transport offload context */
             ssize_t               remaining;  /* How much more data
                                                * to be received */
+            ucs_ptr_map_key_t     rreq_id;  /* the receive request ID on receiver side */
 
             union {
                 struct {

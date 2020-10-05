@@ -565,6 +565,8 @@ static void ucp_tag_offload_rndv_zcopy_completion(uct_completion_t *self)
 {
     ucp_request_t *req = ucs_container_of(self, ucp_request_t,
                                           send.state.uct_comp);
+
+    ucs_assert(!ucp_ep_use_indirect_id(req->send.ep));
     ucp_proto_am_zcopy_req_complete(req, self->status);
 }
 
@@ -585,6 +587,7 @@ ucs_status_t ucp_tag_offload_rndv_zcopy(uct_pending_req_t *self)
         .md_index = ucp_ep_md_index(ep, req->send.lane)
     };
 
+    ucs_assert(!ucp_ep_use_indirect_id(req->send.ep));
     dt_state = req->send.state.dt;
 
     UCS_STATIC_ASSERT(sizeof(ucp_rsc_index_t) <= sizeof(rndv_hdr.md_index));
