@@ -14,6 +14,7 @@
 #include "ucp_context.h"
 
 #include <ucp/wireup/wireup.h>
+#include <ucp/wireup/wireup_cm.h>
 #include <ucs/arch/bitops.h>
 #include <ucs/datastruct/ptr_map.inl>
 
@@ -277,5 +278,12 @@ static UCS_F_ALWAYS_INLINE int ucp_ep_use_indirect_id(ucp_ep_h ep)
 {
     UCS_STATIC_ASSERT(sizeof(ep->flags) <= sizeof(int));
     return ep->flags & UCP_EP_FLAG_INDIRECT_ID;
+}
+
+static UCS_F_ALWAYS_INLINE int
+ucp_ep_sockaddr_is_cm_proto(const ucp_ep_h ep, unsigned ep_init_flags)
+{
+    return ucp_ep_init_flags_has_cm(ep_init_flags) &&
+           !!ucp_worker_num_cm_cmpts(ep->worker);
 }
 #endif

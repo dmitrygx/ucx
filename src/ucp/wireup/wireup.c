@@ -1437,9 +1437,10 @@ unsigned ucp_ep_init_flags(const ucp_worker_h worker,
 {
     unsigned flags = ucp_cm_ep_init_flags(worker, params);
 
-    if ((ucp_worker_sockaddr_is_cm_proto(worker) &&
-         worker->context->config.ext.cm_use_all_devices) ||
-        (params->field_mask & UCP_EP_PARAM_FIELD_SOCK_ADDR)) {
+    if (ucp_worker_sockaddr_is_cm_proto(worker) &&
+        worker->context->config.ext.cm_use_all_devices &&
+        ((params->field_mask & UCP_EP_PARAM_FIELD_SOCK_ADDR) ||
+         (params->field_mask & UCP_EP_PARAM_FIELD_CONN_REQUEST))) {
         flags |= UCP_EP_INIT_CREATE_AM_LANE;
     }
 
