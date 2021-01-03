@@ -117,6 +117,7 @@ ucs_status_t ucp_ep_create_base(ucp_worker_h worker, const char *peer_name,
     ucp_ep_ext_control(ep)->err_cb       = NULL;
     ucp_ep_ext_control(ep)->local_ep_id  =
     ucp_ep_ext_control(ep)->remote_ep_id = UCP_EP_ID_INVALID;
+    ucp_ep_ext_control(ep)->ref_cnt      = 1;
 
     UCS_STATIC_ASSERT(sizeof(ucp_ep_ext_gen(ep)->ep_match) >=
                       sizeof(ucp_ep_ext_gen(ep)->flush_state));
@@ -803,6 +804,10 @@ static void ucp_destroyed_ep_pending_purge(uct_pending_req_t *self, void *arg)
 
 void ucp_ep_destroy_internal(ucp_ep_h ep)
 {
+    if (--ucp_ep_ext_control(ep)->ref_cnt != 0) {
+        return;
+    }
+
     ucs_debug("ep %p: destroy", ep);
     ucp_ep_cleanup_lanes(ep);
     if (ep->flags & UCP_EP_FLAG_INTERNAL) {
@@ -1011,7 +1016,7 @@ void ucp_ep_discard_lanes(ucp_ep_h ep, ucs_status_t status)
 
         ucs_trace("ep %p: discard uct_ep[%d]=%p", ep, lane,
                   ep->uct_eps[lane]);
-        ucp_worker_discard_uct_ep(ep->worker, ep->uct_eps[lane],
+        ucp_worker_discard_uct_ep(ep, ep->uct_eps[lane],
                                   UCT_FLUSH_FLAG_CANCEL,
                                   ucp_ep_err_pending_purge,
                                   UCS_STATUS_PTR(status));

@@ -392,6 +392,8 @@ typedef struct {
  * Endpoint extension for control data path
  */
 typedef struct {
+    uint8_t                       ref_cnt;       /* Reference counter: 0 - it is
+                                                    allowed to destroy EP */
     ucs_ptr_map_key_t             local_ep_id;   /* Local EP ID */
     ucs_ptr_map_key_t             remote_ep_id;  /* Remote EP ID */
     ucp_err_handler_cb_t          err_cb;        /* Error handler */

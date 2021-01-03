@@ -155,8 +155,7 @@ protected:
             uct_ep_h discard_ep        = *iter;
             unsigned purged_reqs_count = 0;
 
-            ucp_worker_discard_uct_ep(sender().worker(), discard_ep,
-                                      UCT_FLUSH_FLAG_LOCAL,
+            ucp_worker_discard_uct_ep(&ucp_ep, discard_ep, UCT_FLUSH_FLAG_LOCAL,
                                       ep_pending_purge_count_reqs_cb,
                                       &purged_reqs_count);
 
