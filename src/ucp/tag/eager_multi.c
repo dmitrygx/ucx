@@ -184,7 +184,7 @@ static size_t ucp_eager_sync_bcopy_pack_first(void *dest, void *arg)
 
     ucp_proto_eager_set_first_hdr(req, &hdr->super);
     hdr->req.ep_id  = ucp_send_request_get_ep_remote_id(req);
-    hdr->req.req_id = req->send.msg_proto.tag.req_id;
+    hdr->req.req_id = req->req_id.local;
     return sizeof(*hdr) + ucp_proto_multi_data_pack(pack_ctx, hdr + 1);
 }
 
@@ -229,7 +229,7 @@ static UCS_F_ALWAYS_INLINE void
 ucp_proto_eager_sync_bcopy_request_init(ucp_request_t *req)
 {
     ucp_proto_eager_multi_request_init(req);
-    req->send.msg_proto.tag.req_id = ucp_send_request_get_id(req);
+    req->req_id.local = ucp_send_request_get_id(req);
 }
 
 static ucs_status_t

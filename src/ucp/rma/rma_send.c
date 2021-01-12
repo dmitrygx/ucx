@@ -98,7 +98,7 @@ ucs_status_t ucp_rma_request_advance(ucp_request_t *req, ssize_t frag_length,
         /* bcopy is the fast path */
         if (ucs_likely(req->send.state.uct_comp.count == 0)) {
             if (req_id != UCP_REQUEST_ID_INVALID) {
-                ucp_worker_del_request_id(req->send.ep->worker, req, req_id);
+                ucp_worker_del_request_id(req->send.ep->worker, req);
             }
             ucp_request_send_buffer_dereg(req);
             ucp_request_complete_send(req, UCS_OK);
@@ -137,6 +137,7 @@ ucp_rma_request_init(ucp_request_t *req, ucp_ep_h ep, const void *buffer,
                      uct_pending_callback_t cb, size_t zcopy_thresh, int flags)
 {
     req->flags                = flags; /* Implicit release */
+    req->req_id.local         = UCP_REQUEST_ID_INVALID;
     req->send.ep              = ep;
     req->send.buffer          = (void*)buffer;
     req->send.datatype        = ucp_dt_make_contig(1);

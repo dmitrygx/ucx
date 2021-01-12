@@ -11,6 +11,8 @@
 #include "tag_rndv.h"
 #include "tag_match.inl"
 
+#include <ucp/rndv/rndv.inl>
+
 
 void ucp_tag_rndv_matched(ucp_worker_h worker, ucp_request_t *rreq,
                           const ucp_tag_rndv_rts_hdr_t *rts_hdr)
@@ -81,16 +83,8 @@ UCS_PROFILE_FUNC(ucs_status_t, ucp_proto_progress_rndv_rts, (self),
                  uct_pending_req_t *self)
 {
     ucp_request_t *sreq = ucs_container_of(self, ucp_request_t, send.uct);
-    size_t packed_rkey_size;
-    ucs_status_t status;
 
-    /* send the RTS. the pack_cb packs all the necessary fields in the RTS */
-    packed_rkey_size = ucp_ep_config(sreq->send.ep)->rndv.rkey_size;
-
-    status = ucp_do_am_single(self, UCP_AM_ID_RNDV_RTS, ucp_tag_rndv_rts_pack,
-                              sizeof(ucp_tag_rndv_rts_hdr_t) +
-                              packed_rkey_size);
-    return ucp_rndv_rts_handle_status_from_pending(sreq, status);
+    return ucp_rndv_send_rts(sreq, ucp_tag_rndv_rts_pack, 0);
 }
 
 ucs_status_t ucp_tag_send_start_rndv(ucp_request_t *sreq)
@@ -108,7 +102,7 @@ ucs_status_t ucp_tag_send_start_rndv(ucp_request_t *sreq)
         return status;
     }
 
-    ucp_send_request_set_id(sreq);
+    sreq->req_id.local = ucp_send_request_get_id(sreq);
 
     if (ucp_ep_config_key_has_tag_lane(&ucp_ep_config(ep)->key)) {
         status = ucp_tag_offload_start_rndv(sreq);

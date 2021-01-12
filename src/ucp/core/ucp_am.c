@@ -16,6 +16,7 @@
 #include <ucp/core/ucp_worker.h>
 #include <ucp/core/ucp_context.h>
 #include <ucp/rndv/rndv.h>
+#include <ucp/rndv/rndv.inl>
 #include <ucp/proto/proto_am.inl>
 #include <ucp/dt/dt.h>
 #include <ucp/dt/dt.inl>
@@ -148,8 +149,9 @@ static void ucp_am_rndv_send_ats(ucp_worker_h worker,
         return;
     }
 
-    req->send.ep = ep;
-    req->flags   = 0;
+    req->send.ep      = ep;
+    req->flags        = 0;
+    req->req_id.local = UCP_REQUEST_ID_INVALID;
 
     ucp_rndv_req_send_ack(req, NULL, rts->super.sreq.req_id, status,
                           UCP_AM_ID_RNDV_ATS, "send_ats");
@@ -738,17 +740,9 @@ UCS_PROFILE_FUNC(ucs_status_t, ucp_proto_progress_am_rndv_rts, (self),
                  uct_pending_req_t *self)
 {
     ucp_request_t *sreq = ucs_container_of(self, ucp_request_t, send.uct);
-    size_t max_rts_size;
-    ucs_status_t status;
 
-    /* RTS consists of: AM RTS header, packed rkeys and user header */
-    max_rts_size = sizeof(ucp_am_rndv_rts_hdr_t) +
-                   ucp_ep_config(sreq->send.ep)->rndv.rkey_size +
-                   sreq->send.msg_proto.am.header_length;
-
-    status = ucp_do_am_single(self, UCP_AM_ID_RNDV_RTS, ucp_am_rndv_rts_pack,
-                              max_rts_size);
-    return ucp_rndv_rts_handle_status_from_pending(sreq, status);
+    return ucp_rndv_send_rts(sreq, ucp_am_rndv_rts_pack,
+                             sreq->send.msg_proto.am.header_length);
 }
 
 static ucs_status_t ucp_am_send_start_rndv(ucp_request_t *sreq)
@@ -758,12 +752,12 @@ static ucs_status_t ucp_am_send_start_rndv(ucp_request_t *sreq)
                   sreq->send.length);
     UCS_PROFILE_REQUEST_EVENT(sreq, "start_rndv", sreq->send.length);
 
-    ucp_send_request_set_id(sreq);
-
     /* Note: no need to call ucp_ep_resolve_remote_id() here, because it
      * was done in ucp_am_send_nbx
      */
+    sreq->req_id.local  = ucp_send_request_get_id(sreq);
     sreq->send.uct.func = ucp_proto_progress_am_rndv_rts;
+
     return ucp_rndv_reg_send_buffer(sreq);
 }
 
@@ -774,6 +768,7 @@ static void ucp_am_send_req_init(ucp_request_t *req, ucp_ep_h ep,
                                  ucs_memory_type_t mem_type)
 {
     req->flags                           = UCP_REQUEST_FLAG_SEND_AM;
+    req->req_id.local                    = UCP_REQUEST_ID_INVALID;
     req->send.ep                         = ep;
     req->send.msg_proto.am.am_id         = am_id;
     req->send.msg_proto.am.flags         = flags;
@@ -1066,6 +1061,7 @@ UCS_PROFILE_FUNC(ucs_status_ptr_t, ucp_am_recv_data_nbx,
     /* Initialize receive request */
     datatype           = ucp_request_param_datatype(param);
     req->status        = UCS_OK;
+    req->req_id.local  = UCP_REQUEST_ID_INVALID;
     req->recv.worker   = worker;
     req->recv.buffer   = buffer;
     req->flags         = UCP_REQUEST_FLAG_RECV_AM;

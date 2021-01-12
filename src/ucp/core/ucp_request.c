@@ -342,7 +342,7 @@ static UCS_F_ALWAYS_INLINE void ucp_send_request_init_id(ucp_request_t *req)
 {
     if (req->flags & UCP_REQUEST_FLAG_SYNC) {
         ucs_assert(req->flags & UCP_REQUEST_FLAG_SEND_TAG);
-        ucp_send_request_set_id(req);
+        req->req_id.local = ucp_send_request_get_id(req);
     }
 }
 

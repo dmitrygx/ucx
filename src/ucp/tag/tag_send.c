@@ -129,6 +129,7 @@ ucp_tag_send_req_init(ucp_request_t* req, ucp_ep_h ep, const void* buffer,
                       size_t count, ucp_tag_t tag, uint32_t flags)
 {
     req->flags                  = flags | UCP_REQUEST_FLAG_SEND_TAG;
+    req->req_id.local           = UCP_REQUEST_ID_INVALID;
     req->send.ep                = ep;
     req->send.buffer            = (void*)buffer;
     req->send.datatype          = datatype;

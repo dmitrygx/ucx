@@ -1057,20 +1057,6 @@ protected:
 
     typedef void (*stop_cb_t)(void *arg);
 
-    void sreq_mem_dereg(void *sreq) {
-        if (sreq == NULL) {
-            /* If send request is NULL, it means that send operation completed
-             * immediately */
-            return;
-        }
-
-        /* TODO: remove memory deregistration, when UCP requests tracking is added */
-        ucp_request_t *req = static_cast<ucp_request_t*>(sreq) - 1;
-        EXPECT_EQ(sender().ucph(), req->send.ep->worker->context);
-        ucp_request_memory_dereg(sender().ucph(), req->send.datatype,
-                                 &req->send.state.dt, req);
-    }
-
     void* do_unexp_recv(std::string &recv_buf, size_t size, void *sreq,
                         bool err_handling, bool send_stop, bool recv_stop) {
         ucp_tag_recv_info_t recv_info = {};
@@ -1085,16 +1071,12 @@ protected:
         EXPECT_EQ(size, recv_info.length);
         EXPECT_EQ(0,    recv_info.sender_tag);
 
-        if (err_handling) {
-            if (recv_stop) {
-                disconnect(*this, receiver());
-            }
+        if (recv_stop) {
+            disconnect(*this, receiver());
+        }
 
-            sreq_mem_dereg(sreq);
-
-            if (send_stop) {
-                disconnect(*this, sender());
-            }
+        if (send_stop) {
+            disconnect(*this, sender());
         }
 
         ucp_request_param_t recv_param = {};
@@ -1106,33 +1088,6 @@ protected:
                                              rtag_complete_err_handling_cb);
         return ucp_tag_msg_recv_nbx(receiver().worker(), &recv_buf[0], size, message,
                                     &recv_param);
-    }
-
-    void sreq_release(void *sreq) {
-        if ((sreq == NULL) || !UCS_PTR_IS_PTR(sreq)) {
-            return;
-        }
-
-        if (ucp_request_check_status(sreq) == UCS_INPROGRESS) {
-            ucp_request_t *req = (ucp_request_t*)sreq - 1;
-            req->flags        |= UCP_REQUEST_FLAG_COMPLETED;
-
-            ucp_request_t *req_from_id;
-            ucs_status_t status = ucp_worker_get_request_by_id(
-                    sender().worker(), req->send.msg_proto.sreq_id,
-                    &req_from_id);
-            if (status == UCS_OK) {
-                EXPECT_EQ(req, req_from_id);
-                /* check PTR MAP flag only in this way, since it is debug
-                 * only flag has 0 value in a release mode */
-                EXPECT_TRUE((req->flags & UCP_REQUEST_FLAG_IN_PTR_MAP) ==
-                            UCP_REQUEST_FLAG_IN_PTR_MAP);
-                ucp_worker_del_request_id(sender().worker(), req,
-                                          req->send.msg_proto.sreq_id);
-            }
-        }
-
-        ucp_request_release(sreq);
     }
 
     void extra_send_before_disconnect(entity &e, const std::string &send_buf,
@@ -1194,14 +1149,7 @@ protected:
                 reqs.push_back(rreq);
             }
 
-            if (!err_handling_test) {
-                requests_wait(reqs);
-            } else {
-                /* TODO: add waiting for send request completion, when UCP requests
-                 * tracking is added */
-                sreq_release(sreq);
-                request_wait(rreq);
-            }
+            requests_wait(reqs);
 
             if (!err_handling_test) {
                 compare_buffers(send_buf, recv_buf);

@@ -101,23 +101,22 @@ ucp_worker_get_request_by_id(ucp_worker_h worker, ucs_ptr_map_key_t id,
 }
 
 static UCS_F_ALWAYS_INLINE void
-ucp_worker_request_check_flags(const ucp_request_t *request,
-                               ucs_ptr_map_key_t id)
+ucp_worker_request_check_flags(const ucp_request_t *request)
 {
     ucs_assert((request != NULL) &&
                ((request->flags & UCP_REQUEST_FLAG_IN_PTR_MAP) ||
-                !ucs_ptr_map_key_indirect(id)));
+                !ucs_ptr_map_key_indirect(request->req_id.local)));
 }
 
 static UCS_F_ALWAYS_INLINE void
-ucp_worker_del_request_id(ucp_worker_h worker, ucp_request_t *request,
-                          ucs_ptr_map_key_t id)
+ucp_worker_del_request_id(ucp_worker_h worker, ucp_request_t *request)
 {
     ucs_status_t status UCS_V_UNUSED;
 
-    ucp_worker_request_check_flags(request, id);
-    status = ucs_ptr_map_del(&worker->ptr_map, id);
-    request->flags &= ~UCP_REQUEST_FLAG_IN_PTR_MAP;
+    ucp_worker_request_check_flags(request);
+    status                = ucs_ptr_map_del(&worker->ptr_map, request->req_id.local);
+    request->flags       &= ~UCP_REQUEST_FLAG_IN_PTR_MAP;
+    request->req_id.local = UCP_REQUEST_ID_INVALID;
     ucs_assert(status == UCS_OK);
 }
 
@@ -134,7 +133,7 @@ ucp_worker_extract_request_by_id(ucp_worker_h worker, ucs_ptr_map_key_t id,
     }
 
     *req_p = (ucp_request_t*)ptr;
-    ucp_worker_request_check_flags(*req_p, id);
+    ucp_worker_request_check_flags(*req_p);
     (*req_p)->flags &= ~UCP_REQUEST_FLAG_IN_PTR_MAP;
     return UCS_OK;
 }

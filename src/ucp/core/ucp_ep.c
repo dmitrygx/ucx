@@ -119,6 +119,8 @@ ucs_status_t ucp_ep_create_base(ucp_worker_h worker, const char *peer_name,
     ucp_ep_ext_control(ep)->local_ep_id  =
     ucp_ep_ext_control(ep)->remote_ep_id = UCP_EP_ID_INVALID;
 
+    ucs_hlist_head_init(&ucp_ep_ext_gen(ep)->proto_reqs);
+
     UCS_STATIC_ASSERT(sizeof(ucp_ep_ext_gen(ep)->ep_match) >=
                       sizeof(ucp_ep_ext_gen(ep)->flush_state));
     memset(&ucp_ep_ext_gen(ep)->ep_match, 0,
@@ -164,6 +166,7 @@ void ucp_ep_destroy_base(ucp_ep_h ep)
 
     UCS_STATS_NODE_FREE(ep->stats);
     ucs_free(ucp_ep_ext_control(ep));
+    ucp_ep_reqs_purge(ep, UCS_ERR_CANCELED, 0);
     ucs_strided_alloc_put(&ep->worker->ep_alloc, ep);
 }
 
@@ -2383,5 +2386,79 @@ void ucp_ep_do_keepalive(ucp_ep_h ep, ucp_lane_map_t *lane_map)
             ucs_warn("unexpected return status from uct_ep_check(ep=%p): %s",
                      ep, ucs_status_string(status));
         }
+    }
+}
+
+static void ucp_ep_req_purge(ucp_ep_h ucp_ep, ucp_request_t *req,
+                             ucs_status_t status, int recursive)
+{
+    ucp_request_t *req_by_id = NULL;
+
+    if (ucp_worker_get_request_by_id(ucp_ep->worker, req->req_id.local,
+                                     &req_by_id) == UCS_OK) {
+        ucs_assert(req == req_by_id);
+        ucp_worker_del_request_id(ucp_ep->worker, req);
+    }
+
+    if (req->flags & (UCP_REQUEST_FLAG_SEND_AM | UCP_REQUEST_FLAG_SEND_TAG)) {
+        ucs_assert(req->super_req == NULL);
+        ucs_assert(!(req->flags & UCP_REQUEST_FLAG_OFFLOADED));
+        ucp_request_complete_and_dereg_send(req, status);
+    } else if (req->flags &
+               (UCP_REQUEST_FLAG_RECV_AM | UCP_REQUEST_FLAG_RECV_TAG)) {
+        ucs_assert(req->super_req == NULL);
+        ucp_request_complete_and_dereg_recv_rndv(req, status);
+    } else if (req->flags & UCP_REQUEST_FLAG_RNDV_FRAG) {
+        ucs_assert(req->super_req != NULL);
+        ucs_assert(recursive); /* mustn't be directly contained in an EP list
+                                * of tracking requests */
+
+        /* it means that purging started from a request responsible for sending
+         * RTR, so a request is responsible for copying data from staging buffer
+         * and it uses a receive part of a request */
+        req->super_req->recv.remaining -= req->recv.length;
+        if (req->super_req->recv.remaining == 0) {
+            ucp_ep_req_purge(ucp_ep, req->super_req, status, 1);
+        }
+        ucp_request_put(req);
+    } else {
+        ucs_assert(req->super_req != NULL);
+        ucp_ep_req_purge(ucp_ep, req->super_req, status, 1);
+        ucp_request_put(req);
+    }
+}
+
+void ucp_ep_reqs_purge(ucp_ep_h ucp_ep, ucs_status_t status,
+                       int purge_flush_reqs)
+{
+    uct_ep_h wireup_ep;
+    ucp_request_t *req;
+
+    while (!ucs_hlist_is_empty(&ucp_ep_ext_gen(ucp_ep)->proto_reqs)) {
+        req = ucs_hlist_head_elem(&ucp_ep_ext_gen(ucp_ep)->proto_reqs,
+                                  ucp_request_t, send.list_elem);
+        ucp_request_send_untrack(req);
+        ucp_ep_req_purge(ucp_ep, req, status, 0);
+    }
+
+    if (/* no need to purge flush requests */
+        !purge_flush_reqs ||
+        /* flush state is not valid yet or already invalidated */
+        (ucp_ep->flags &
+         (UCP_EP_FLAG_ON_MATCH_CTX | UCP_EP_FLAG_CLOSE_REQ_VALID))) {
+        return;
+    }
+
+    wireup_ep = (!ucp_ep_has_cm_lane(ucp_ep)) ?
+                ucp_ep->uct_eps[ucp_ep_get_wireup_msg_lane(ucp_ep)] :
+                ucp_ep->uct_eps[ucp_ep_get_cm_lane(ucp_ep)];
+    if ((wireup_ep != NULL) && ucp_wireup_ep_test(wireup_ep)) {
+        /* flush state is not valid yet */
+        return;
+    }
+
+    ucs_hlist_for_each_extract(req, &ucp_ep_flush_state(ucp_ep)->reqs,
+                               send.list_elem) {
+        ucp_ep_flush_request_ff(req, status);
     }
 }

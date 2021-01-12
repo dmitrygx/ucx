@@ -52,7 +52,7 @@ static size_t ucp_tag_pack_eager_sync_only_dt(void *dest, void *arg)
 
     hdr->super.super.tag = req->send.msg_proto.tag.tag;
     hdr->req.ep_id       = ucp_send_request_get_ep_remote_id(req);
-    hdr->req.req_id      = req->send.msg_proto.sreq_id;
+    hdr->req.req_id      = req->req_id.local;
 
     return ucp_tag_pack_eager_common(req, hdr + 1, req->send.length,
                                      sizeof(*hdr), 1);
@@ -92,7 +92,7 @@ static size_t ucp_tag_pack_eager_sync_first_dt(void *dest, void *arg)
     hdr->super.total_len       = req->send.length;
     hdr->req.ep_id             = ucp_send_request_get_ep_remote_id(req);
     hdr->super.msg_id          = req->send.msg_proto.message_id;
-    hdr->req.req_id            = req->send.msg_proto.sreq_id;
+    hdr->req.req_id            = req->req_id.local;
 
     return ucp_tag_pack_eager_common(req, hdr + 1, length, sizeof(*hdr), 1);
 }
@@ -199,7 +199,13 @@ void ucp_tag_eager_sync_completion(ucp_request_t *req, uint32_t flag,
 
     ucs_assertv(!(req->flags & flag), "req->flags=%d flag=%d", req->flags, flag);
     req->flags |= flag;
+
+    if (flag & UCP_REQUEST_FLAG_LOCAL_COMPLETED) {
+        ucp_request_send_track(req);
+    }
+
     if (ucs_test_all_flags(req->flags, all_completed)) {
+        ucp_request_send_untrack(req);
         ucp_request_complete_send(req, status);
     }
 }
@@ -253,7 +259,7 @@ static ucs_status_t ucp_tag_eager_sync_zcopy_single(uct_pending_req_t *self)
 
     hdr.super.super.tag = req->send.msg_proto.tag.tag;
     hdr.req.ep_id       = ucp_send_request_get_ep_remote_id(req);
-    hdr.req.req_id      = req->send.msg_proto.sreq_id;
+    hdr.req.req_id      = req->req_id.local;
 
     return ucp_do_am_zcopy_single(self, UCP_AM_ID_EAGER_SYNC_ONLY, &hdr,
                                   sizeof(hdr), NULL, 0ul,
@@ -269,7 +275,7 @@ static ucs_status_t ucp_tag_eager_sync_zcopy_multi(uct_pending_req_t *self)
     first_hdr.super.super.super.tag = req->send.msg_proto.tag.tag;
     first_hdr.super.total_len       = req->send.length;
     first_hdr.req.ep_id             = ucp_send_request_get_ep_remote_id(req);
-    first_hdr.req.req_id            = req->send.msg_proto.sreq_id;
+    first_hdr.req.req_id            = req->req_id.local;
     first_hdr.super.msg_id          = req->send.msg_proto.message_id;
     middle_hdr.msg_id               = req->send.msg_proto.message_id;
     middle_hdr.offset               = req->send.state.dt.offset;
@@ -322,8 +328,8 @@ void ucp_tag_eager_sync_send_ack(ucp_worker_h worker, void *hdr, uint16_t recv_f
         ucs_fatal("could not allocate request");
     }
 
-    req->send.proto.am_id         = UCP_AM_ID_EAGER_SYNC_ACK;
-    req->send.proto.remote_req_id = reqhdr->req_id;
+    req->send.proto.am_id = UCP_AM_ID_EAGER_SYNC_ACK;
+    req->req_id.remote    = reqhdr->req_id;
 
     ucs_trace_req("send_sync_ack req %p ep %p", req, req->send.ep);
 
