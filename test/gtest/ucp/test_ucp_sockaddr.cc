@@ -1090,7 +1090,7 @@ protected:
                 disconnect(*this, receiver());
             }
 
-            sreq_mem_dereg(sreq);
+            //sreq_mem_dereg(sreq);
 
             if (recv_stop) {
                 sender().disconnect_nb(0, 0, UCP_EP_CLOSE_MODE_FORCE);
@@ -1191,7 +1191,8 @@ protected:
             } else {
                 /* TODO: add waiting for send request completion, when UCP requests
                  * tracking is added */
-                sreq_release(sreq);
+                //sreq_release(sreq);
+                request_wait(sreq);
                 request_wait(rreq);
             }
 

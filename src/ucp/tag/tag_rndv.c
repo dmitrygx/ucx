@@ -11,6 +11,8 @@
 #include "tag_rndv.h"
 #include "tag_match.inl"
 
+#include <ucp/rndv/rndv.inl>
+
 
 void ucp_tag_rndv_matched(ucp_worker_h worker, ucp_request_t *rreq,
                           const ucp_tag_rndv_rts_hdr_t *rts_hdr)
@@ -82,11 +84,19 @@ UCS_PROFILE_FUNC(ucs_status_t, ucp_proto_progress_rndv_rts, (self),
 {
     ucp_request_t *sreq = ucs_container_of(self, ucp_request_t, send.uct);
     size_t packed_rkey_size;
+    ucs_status_t status;
+
+    ucp_request_send_track(sreq);
 
     /* send the RTS. the pack_cb will pack all the necessary fields in the RTS */
     packed_rkey_size = ucp_ep_config(sreq->send.ep)->rndv.rkey_size;
-    return ucp_do_am_single(self, UCP_AM_ID_RNDV_RTS, ucp_tag_rndv_rts_pack,
-                            sizeof(ucp_tag_rndv_rts_hdr_t) + packed_rkey_size);
+    status           = ucp_do_am_single(self, UCP_AM_ID_RNDV_RTS, ucp_tag_rndv_rts_pack,
+                                        sizeof(ucp_tag_rndv_rts_hdr_t) + packed_rkey_size);
+    if (status != UCS_OK) {
+        ucp_request_send_untrack(sreq);
+    }
+
+    return status;
 }
 
 ucs_status_t ucp_tag_send_start_rndv(ucp_request_t *sreq)

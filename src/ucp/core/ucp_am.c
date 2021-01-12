@@ -16,6 +16,7 @@
 #include <ucp/core/ucp_worker.h>
 #include <ucp/core/ucp_context.h>
 #include <ucp/rndv/rndv.h>
+#include <ucp/rndv/rndv.inl>
 #include <ucp/proto/proto_am.inl>
 #include <ucp/dt/dt.h>
 #include <ucp/dt/dt.inl>

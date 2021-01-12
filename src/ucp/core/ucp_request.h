@@ -56,11 +56,13 @@ enum {
 #if UCS_ENABLE_ASSERT
     UCP_REQUEST_FLAG_STREAM_RECV          = UCS_BIT(18),
     UCP_REQUEST_DEBUG_FLAG_EXTERNAL       = UCS_BIT(19),
-    UCP_REQUEST_FLAG_IN_PTR_MAP           = UCS_BIT(20)
+    UCP_REQUEST_FLAG_IN_PTR_MAP           = UCS_BIT(20),
+    UCP_REQUEST_DEBUG_FLAG_TRACK          = UCS_BIT(21)
 #else
     UCP_REQUEST_FLAG_STREAM_RECV          = 0,
     UCP_REQUEST_DEBUG_FLAG_EXTERNAL       = 0,
-    UCP_REQUEST_FLAG_IN_PTR_MAP           = 0
+    UCP_REQUEST_FLAG_IN_PTR_MAP           = 0,
+    UCP_REQUEST_DEBUG_FLAG_TRACK          = 0
 #endif
 };
 
@@ -142,6 +144,9 @@ struct ucp_request {
                 };
                 uct_completion_t         uct_comp; /* UCT completion used by flush */
             } state;
+
+            ucs_hlist_link_t             list_elem;     /* Element in the per-EP list of UCP
+                                                           requests (protocol or flush) */
 
             union {
                 ucp_wireup_msg_t  wireup;
@@ -231,7 +236,6 @@ struct ucp_request {
 
                 struct {
                     ucp_request_callback_t flushed_cb;/* Called when flushed */
-                    ucs_queue_elem_t       queue;     /* Queue element in proto_status */
                     unsigned               uct_flags; /* Flags to pass to @ref uct_ep_flush */
                     uct_worker_cb_id_t     prog_id;   /* Progress callback ID */
                     uint32_t               cmpl_sn;   /* Sequence number of the remote completion

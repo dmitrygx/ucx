@@ -371,7 +371,7 @@ typedef struct ucp_ep {
  * Status of protocol-level remote completions
  */
 typedef struct {
-    ucs_queue_head_t              reqs;         /* Queue of flush requests which
+    ucs_hlist_head_t              reqs;         /* Queue of flush requests which
                                                    are waiting for remote completion */
     uint32_t                      send_sn;      /* Sequence number of sent operations */
     uint32_t                      cmpl_sn;      /* Sequence number of completions */
@@ -404,6 +404,9 @@ typedef struct {
 typedef struct {
     void                          *user_data;    /* User data associated with ep */
     ucs_list_link_t               ep_list;       /* List entry in worker's all eps list */
+    ucs_hlist_head_t              proto_reqs;    /* List of requests which are waiting
+                                                    for remote completion */
+
     /* Endpoint match context and remote completion status are mutually exclusive,
      * since remote completions are counted only after the endpoint is already
      * matched to a remote peer.
@@ -594,5 +597,22 @@ void ucp_ep_discard_lanes(ucp_ep_h ucp_ep, ucs_status_t status);
  *                          has no resources.
  */
 void ucp_ep_do_keepalive(ucp_ep_h ep, ucp_lane_map_t *lane_map);
+
+/**
+ * @brief Purge protocol requests which are waiting for completions/acknowledgments
+ *        and not posted to UCT.
+ *
+ * @param [in]     ucp_ep   Endpoint object on which requests should be purged.
+ * @param [in]     status   Completion status.
+ */
+void ucp_ep_proto_reqs_purge(ucp_ep_h ucp_ep, ucs_status_t status);
+
+/**
+ * @brief Purge all (protocol and flush) requests scheduled on a given UCP endpoint.
+ *
+ * @param [in]     ucp_ep   Endpoint object on which requests should be purged.
+ * @param [in]     status   Completion status.
+ */
+void ucp_ep_reqs_purge(ucp_ep_h ucp_ep, ucs_status_t status);
 
 #endif

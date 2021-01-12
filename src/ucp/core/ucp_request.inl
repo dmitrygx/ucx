@@ -153,6 +153,7 @@ ucp_request_put(ucp_request_t *req)
 {
     ucs_trace_req("put request %p", req);
     ucs_assert(!(req->flags & UCP_REQUEST_FLAG_IN_PTR_MAP));
+    ucs_assert(!(req->flags & UCP_REQUEST_DEBUG_FLAG_TRACK));
     UCS_PROFILE_REQUEST_FREE(req);
     ucs_mpool_put_inline(req);
 }
@@ -806,5 +807,52 @@ ucp_request_invoke_uct_completion(ucp_request_t *req, ucs_status_t status)
 {
     ucp_invoke_uct_completion(&req->send.state.uct_comp, status);
 }
+
+static UCS_F_ALWAYS_INLINE void
+ucp_request_complete_and_dereg_send(ucp_request_t *sreq, ucs_status_t status)
+{
+    ucp_request_send_generic_dt_finish(sreq);
+    ucp_request_send_buffer_dereg(sreq);
+    ucp_request_complete_send(sreq, status);
+}
+
+static UCS_F_ALWAYS_INLINE void
+ucp_request_complete_recv_rndv(ucp_request_t *req, ucs_status_t status)
+{
+    if (req->flags & UCP_REQUEST_FLAG_RECV_AM) {
+        ucp_request_complete_am_recv(req, status);
+    } else {
+        ucs_assert(req->flags & UCP_REQUEST_FLAG_RECV_TAG);
+        ucp_request_complete_tag_recv(req, status);
+    }
+}
+
+static UCS_F_ALWAYS_INLINE void
+ucp_request_complete_and_dereg_recv_rndv(ucp_request_t *rreq, ucs_status_t status)
+{
+    ucp_request_recv_buffer_dereg(rreq);
+    ucp_request_complete_recv_rndv(rreq, status);
+}
+
+static UCS_F_ALWAYS_INLINE void ucp_request_send_track(ucp_request_t *req)
+{
+    ucs_assert(req->send.ep != NULL);
+    ucs_assert(!(req->flags & UCP_REQUEST_DEBUG_FLAG_TRACK));
+
+    ucs_hlist_add_tail(&ucp_ep_ext_gen(req->send.ep)->proto_reqs,
+                       &req->send.list_elem);
+    req->flags |= UCP_REQUEST_DEBUG_FLAG_TRACK;
+}
+
+static UCS_F_ALWAYS_INLINE void ucp_request_send_untrack(ucp_request_t *req)
+{
+    ucs_assert(req->send.ep != NULL);
+    ucs_assert(req->flags & UCP_REQUEST_DEBUG_FLAG_TRACK);
+
+    ucs_hlist_del(&ucp_ep_ext_gen(req->send.ep)->proto_reqs,
+                  &req->send.list_elem);
+    req->flags &= ~UCP_REQUEST_DEBUG_FLAG_TRACK;
+}
+
 
 #endif
