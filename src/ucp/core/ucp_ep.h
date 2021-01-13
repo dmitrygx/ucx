@@ -283,8 +283,10 @@ struct ucp_ep_config {
         ucp_lane_index_t  get_zcopy_lanes[UCP_MAX_LANES];
         /* Lanes for PUT zcopy */
         ucp_lane_index_t  put_zcopy_lanes[UCP_MAX_LANES];
-        /* BW based scale factor */
-        double            scale[UCP_MAX_LANES];
+        /* BW based scale factor for GET zcopy lanes */
+        double            get_zcopy_scale[UCP_MAX_LANES];
+        /* BW based scale factor for PUT zcopy lanes */
+        double            put_zcopy_scale[UCP_MAX_LANES];
     } rndv;
 
     struct {
