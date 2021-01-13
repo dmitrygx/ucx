@@ -2818,6 +2818,7 @@ ucp_worker_discard_tl_uct_ep(ucp_ep_h ucp_ep, uct_ep_h uct_ep,
 
     ucs_assert(!ucp_wireup_ep_test(uct_ep));
     req->flags                              = 0;
+    req->req_id.local                       = UCP_REQUEST_ID_INVALID;
     req->send.ep                            = ucp_ep;
     req->send.uct.func                      = ucp_worker_discard_uct_ep_pending_cb;
     req->send.state.uct_comp.func           = ucp_worker_discard_uct_ep_flush_comp;

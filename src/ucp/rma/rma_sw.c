@@ -60,7 +60,7 @@ static size_t ucp_rma_sw_get_req_pack_cb(void *dest, void *arg)
     getreqh->length     = req->send.length;
     getreqh->req.ep_id  = ucp_send_request_get_ep_remote_id(req);
     getreqh->mem_type   = req->send.rma.rkey->mem_type;
-    getreqh->req.req_id = req->send.rma.sreq_id;
+    getreqh->req.req_id = req->req_id.local;
     ucs_assert(getreqh->req.ep_id != UCP_EP_ID_INVALID);
 
     return sizeof(*getreqh);
@@ -72,15 +72,14 @@ static ucs_status_t ucp_rma_sw_progress_get(uct_pending_req_t *self)
     ssize_t packed_len = 0;
     ucs_status_t status;
 
-    req->send.lane        = ucp_ep_get_am_lane(req->send.ep);
-    req->send.rma.sreq_id = ucp_send_request_get_id(req);
+    req->send.lane    = ucp_ep_get_am_lane(req->send.ep);
+    req->req_id.local = ucp_send_request_get_id(req);
 
     status = ucp_rma_sw_do_am_bcopy(req, UCP_AM_ID_GET_REQ, req->send.lane,
                                     ucp_rma_sw_get_req_pack_cb, req,
                                     &packed_len);
     if (status != UCS_OK) {
-        ucp_worker_del_request_id(req->send.ep->worker, req,
-                                  req->send.rma.sreq_id);
+        ucp_worker_del_request_id(req->send.ep->worker, req);
         if (ucs_unlikely(status != UCS_ERR_NO_RESOURCE)) {
             /* completed with error */
             ucp_request_complete_send(req, status);
@@ -138,6 +137,7 @@ void ucp_rma_sw_send_cmpl(ucp_ep_h ep)
     }
 
     req->flags         = 0;
+    req->req_id.local  = UCP_REQUEST_ID_INVALID;
     req->send.ep       = ep;
     req->send.uct.func = ucp_progress_rma_cmpl;
     ucp_request_send(req, 0);
@@ -186,7 +186,7 @@ static size_t ucp_rma_sw_pack_get_reply(void *dest, void *arg)
     length      = ucs_min(req->send.length,
                           ucp_ep_config(req->send.ep)->am.max_bcopy -
                           sizeof(*hdr));
-    hdr->req_id = req->send.get_reply.req_id;
+    hdr->req_id = req->req_id.remote;
     ucp_dt_contig_pack(req->send.ep->worker, hdr + 1, req->send.buffer, length,
                        req->send.mem_type);
 
@@ -239,16 +239,18 @@ UCS_PROFILE_FUNC(ucs_status_t, ucp_get_req_handler, (arg, data, length, am_flags
         return UCS_OK;
     }
 
-    req->flags                 = 0;
-    req->send.ep               = ep;
-    req->send.buffer           = (void*)getreqh->address;
-    req->send.length           = getreqh->length;
-    req->send.get_reply.req_id = getreqh->req.req_id;
-    req->send.uct.func         = ucp_progress_get_reply;
+    req->flags             = 0;
+    /* no need to initialize local request ID by UCP_REQUEST_ID_INVALID, since local
+     * and remote are union */
+    req->req_id.remote     = getreqh->req.req_id;
+    req->send.ep           = ep;
+    req->send.buffer       = (void*)getreqh->address;
+    req->send.length       = getreqh->length;
+    req->send.uct.func     = ucp_progress_get_reply;
     if (ep->worker->context->config.ext.proto_enable) {
-        req->send.mem_type     = getreqh->mem_type;
+        req->send.mem_type = getreqh->mem_type;
     } else {
-        req->send.mem_type     = UCS_MEMORY_TYPE_HOST;
+        req->send.mem_type = UCS_MEMORY_TYPE_HOST;
     }
 
     ucp_request_send(req, 0);

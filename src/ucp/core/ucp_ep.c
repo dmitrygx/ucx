@@ -2334,8 +2334,13 @@ void ucp_ep_do_keepalive(ucp_ep_h ep, ucp_lane_map_t *lane_map)
     }
 }
 
-static void ucp_ep_req_purge(ucp_request_t *req, ucs_status_t status, int recursive)
+static void ucp_ep_req_purge(ucp_ep_h ucp_ep, ucp_request_t *req,
+                             ucs_status_t status, int recursive)
 {
+    if (ucp_worker_get_request_by_id(ucp_ep->worker, req->req_id.local) != NULL) {
+        ucp_worker_del_request_id(ucp_ep->worker, req);
+    }
+
     if (req->flags & (UCP_REQUEST_FLAG_SEND_AM | UCP_REQUEST_FLAG_SEND_TAG)) {
         ucs_assert(req->super_req == NULL);
         if (req->flags & UCP_REQUEST_FLAG_OFFLOADED) {
@@ -2355,12 +2360,12 @@ static void ucp_ep_req_purge(ucp_request_t *req, ucs_status_t status, int recurs
          * uses a receive part of a request */
         req->super_req->recv.remaining -= req->recv.length;
         if (req->super_req->recv.remaining == 0) {
-            ucp_ep_req_purge(req->super_req, status, 1);
+            ucp_ep_req_purge(ucp_ep, req->super_req, status, 1);
         }
         ucp_request_put(req);
     } else {
         ucs_assert(req->super_req != NULL);
-        ucp_ep_req_purge(req->super_req, status, 1);
+        ucp_ep_req_purge(ucp_ep, req->super_req, status, 1);
         ucp_request_put(req);
     }
 }
@@ -2373,7 +2378,7 @@ void ucp_ep_proto_reqs_purge(ucp_ep_h ucp_ep, ucs_status_t status)
         req = ucs_hlist_head_elem(&ucp_ep_ext_gen(ucp_ep)->proto_reqs, ucp_request_t,
                                   send.list_elem);
         ucp_request_send_untrack(req);
-        ucp_ep_req_purge(req, status, 0);
+        ucp_ep_req_purge(ucp_ep, req, status, 0);
     }
 }
 

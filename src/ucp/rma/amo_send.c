@@ -96,6 +96,7 @@ ucp_amo_init_common(ucp_request_t *req, ucp_ep_h ep, uct_atomic_op_t op,
                     size_t size)
 {
     req->flags                = 0;
+    req->req_id.local         = UCP_REQUEST_ID_INVALID;
     req->send.ep              = ep;
     req->send.length          = size;
     req->send.amo.uct_op      = op;
