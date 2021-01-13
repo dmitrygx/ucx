@@ -330,6 +330,7 @@ ucs_status_ptr_t ucp_ep_flush_internal(ucp_ep_h ep, unsigned req_flags,
      * to start flush on.
      */
     req->flags                      = req_flags;
+    req->req_id.local               = UCP_REQUEST_ID_INVALID;
     req->status                     = UCS_OK;
     req->super_req                  = worker_req;
     req->send.ep                    = ep;
@@ -521,6 +522,7 @@ ucp_worker_flush_nbx_internal(ucp_worker_h worker,
                                 {return UCS_STATUS_PTR(UCS_ERR_NO_MEMORY);});
 
     req->flags                   = 0;
+    req->req_id.local            = UCP_REQUEST_ID_INVALID;
     req->status                  = UCS_OK;
     req->flush_worker.worker     = worker;
     req->flush_worker.comp_count = 1; /* counting starts from 1, and decremented

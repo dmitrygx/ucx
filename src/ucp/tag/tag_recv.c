@@ -55,6 +55,7 @@ ucp_tag_recv_common(ucp_worker_h worker, void *buffer, size_t count,
 
         req->flags                    = UCP_REQUEST_FLAG_COMPLETED |
                                         UCP_REQUEST_FLAG_RECV_TAG;
+        req->req_id.local             = UCP_REQUEST_ID_INVALID;
         hdr_len                       = rdesc->payload_offset;
         recv_len                      = rdesc->length - hdr_len;
         req->recv.tag.info.sender_tag = ucp_rdesc_get_tag(rdesc);

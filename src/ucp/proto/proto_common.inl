@@ -126,8 +126,9 @@ ucp_proto_request_send_op(ucp_ep_h ep, ucp_proto_select_t *proto_select,
     ucs_status_t status;
     uint8_t sg_count;
 
-    req->flags   = 0;
-    req->send.ep = ep;
+    req->flags        = 0;
+    req->req_id.local = UCP_REQUEST_ID_INVALID;
+    req->send.ep      = ep;
 
     ucp_datatype_iter_init(worker->context, (void*)buffer, count, datatype,
                            contig_length, &req->send.state.dt_iter, &sg_count);

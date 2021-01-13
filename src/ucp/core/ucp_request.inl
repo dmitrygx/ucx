@@ -665,7 +665,7 @@ ucp_request_complete_am_recv(ucp_request_t *req, ucs_status_t status)
 static UCS_F_ALWAYS_INLINE ucs_status_t
 ucp_request_process_recv_data(ucp_request_t *req, const void *data,
                               size_t length, size_t offset, int is_zcopy,
-                              int is_am, ucs_ptr_map_key_t req_id)
+                              int is_am)
 {
     ucs_status_t status;
     int last;
@@ -690,10 +690,6 @@ ucp_request_process_recv_data(ucp_request_t *req, const void *data,
     status = req->status;
     if (is_zcopy) {
         ucp_request_recv_buffer_dereg(req);
-    }
-
-    if (req_id != UCP_REQUEST_ID_INVALID) {
-        ucp_worker_del_request_id(req->recv.worker, req, req_id);
     }
 
     if (is_am) {
@@ -773,7 +769,7 @@ ucp_send_request_get_id(ucp_request_t *req)
 static UCS_F_ALWAYS_INLINE void
 ucp_send_request_set_id(ucp_request_t *req)
 {
-    req->send.msg_proto.sreq_id = ucp_send_request_get_id(req);
+    req->req_id.local = ucp_send_request_get_id(req);
 }
 
 static UCS_F_ALWAYS_INLINE void
