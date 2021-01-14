@@ -1517,7 +1517,7 @@ UCS_PROFILE_FUNC_VOID(ucp_rndv_send_frag_put_completion, (self),
     ucp_request_t *req  = freq->super_req;
 
     /* release memory descriptor */
-    if (freq->send.mdesc) {
+    if (freq->send.mdesc != NULL) {
         ucs_mpool_put_inline((void *)freq->send.mdesc);
     }
 
@@ -1598,7 +1598,7 @@ static ucs_status_t ucp_rndv_send_start_put_pipeline(ucp_request_t *sreq,
 
     /* initialize send req state on first fragment rndv request */
     if (rndv_base_offset == 0) {
-         ucp_request_send_state_reset(sreq, NULL, UCP_REQUEST_SEND_PROTO_RNDV_PUT);
+        ucp_request_send_state_reset(sreq, NULL, UCP_REQUEST_SEND_PROTO_RNDV_PUT);
     }
 
     /* internal send request allocated on sender side to handle send fragments for RTR */
@@ -1615,6 +1615,7 @@ static ucs_status_t ucp_rndv_send_start_put_pipeline(ucp_request_t *sreq,
     fsreq->send.length              = rndv_size;
     fsreq->send.mem_type            = sreq->send.mem_type;
     fsreq->send.ep                  = sreq->send.ep;
+    fsreq->send.rndv.rkey           = sreq->send.rndv.rkey;
     fsreq->send.rndv.remote_req_id  = rndv_rtr_hdr->rreq_id;
     fsreq->send.rndv.remote_address = rndv_rtr_hdr->address;
     fsreq->send.state.dt.offset     = 0;
@@ -1623,7 +1624,7 @@ static ucs_status_t ucp_rndv_send_start_put_pipeline(ucp_request_t *sreq,
 
     fsreq->send.lane = ucp_rndv_zcopy_get_lane(fsreq, &uct_rkey, 0);
     if (fsreq->send.lane == UCP_NULL_LANE) {
-        return UCS_ERR_UNREACHABLE;
+        ucs_fatal("fsreq %p: failed to get lane", fsreq);
     }
 
     offset = 0;
@@ -1658,9 +1659,16 @@ static ucs_status_t ucp_rndv_send_start_put_pipeline(ucp_request_t *sreq,
             freq->send.uct.func                  = ucp_rndv_progress_rma_put_zcopy;
             freq->send.lane                      = fsreq->send.lane;
             freq->send.mdesc                     = NULL;
-            freq->send.rndv                      = fsreq->send.rndv;
+            freq->send.rndv.rkey                 = fsreq->send.rndv.rkey;
             freq->send.rndv.remote_address       = rndv_rtr_hdr->address + offset;
             freq->send.rndv.remote_req_id        = rndv_rtr_hdr->rreq_id;
+
+            ucp_rndv_req_init_zcopy_lane_map(freq, 0);
+
+            freq->send.lane = ucp_rndv_zcopy_get_lane(freq, &uct_rkey, 0);
+            if (freq->send.lane == UCP_NULL_LANE) {
+                ucs_fatal("fsreq %p: failed to get lane", freq);
+            }
 
             ucp_request_send(freq, 0);
         } else {
