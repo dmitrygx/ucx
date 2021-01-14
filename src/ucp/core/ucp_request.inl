@@ -426,6 +426,7 @@ static UCS_F_ALWAYS_INLINE ucs_status_t
 ucp_request_send_buffer_reg(ucp_request_t *req, ucp_md_map_t md_map,
                             unsigned uct_flags)
 {
+    fprintf(stderr, "send REGISTER %p\n", req);
     return ucp_request_memory_reg(req->send.ep->worker->context, md_map,
                                   (void*)req->send.buffer, req->send.length,
                                   req->send.datatype, &req->send.state.dt,
@@ -484,6 +485,7 @@ static UCS_F_ALWAYS_INLINE ucs_status_t
 ucp_request_recv_buffer_reg(ucp_request_t *req, ucp_md_map_t md_map,
                             size_t length)
 {
+    fprintf(stderr, "recv REGISTER %p\n", req);
     return ucp_request_memory_reg(req->recv.worker->context, md_map,
                                   req->recv.buffer, length,
                                   req->recv.datatype, &req->recv.state,
@@ -493,12 +495,14 @@ ucp_request_recv_buffer_reg(ucp_request_t *req, ucp_md_map_t md_map,
 
 static UCS_F_ALWAYS_INLINE void ucp_request_send_buffer_dereg(ucp_request_t *req)
 {
+    fprintf(stderr, "send DE-REGISTER %p\n", req);
     ucp_request_memory_dereg(req->send.ep->worker->context, req->send.datatype,
                              &req->send.state.dt, req);
 }
 
 static UCS_F_ALWAYS_INLINE void ucp_request_recv_buffer_dereg(ucp_request_t *req)
 {
+    fprintf(stderr, "recv DE-REGISTER %p\n", req);
     ucp_request_memory_dereg(req->recv.worker->context, req->recv.datatype,
                              &req->recv.state, req);
 }

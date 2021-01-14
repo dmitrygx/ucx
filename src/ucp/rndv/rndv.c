@@ -319,14 +319,20 @@ UCS_PROFILE_FUNC_VOID(ucp_rndv_complete_frag_rma_put_zcopy, (fsreq),
     ucp_request_t *sreq = fsreq->super_req;
 
     sreq->send.state.dt.offset += fsreq->send.length;
+    fprintf(stderr, "PROBLEM %zu+%zu vs %zu %p\n",
+            sreq->send.state.dt.offset, fsreq->send.length,
+            sreq->send.length, sreq);
 
     /* delete fragments send request */
     ucp_request_put(fsreq);
-
+    
     /* complete send request after put completions of all fragments */
     if (sreq->send.state.dt.offset == sreq->send.length) {
+        fprintf(stderr, "FULLY_FULLY_COMPLETE %zu %p\n", sreq->send.length, sreq);
         ucp_worker_del_request_id(sreq->send.ep->worker, sreq,
                                   sreq->send.msg_proto.sreq_id);
+        fprintf(stderr, "DEREGISTER %p %p..%p\n", sreq, sreq->send.buffer,
+                (void*)((char*)sreq->send.buffer + sreq->send.length));
         ucp_rndv_complete_rma_put_zcopy(sreq);
     }
 }
@@ -1482,8 +1488,11 @@ UCS_PROFILE_FUNC_VOID(ucp_rndv_send_frag_put_completion, (self),
     req->send.state.dt.offset += freq->send.length;
     ucs_assert(req->send.state.dt.offset <= req->send.length);
 
+    fprintf(stderr, "COMPLETE: %zu %p\n", req->send.length, req);
+
     /* send ATP for last fragment of the rndv request */
     if (req->send.length == req->send.state.dt.offset) {
+        fprintf(stderr, "FULLY_COMPLETE: %zu %p\n", req->send.length, req);
         ucp_rndv_send_frag_atp(req, req->send.rndv.remote_req_id);
     }
 
@@ -1621,10 +1630,10 @@ static ucs_status_t ucp_rndv_send_start_put_pipeline(ucp_request_t *sreq,
             freq->send.rndv.remote_req_id        = rndv_rtr_hdr->rreq_id;
 
             for (i = 0; i < UCP_MAX_LANES; i++) {
-                freq->send.rndv.rkey_index[i] = fsreq->send.rndv.rkey_index ?
-                                                fsreq->send.rndv.rkey_index[i] :
-                                                UCP_NULL_RESOURCE;
+                freq->send.rndv.rkey_index[i] = fsreq->send.rndv.rkey_index[i];
             }
+
+            fprintf(stderr, "START: %zu %p\n", length, freq);
 
             ucp_request_send(freq, 0);
         } else {
@@ -1685,6 +1694,8 @@ UCS_PROFILE_FUNC(ucs_status_t, ucp_rndv_rtr_handler,
     ep        = sreq->send.ep;
     ep_config = ucp_ep_config(ep);
 
+    fprintf(stderr, "RTR_handler\n");
+
     ucs_assertv(rndv_rtr_hdr->sreq_id == sreq->send.msg_proto.sreq_id,
                 "received local sreq_id 0x%"PRIx64" is not equal to expected sreq_id"
                 " 0x%"PRIx64, rndv_rtr_hdr->sreq_id, sreq->send.msg_proto.sreq_id);
@@ -1715,6 +1726,7 @@ UCS_PROFILE_FUNC(ucs_status_t, ucp_rndv_rtr_handler,
          * PUT_ZCOPY anyway.
          */
         if (is_pipeline_rndv) {
+            fprintf(stderr, "start PUT_PIPE\n");
             status = ucp_rndv_send_start_put_pipeline(sreq, rndv_rtr_hdr);
             if (status != UCS_ERR_UNSUPPORTED) {
                 return status;
