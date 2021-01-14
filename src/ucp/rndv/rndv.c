@@ -1532,7 +1532,7 @@ static ucs_status_t ucp_rndv_send_start_put_pipeline(ucp_request_t *sreq,
     size_t max_frag_size, rndv_size, length;
     size_t offset, rndv_base_offset;
     size_t min_zcopy, max_zcopy;
-    uct_rkey_t uct_rkey;
+    ucp_lane_index_t i;
 
     ucp_trace_req(sreq, "using put rndv pipeline protocol");
 
@@ -1580,11 +1580,6 @@ static ucs_status_t ucp_rndv_send_start_put_pipeline(ucp_request_t *sreq,
 
     ucp_rndv_req_init_zcopy_lane_map(fsreq, 0);
 
-    fsreq->send.lane = ucp_rndv_zcopy_get_lane(fsreq, &uct_rkey, 0);
-    if (fsreq->send.lane == UCP_NULL_LANE) {
-        ucs_fatal("fsreq %p: failed to get lane", fsreq);
-    }
-
     offset = 0;
     while (offset != rndv_size) {
         length = ucp_rndv_adjust_zcopy_length(min_zcopy, max_frag_size, 0,
@@ -1617,15 +1612,18 @@ static ucs_status_t ucp_rndv_send_start_put_pipeline(ucp_request_t *sreq,
             freq->send.uct.func                  = ucp_rndv_progress_rma_put_zcopy;
             freq->send.lane                      = fsreq->send.lane;
             freq->send.mdesc                     = NULL;
+            freq->send.lanes_map_avail           =
+            freq->send.rndv.lanes_map_all        = fsreq->send.rndv.lanes_map_all;
+            freq->send.rndv.lanes_count          =
+                ucs_popcount(fsreq->send.rndv.lanes_map_all);
             freq->send.rndv.rkey                 = fsreq->send.rndv.rkey;
             freq->send.rndv.remote_address       = rndv_rtr_hdr->address + offset;
             freq->send.rndv.remote_req_id        = rndv_rtr_hdr->rreq_id;
 
-            ucp_rndv_req_init_zcopy_lane_map(freq, 0);
-
-            freq->send.lane = ucp_rndv_zcopy_get_lane(freq, &uct_rkey, 0);
-            if (freq->send.lane == UCP_NULL_LANE) {
-                ucs_fatal("fsreq %p: failed to get lane", freq);
+            for (i = 0; i < UCP_MAX_LANES; i++) {
+                freq->send.rndv.rkey_index[i] = fsreq->send.rndv.rkey_index ?
+                                                fsreq->send.rndv.rkey_index[i] :
+                                                UCP_NULL_RESOURCE;
             }
 
             ucp_request_send(freq, 0);
