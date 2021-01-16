@@ -1582,7 +1582,6 @@ static ucs_status_t ucp_rndv_send_start_put_pipeline(ucp_request_t *sreq,
     size_t max_frag_size, rndv_size, length;
     size_t offset, rndv_base_offset;
     size_t min_zcopy, max_zcopy;
-    ucp_lane_index_t i;
     uct_rkey_t uct_rkey;
 
     ucp_trace_req(sreq, "using put rndv pipeline protocol");
@@ -1602,6 +1601,18 @@ static ucs_status_t ucp_rndv_send_start_put_pipeline(ucp_request_t *sreq,
     /* initialize send req state on first fragment rndv request */
     if (rndv_base_offset == 0) {
         ucp_request_send_state_reset(sreq, NULL, UCP_REQUEST_SEND_PROTO_RNDV_PUT);
+        ucp_rndv_req_init_zcopy_lane_map(sreq, 0, sreq->send.rndv.rkey->mem_type);
+        /* check if lane could be allocated */
+        sreq->send.lane = ucp_rndv_zcopy_get_lane(sreq, &uct_rkey, 0);
+        if (sreq->send.lane == UCP_NULL_LANE) {
+            return UCS_ERR_UNSUPPORTED;
+        }
+
+        /* check if lane supports host memory, to stage sends through host memory */
+        md_attr = ucp_ep_md_attr(sreq->send.ep, sreq->send.lane);
+        if (!(md_attr->cap.reg_mem_types & UCS_BIT(UCS_MEMORY_TYPE_HOST))) {
+            return UCS_ERR_UNSUPPORTED;
+        }
     }
 
     /* internal send request allocated on sender side to handle send fragments for RTR */
@@ -1618,25 +1629,16 @@ static ucs_status_t ucp_rndv_send_start_put_pipeline(ucp_request_t *sreq,
     fsreq->send.length              = rndv_size;
     fsreq->send.mem_type            = sreq->send.mem_type;
     fsreq->send.ep                  = sreq->send.ep;
+    fsreq->send.lanes_map_avail     =
+    fsreq->send.rndv.lanes_map_all  = sreq->send.rndv.lanes_map_all;
+    fsreq->send.rndv.lanes_count    = sreq->send.rndv.lanes_count;
     fsreq->send.rndv.rkey           = sreq->send.rndv.rkey;
     fsreq->send.rndv.remote_req_id  = rndv_rtr_hdr->rreq_id;
     fsreq->send.rndv.remote_address = rndv_rtr_hdr->address;
     fsreq->send.state.dt.offset     = 0;
 
-    ucp_rndv_req_init_zcopy_lane_map(fsreq, 0, fsreq->send.rndv.rkey->mem_type);
-    /* Figure out which lane to use for put operation */
-    fsreq->send.lane = ucp_rndv_zcopy_get_lane(fsreq, &uct_rkey, 0);
-    if (fsreq->send.lane == UCP_NULL_LANE) {
-        ucp_request_put(fsreq);
-        return UCS_ERR_UNSUPPORTED;
-    }
-
-    /* check if lane supports host memory, to stage sends through host memory */
-    md_attr = ucp_ep_md_attr(sreq->send.ep, fsreq->send.lane);
-    if (!(md_attr->cap.reg_mem_types & UCS_BIT(UCS_MEMORY_TYPE_HOST))) {
-        ucp_request_put(fsreq);
-        return UCS_ERR_UNSUPPORTED;
-    }
+    memcpy(fsreq->send.rndv.rkey_index, sreq->send.rndv.rkey_index,
+           sizeof(*fsreq->send.rndv.rkey_index) * UCP_MAX_LANES);
 
     offset = 0;
     while (offset != rndv_size) {
@@ -1672,9 +1674,8 @@ static ucs_status_t ucp_rndv_send_start_put_pipeline(ucp_request_t *sreq,
             freq->send.rndv.remote_address        = rndv_rtr_hdr->address + offset;
             freq->send.rndv.remote_req_id         = rndv_rtr_hdr->rreq_id;
 
-            for (i = 0; i < UCP_MAX_LANES; i++) {
-                freq->send.rndv.rkey_index[i]     = fsreq->send.rndv.rkey_index[i];
-            }
+            memcpy(freq->send.rndv.rkey_index, fsreq->send.rndv.rkey_index,
+                   sizeof(*freq->send.rndv.rkey_index) * UCP_MAX_LANES);
 
             ucp_request_send(freq, 0);
         } else {
