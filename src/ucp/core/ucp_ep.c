@@ -1409,6 +1409,8 @@ static void ucp_ep_config_set_memtype_thresh(ucp_memtype_thresh_t *max_eager_sho
     max_eager_short->memtype_on = max_short;
 }
 
+/* Coverity assumes that mem_type_index could have value >= UCS_MEMORY_TYPE_LAST,
+ * a caller of this function should suppress this false-positive warning */
 static void ucp_ep_config_rndv_zcopy_max_bw_update(ucp_context_t *context,
                                                    const uct_md_attr_t *md_attr,
                                                    const uct_iface_attr_t *iface_attr,
@@ -1437,9 +1439,9 @@ static void ucp_ep_config_rndv_zcopy_set(ucp_context_t *context, uint64_t cap_fl
                                          ucp_rndv_zcopy_t *rndv_zcopy,
                                          ucp_lane_index_t *lanes_count_p)
 {
+    uint8_t mem_type_index;
     double scale;
     size_t min, max;
-    uint8_t mem_type_index;
 
     if (!(iface_attr->cap.flags & cap_flag)) {
         return;
@@ -1684,11 +1686,13 @@ ucs_status_t ucp_ep_config_init(ucp_worker_h worker, ucp_ep_config_t *config,
         iface_attr = ucp_worker_iface_get_attr(worker, rsc_index);
 
         /* GET Zcopy */
+        /* coverity[overrun-buffer-val] */
         ucp_ep_config_rndv_zcopy_max_bw_update(context, md_attr, iface_attr,
                                                UCT_IFACE_FLAG_GET_ZCOPY,
                                                get_zcopy_max_bw);
 
         /* PUT Zcopy */
+        /* coverity[overrun-buffer-val] */
         ucp_ep_config_rndv_zcopy_max_bw_update(context, md_attr, iface_attr,
                                                UCT_IFACE_FLAG_PUT_ZCOPY,
                                                put_zcopy_max_bw);
