@@ -577,6 +577,7 @@ static void ucp_tag_offload_rndv_zcopy_completion(uct_completion_t *self)
                                           send.state.uct_comp);
 
     ucp_tag_offload_request_check_flags(req);
+    ucp_request_send_track(req);
     ucp_proto_am_zcopy_req_complete(req, self->status);
 }
 
@@ -636,6 +637,7 @@ void ucp_tag_offload_cancel_rndv(ucp_request_t *req)
     }
 
     req->flags &= ~UCP_REQUEST_FLAG_OFFLOADED;
+    ucp_request_send_track(req);
 }
 
 ucs_status_t ucp_tag_offload_start_rndv(ucp_request_t *sreq)

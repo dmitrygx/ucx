@@ -1536,6 +1536,10 @@ UCS_PROFILE_FUNC_VOID(ucp_rndv_send_frag_put_completion, (self),
     /* send ATP for last fragment of the rndv request */
     if (req->send.length == req->send.state.dt.offset) {
         ucp_rndv_send_frag_atp(req, req->req_id.remote);
+    } else {
+        /* start a request tracking untill RTR for a new fragment is not received or
+         * scheduled on UCT for PUT operation */
+        ucp_request_send_track(req);
     }
 
     ucp_request_put(freq);
@@ -1547,6 +1551,7 @@ UCS_PROFILE_FUNC_VOID(ucp_rndv_put_pipeline_frag_get_completion, (self),
     ucp_request_t *freq  = ucs_container_of(self, ucp_request_t,
                                             send.state.uct_comp);
     ucp_request_t *fsreq = freq->super_req;
+    ucp_request_t *sreq  = fsreq->super_req;
 
     /* get rkey can be NULL if memtype ep doesn't need RKEY */
     if (freq->send.rndv_get.rkey != NULL) {
@@ -1565,6 +1570,9 @@ UCS_PROFILE_FUNC_VOID(ucp_rndv_put_pipeline_frag_get_completion, (self),
     freq->send.rndv_put.uct_rkey         = fsreq->send.rndv_put.uct_rkey;
     freq->send.lane                      = fsreq->send.lane;
     freq->send.state.dt.dt.contig.md_map = 0;
+
+    /* untrack a request, since it will be scheduled on UCT */
+    ucp_request_send_untrack(sreq);    
 
     ucp_request_send(freq, 0);
 }
@@ -1671,6 +1679,9 @@ static ucs_status_t ucp_rndv_send_start_put_pipeline(ucp_request_t *sreq,
             freq->send.lane                       = fsreq->send.lane;
             freq->send.mdesc                      = NULL;
 
+            /* untrack a request, since it will be scheduled on UCT */
+            ucp_request_send_untrack(sreq);
+
             ucp_request_send(freq, 0);
         } else {
             ucp_rndv_send_frag_get_mem_type(fsreq, 0, length,
@@ -1749,8 +1760,6 @@ UCS_PROFILE_FUNC(ucs_status_t, ucp_rndv_rtr_handler,
          * need it registered (if am and tag is the same lane). */
         ucp_tag_offload_cancel_rndv(sreq);
         ucs_assert(!ucp_ep_use_indirect_id(ep));
-    } else if (rndv_rtr_hdr->offset == 0) {
-        ucp_request_send_untrack(sreq);
     }
 
     if (UCP_DT_IS_CONTIG(sreq->send.datatype) && rndv_rtr_hdr->address) {
@@ -1839,6 +1848,9 @@ UCS_PROFILE_FUNC(ucs_status_t, ucp_rndv_rtr_handler,
     }
 
 out_send:
+    /* untrack a request, since it will be scheduled on UCT */
+    ucp_request_send_untrack(sreq);
+
     ucp_request_send(sreq, 0);
     return UCS_OK;
 }
