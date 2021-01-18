@@ -218,8 +218,6 @@ ucp_rndv_adjust_zcopy_length(size_t min_zcopy, size_t max_zcopy, size_t align,
 {
     size_t result_length, tail;
 
-    ucs_assert(length > 0);
-
     /* ensure that the current length is over min_zcopy */
     result_length = ucs_max(length, min_zcopy);
 

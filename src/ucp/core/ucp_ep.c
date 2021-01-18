@@ -1461,7 +1461,7 @@ static void ucp_ep_config_rndv_zcopy_set(ucp_context_t *context, uint64_t cap_fl
         ucs_assert(mem_type_index < UCS_MEMORY_TYPE_LAST);
         scale = ucp_tl_iface_bandwidth(context, &iface_attr->bandwidth) /
                 max_bw[mem_type_index];
-        if ((scale - limit_scale) < ucp_calc_epsilon(scale, limit_scale)) {
+        if (scale < limit_scale) {
             continue;
         }
 
@@ -1633,8 +1633,10 @@ ucs_status_t ucp_ep_config_init(ucp_worker_h worker, ucp_ep_config_t *config,
     config->tag.rndv.am_thresh          = config->tag.rndv.rma_thresh;
     config->rndv.rma_thresh             = config->tag.rndv.rma_thresh;
     config->rndv.am_thresh              = config->tag.rndv.am_thresh;
+    /* use 1 instead of 0, since messages passed to RNDV PUT/GET Zcopy are always > 0
+     * and make sure that multi-rail chunks are adjusted to not be 0-length */
     config->rndv.get_zcopy.min          =
-    config->rndv.put_zcopy.min          = 0;
+    config->rndv.put_zcopy.min          = 1;
     config->rndv.get_zcopy.max          =
     config->rndv.put_zcopy.max          = SIZE_MAX;
     config->rndv.rkey_size              = ucp_rkey_packed_size(context,
