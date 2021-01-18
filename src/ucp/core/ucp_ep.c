@@ -1439,6 +1439,7 @@ static void ucp_ep_config_rndv_zcopy_set(ucp_context_t *context, uint64_t cap_fl
                                          ucp_rndv_zcopy_t *rndv_zcopy,
                                          ucp_lane_index_t *lanes_count_p)
 {
+    const double limit_scale = 1. / context->config.ext.multi_lane_max_ratio;
     uint8_t mem_type_index;
     double scale;
     size_t min, max;
@@ -1460,7 +1461,7 @@ static void ucp_ep_config_rndv_zcopy_set(ucp_context_t *context, uint64_t cap_fl
         ucs_assert(mem_type_index < UCS_MEMORY_TYPE_LAST);
         scale = ucp_tl_iface_bandwidth(context, &iface_attr->bandwidth) /
                 max_bw[mem_type_index];
-        if (scale < (1. / context->config.ext.multi_lane_max_ratio)) {
+        if ((scale - limit_scale) < ucp_calc_epsilon(scale, limit_scale)) {
             continue;
         }
 
