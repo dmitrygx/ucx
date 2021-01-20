@@ -1071,8 +1071,8 @@ protected:
                                  &req->send.state.dt, req);
     }
 
-    void* do_unexp_recv(std::string &recv_buf, size_t size, void *sreq,
-                        bool err_handling, bool send_stop, bool recv_stop) {
+    void* do_unexp_recv(void *recv_buf, size_t size, void *sreq, bool err_handling,
+                        bool send_stop, bool recv_stop) {
         ucp_tag_recv_info_t recv_info = {};
         ucp_tag_message_h message;
 
@@ -1092,11 +1092,8 @@ protected:
 
             sreq_mem_dereg(sreq);
 
-            if (recv_stop) {
-                sender().disconnect_nb(0, 0, UCP_EP_CLOSE_MODE_FORCE);
-            } else {
+            if (send_stop) {
                 disconnect(*this, sender());
-                receiver().disconnect_nb(0, 0, UCP_EP_CLOSE_MODE_FORCE);
             }
         }
 
@@ -1107,7 +1104,7 @@ protected:
                                          <ucp_tag_recv_nbx_callback_t>(
                                              !err_handling ? rtag_complete_cb :
                                              rtag_complete_err_handling_cb);
-        return ucp_tag_msg_recv_nbx(receiver().worker(), &recv_buf[0], size, message,
+        return ucp_tag_msg_recv_nbx(receiver().worker(), recv_buf, size, message,
                                     &recv_param);
     }
 
@@ -1138,6 +1135,8 @@ protected:
     }
 
     void test_tag_send_recv(size_t size, bool is_exp, bool is_sync = false,
+                            ucs_memory_type_t send_mem_type = UCS_MEMORY_TYPE_HOST,
+                            ucs_memory_type_t recv_mem_type = UCS_MEMORY_TYPE_HOST,
                             bool send_stop = false, bool recv_stop = false)
     {
         bool err_handling_test = send_stop || recv_stop;
@@ -1146,8 +1145,16 @@ protected:
         /* send multiple messages to test the protocol both before and after
          * connection establishment */
         for (int i = 0; i < num_iters; i++) {
-            std::string send_buf(size, 'x');
-            std::string recv_buf(size, 'y');
+            mem_buffer recv_mem_buf(size, recv_mem_type);
+            mem_buffer send_mem_buf(size, send_mem_type);
+
+            mem_buffer::pattern_fill(recv_mem_buf.ptr(), recv_mem_buf.size(), 1,
+                                     recv_mem_buf.mem_type());
+            mem_buffer::pattern_fill(send_mem_buf.ptr(), send_mem_buf.size(), 2,
+                                     send_mem_buf.mem_type());
+
+            void *recv_buf = recv_mem_buf.ptr();
+            void *send_buf = send_mem_buf.ptr();
 
             void *rreq = NULL, *sreq = NULL;
             std::vector<void*> reqs;
@@ -1158,7 +1165,7 @@ protected:
             }
 
             if (is_exp) {
-                rreq = ucp_tag_recv_nb(receiver().worker(), &recv_buf[0], size,
+                rreq = ucp_tag_recv_nb(receiver().worker(), recv_buf, size,
                                        ucp_dt_make_contig(1), 0, 0,
                                        rtag_complete_cb);
                 reqs.push_back(rreq);
@@ -1172,10 +1179,10 @@ protected:
                                                  !err_handling_test ? scomplete_cb :
                                                  scomplete_err_handling_cb);
             if (is_sync) {
-                sreq = ucp_tag_send_sync_nbx(sender().ep(), &send_buf[0], size, 0,
+                sreq = ucp_tag_send_sync_nbx(sender().ep(), send_buf, size, 0,
                                              &send_param);
             } else {
-                sreq = ucp_tag_send_nbx(sender().ep(), &send_buf[0], size, 0,
+                sreq = ucp_tag_send_nbx(sender().ep(), send_buf, size, 0,
                                         &send_param);
             }
             reqs.push_back(sreq);
@@ -1196,7 +1203,18 @@ protected:
             }
 
             if (!err_handling_test) {
-                compare_buffers(send_buf, recv_buf);
+                EXPECT_TRUE(mem_buffer::compare(send_buf, recv_buf, size,
+                                                send_mem_type, recv_mem_type));
+            } else {
+                wait_for_flag(&m_err_count);
+
+                if (send_stop == false) {
+                    sreq = ucp_tag_send_nbx(sender().ep(), send_buf, size, 0,
+                                            &send_param);
+                    request_wait(sreq);
+
+                    sender().disconnect_nb(0, 0, UCP_EP_CLOSE_MODE_FORCE);
+                }
             }
         }
     }
@@ -1353,8 +1371,9 @@ private:
 
 protected:
     enum {
-        SEND_STOP = UCS_BIT(0),
-        RECV_STOP = UCS_BIT(1)
+        SEND_STOP   = UCS_BIT(0),
+        RECV_STOP   = UCS_BIT(1),
+        VARIANT_MAX = UCS_BIT(2)
     };
 
     static void disconnect(test_ucp_sockaddr_protocols &test, entity &e) {
@@ -1542,7 +1561,6 @@ UCS_TEST_P(test_ucp_sockaddr_protocols, am_zcopy_64k,
 }
 
 
-
 /* For DC case, allow fallback to UD if DC is not supported */
 #define UCP_INSTANTIATE_CM_TEST_CASE(_test_case) \
     UCP_INSTANTIATE_TEST_CASE_TLS(_test_case, dcudx, "dc_x,ud") \
@@ -1550,8 +1568,8 @@ UCS_TEST_P(test_ucp_sockaddr_protocols, am_zcopy_64k,
     UCP_INSTANTIATE_TEST_CASE_TLS(_test_case, udx,   "ud_x") \
     UCP_INSTANTIATE_TEST_CASE_TLS(_test_case, rc,    "rc_v") \
     UCP_INSTANTIATE_TEST_CASE_TLS(_test_case, rcx,   "rc_x") \
-    UCP_INSTANTIATE_TEST_CASE_TLS(_test_case, ib,    "ib")   \
-    UCP_INSTANTIATE_TEST_CASE_TLS(_test_case, tcp,   "tcp")  \
+    UCP_INSTANTIATE_TEST_CASE_TLS(_test_case, ib,    "ib") \
+    UCP_INSTANTIATE_TEST_CASE_TLS(_test_case, tcp,   "tcp") \
     UCP_INSTANTIATE_TEST_CASE_TLS(_test_case, all,   "all")
 
 UCP_INSTANTIATE_CM_TEST_CASE(test_ucp_sockaddr_protocols)
@@ -1560,13 +1578,29 @@ UCP_INSTANTIATE_CM_TEST_CASE(test_ucp_sockaddr_protocols)
 class test_ucp_sockaddr_protocols_err : public test_ucp_sockaddr_protocols {
 public:
     static void get_test_variants(std::vector<ucp_test_variant>& variants) {
-        uint64_t features = UCP_FEATURE_TAG;
-        test_ucp_sockaddr::get_test_variants_mt(variants, features, SEND_STOP,
-                                                "send_stop");
-        test_ucp_sockaddr::get_test_variants_mt(variants, features, RECV_STOP,
-                                                "recv_stop");
-        test_ucp_sockaddr::get_test_variants_mt(variants, features,
-                                                SEND_STOP | RECV_STOP, "bidi_stop");
+        const uint64_t features = UCP_FEATURE_TAG;
+        int count               = 0;
+
+        for (int i = SEND_STOP; i < VARIANT_MAX; i++) {
+            for (std::vector<std::vector<ucs_memory_type_t> >::const_iterator iter =
+                 mem_type_pairs.begin(); iter != mem_type_pairs.end(); ++iter) {
+                std::string name =
+                        std::string(ucs_memory_type_names[(*iter)[0]]) + ":" +
+                        std::string(ucs_memory_type_names[(*iter)[1]]);
+
+                if (i & SEND_STOP) {
+                    name += ",send_stop";
+                }
+
+                if (i & RECV_STOP) {
+                    name += ",recv_stop";
+                }
+
+                test_ucp_sockaddr::get_test_variants_mt(variants, features, count,
+                                                        name);
+                ++count;
+            }
+        }
     }
 
 protected:
@@ -1575,6 +1609,14 @@ protected:
     }
 
     void init() {
+        int variant_index = get_variant_value() / mem_type_pairs.size();
+        m_send_stop       = variant_index & SEND_STOP;
+        m_recv_stop       = variant_index & RECV_STOP;
+
+        int mem_type_pair_index = get_variant_value() % mem_type_pairs.size();
+        m_send_mem_type         = mem_type_pairs[mem_type_pair_index][0];
+        m_recv_mem_type         = mem_type_pairs[mem_type_pair_index][1];
+
         test_ucp_sockaddr_protocols::init();
     }
 
@@ -1584,10 +1626,10 @@ protected:
         test_ucp_sockaddr_protocols::test_tag_send_recv(size, is_exp, is_sync);
 
         /* run error-handling test */
-        int variants = get_variant_value();
         test_ucp_sockaddr_protocols::test_tag_send_recv(size, is_exp, is_sync,
-                                                        variants & SEND_STOP,
-                                                        variants & RECV_STOP);
+                                                        m_send_mem_type,
+                                                        m_recv_mem_type,
+                                                        m_send_stop, m_recv_stop);
     }
 
     void cleanup() {
@@ -1599,17 +1641,24 @@ protected:
 
         test_ucp_sockaddr_protocols *test =
             static_cast<test_ucp_sockaddr_protocols*>(arg);
-        if (test->sender().ep() == ep) {
-            test->sender().disconnect_nb(0, 0, UCP_EP_CLOSE_MODE_FORCE);
-        } else {
-            ASSERT_EQ(test->receiver().ep(), ep);
+        if (test->receiver().ep() == ep) {
             test->receiver().disconnect_nb(0, 0, UCP_EP_CLOSE_MODE_FORCE);
         }
     }
 
 protected:
-    ucs::ptr_vector<ucs::scoped_setenv> m_env;
+    static std::vector<std::vector<ucs_memory_type_t> > mem_type_pairs;
+
+    ucs::ptr_vector<ucs::scoped_setenv>                 m_env;
+    ucs_memory_type_t                                   m_send_mem_type;
+    ucs_memory_type_t                                   m_recv_mem_type;
+    bool                                                m_send_stop;
+    bool                                                m_recv_stop;
 };
+
+
+std::vector<std::vector<ucs_memory_type_t> >
+test_ucp_sockaddr_protocols_err::mem_type_pairs = ucs::supported_mem_type_pairs();
 
 
 UCS_TEST_P(test_ucp_sockaddr_protocols_err, tag_zcopy_4k_unexp,
@@ -1649,4 +1698,15 @@ UCS_TEST_P(test_ucp_sockaddr_protocols_err, tag_rndv_unexp_put_scheme,
     test_tag_send_recv(64 * UCS_KBYTE, false, false);
 }
 
-UCP_INSTANTIATE_CM_TEST_CASE(test_ucp_sockaddr_protocols_err)
+
+#define UCP_INSTANTIATE_CM_TEST_CASE_GPU_AWARE(_test_case) \
+    UCP_INSTANTIATE_TEST_CASE_TLS(_test_case, dcudx, "dc_x,ud," UCP_TEST_GPU_COPY_TLS) \
+    UCP_INSTANTIATE_TEST_CASE_TLS(_test_case, ud,    "ud_v," UCP_TEST_GPU_COPY_TLS) \
+    UCP_INSTANTIATE_TEST_CASE_TLS(_test_case, udx,   "ud_x," UCP_TEST_GPU_COPY_TLS) \
+    UCP_INSTANTIATE_TEST_CASE_TLS(_test_case, rc,    "rc_v," UCP_TEST_GPU_COPY_TLS) \
+    UCP_INSTANTIATE_TEST_CASE_TLS(_test_case, rcx,   "rc_x," UCP_TEST_GPU_COPY_TLS) \
+    UCP_INSTANTIATE_TEST_CASE_TLS(_test_case, ib,    "ib," UCP_TEST_GPU_COPY_TLS) \
+    UCP_INSTANTIATE_TEST_CASE_TLS(_test_case, tcp,   "tcp," UCP_TEST_GPU_COPY_TLS) \
+    UCP_INSTANTIATE_TEST_CASE_TLS(_test_case, all,   "all," UCP_TEST_GPU_COPY_TLS)
+
+UCP_INSTANTIATE_CM_TEST_CASE_GPU_AWARE(test_ucp_sockaddr_protocols_err)

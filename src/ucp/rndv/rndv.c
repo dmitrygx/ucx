@@ -176,14 +176,15 @@ UCS_PROFILE_FUNC(ucs_status_t, ucp_proto_progress_rndv_rtr, (self),
 
     /* send the RTR. the pack_cb will pack all the necessary fields in the RTR */
     packed_rkey_size = ucp_ep_config(rndv_req->send.ep)->rndv.rkey_size;
-    status = ucp_do_am_single(self, UCP_AM_ID_RNDV_RTR, ucp_rndv_rtr_pack,
-                              sizeof(ucp_rndv_rtr_hdr_t) + packed_rkey_size);
-    if (status == UCS_OK) {
-        /* release rndv request */
-        ucp_request_put(rndv_req);
+    status           = ucp_do_am_single(self, UCP_AM_ID_RNDV_RTR, ucp_rndv_rtr_pack,
+                                        sizeof(ucp_rndv_rtr_hdr_t) + packed_rkey_size);
+    if (ucs_unlikely(status == UCS_ERR_NO_RESOURCE)) {
+        return UCS_ERR_NO_RESOURCE;
     }
 
-    return status;
+    /* release rndv request */
+    ucp_request_put(rndv_req);
+    return UCS_OK;
 }
 
 ucs_status_t ucp_rndv_reg_send_buffer(ucp_request_t *sreq)
@@ -1376,6 +1377,22 @@ UCS_PROFILE_FUNC(ucs_status_t, ucp_rndv_ats_handler,
         ucp_tag_offload_cancel_rndv(sreq);
     }
     ucp_rndv_complete_send(sreq, rep_hdr->status);
+    return UCS_OK;
+}
+
+ucs_status_t ucp_rndv_rts_handle_status_from_pending(ucp_request_t *sreq,
+                                                     ucs_status_t status)
+{
+    if (ucs_unlikely(status != UCS_OK)) {
+        if (status == UCS_ERR_NO_RESOURCE) {
+            return UCS_ERR_NO_RESOURCE;
+        }
+
+        ucp_worker_del_request_id(sreq->send.ep->worker, sreq,
+                                  sreq->send.msg_proto.sreq_id);
+        ucp_rndv_complete_send(sreq, status);
+    }
+
     return UCS_OK;
 }
 
