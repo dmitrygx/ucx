@@ -110,11 +110,17 @@ static ssize_t ucp_wireup_ep_bcopy_send_func(uct_ep_h uct_ep)
     return UCS_ERR_NO_RESOURCE;
 }
 
+static int ucp_wireup_ep_next_uct_ep_is_valid(const ucp_wireup_ep_t *wireup_ep)
+{
+    return (wireup_ep->flags & UCP_WIREUP_EP_FLAG_READY) ||
+           (wireup_ep->aux_ep == NULL);
+}
+
 static uct_ep_h ucp_wireup_ep_get_msg_ep(ucp_wireup_ep_t *wireup_ep)
 {
     uct_ep_h wireup_msg_ep;
 
-    if ((wireup_ep->flags & UCP_WIREUP_EP_FLAG_READY) || (wireup_ep->aux_ep == NULL)) {
+    if (ucp_wireup_ep_next_uct_ep_is_valid(wireup_ep)) {
         wireup_msg_ep = wireup_ep->super.uct_ep;
     } else {
         wireup_msg_ep = wireup_ep->aux_ep;
@@ -125,6 +131,19 @@ static uct_ep_h ucp_wireup_ep_get_msg_ep(ucp_wireup_ep_t *wireup_ep)
                 (wireup_ep->flags & UCP_WIREUP_EP_FLAG_LOCAL_CONNECTED) ? 'c' : '-',
                 (wireup_ep->flags & UCP_WIREUP_EP_FLAG_READY)           ? 'r' : '-',
                 wireup_ep->super.uct_ep, wireup_ep->aux_ep);
+    return wireup_msg_ep;
+}
+
+static uct_ep_h ucp_wireup_ep_extract_msg_ep(ucp_wireup_ep_t *wireup_ep)
+{
+    uct_ep_h wireup_msg_ep = ucp_wireup_ep_get_msg_ep(wireup_ep);
+
+    if (ucp_wireup_ep_next_uct_ep_is_valid(wireup_ep)) {
+        wireup_ep->super.uct_ep = NULL;
+    } else {
+        wireup_ep->aux_ep       = NULL;
+    }
+
     return wireup_msg_ep;
 }
 
@@ -156,7 +175,7 @@ ucp_wireup_ep_pending_req_release(uct_pending_req_t *self, void *arg)
     if (proxy_req->send.proxy.req->func == ucp_wireup_msg_progress) {
         req = ucs_container_of(proxy_req->send.proxy.req, ucp_request_t,
                                send.uct);
-        ucs_free((void*)req->send.buffer);
+        ucs_free(req->send.buffer);
         ucs_free(req);
     }
 
@@ -552,6 +571,29 @@ void ucp_wireup_ep_destroy_next_ep(ucp_wireup_ep_t *wireup_ep)
 
     wireup_ep->flags &= ~UCP_WIREUP_EP_FLAG_LOCAL_CONNECTED;
     ucs_assert(wireup_ep->flags == 0);
+}
+
+void ucp_wireup_ep_msg_uct_ep_move(uct_ep_h to_uct_ep, uct_ep_h from_uct_ep,
+                                   int set_aux, ucp_rsc_index_t aux_rsc_index)
+{
+    ucp_wireup_ep_t *to_wireup_ep   = ucp_wireup_ep(to_uct_ep);
+    ucp_wireup_ep_t *from_wireup_ep = ucp_wireup_ep(from_uct_ep);
+    uct_ep_h msg_ep;
+
+    ucs_assertv(to_wireup_ep != NULL, "to_uct_ep %p isn't a WIREUP EP", to_uct_ep);
+    ucs_assertv(from_wireup_ep != NULL, "from_uct_ep %p isn't a WIREUP EP",
+                from_uct_ep);
+
+    to_wireup_ep->pending_count   = from_wireup_ep->pending_count;
+    from_wireup_ep->pending_count = 0;
+
+    msg_ep = ucp_wireup_ep_extract_msg_ep(from_wireup_ep);
+    if (set_aux) {
+        ucs_assert(aux_rsc_index != UCP_NULL_RESOURCE);
+        ucp_wireup_ep_set_aux(to_wireup_ep, msg_ep, aux_rsc_index);
+    } else {
+        ucp_wireup_ep_set_next_ep(to_uct_ep, msg_ep);
+    }
 }
 
 void ucp_wireup_ep_remote_connected(uct_ep_h uct_ep)
