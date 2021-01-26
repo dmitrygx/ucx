@@ -440,7 +440,8 @@ static unsigned ucp_worker_iface_err_handle_progress(void *arg)
     ucs_assert(ucp_ep->flags & UCP_EP_FLAG_FAILED);
 
     ucp_ep_discard_lanes(ucp_ep, status);
-    ucp_stream_ep_cleanup(ucp_ep);
+    ucp_stream_ep_cleanup(ucp_ep, status);
+
     if (ucp_ep->flags & UCP_EP_FLAG_USED) {
         if (ucp_ep->flags & UCP_EP_FLAG_CLOSE_REQ_VALID) {
             ucs_assert(ucp_ep->flags & UCP_EP_FLAG_CLOSED);

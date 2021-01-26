@@ -73,7 +73,7 @@ ucs_status_t uct_ib_mlx5_completion_with_err(uct_ib_iface_t *iface,
 
     if (ecqe->syndrome == MLX5_CQE_SYNDROME_WR_FLUSH_ERR) {
         ucs_trace("QP 0x%x wqe[%d] is flushed", qp_num, wqe_index);
-        return UCS_ERR_CANCELED;
+        return UCS_ERR_ENDPOINT_TIMEOUT;
     }
 
     switch (ecqe->syndrome) {
@@ -106,7 +106,7 @@ ucs_status_t uct_ib_mlx5_completion_with_err(uct_ib_iface_t *iface,
         status = UCS_ERR_CONNECTION_RESET;
         break;
     case MLX5_CQE_SYNDROME_REMOTE_OP_ERR:
-        snprintf(err_info, sizeof(err_info), "Remote QP");
+        snprintf(err_info, sizeof(err_info), "Remote OP");
         status = UCS_ERR_CONNECTION_RESET;
         break;
     case MLX5_CQE_SYNDROME_TRANSPORT_RETRY_EXC_ERR:
