@@ -108,6 +108,12 @@ ucs_status_t ucp_ep_create_base(ucp_worker_h worker, const char *peer_name,
         goto err_free_ep;
     }
 
+    memset(ep->local_conn_set,   0,
+           ucs_static_array_size(ep->local_conn_set) *
+           sizeof(*ep->local_conn_set));
+    memset(ep->local_conn_unset, 0,
+           ucs_static_array_size(ep->local_conn_unset) *
+           sizeof(*ep->local_conn_unset));
     ep->ref_cnt                          = 1;
     ep->cfg_index                        = UCP_WORKER_CFG_INDEX_NULL;
     ep->worker                           = worker;

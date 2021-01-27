@@ -359,6 +359,9 @@ typedef struct ucp_ep {
     char                          peer_name[UCP_WORKER_NAME_MAX];
 #endif
 
+    int local_conn_set[16];
+    int local_conn_unset[16];
+
     UCS_STATS_NODE_DECLARE(stats)
 
 } ucp_ep_t;

@@ -427,6 +427,11 @@ ucp_wireup_process_request(ucp_worker_h worker, ucp_ep_h ep,
     ucs_status_t status;
     int has_cm_lane;
 
+    if (!(ep->flags & UCP_EP_FLAG_LOCAL_CONNECTED)) {
+        ucs_fatal("ucp_ep %p: doesn't have flag LOCAL_CONN",
+                  ep);
+    }
+
     ucs_assert(msg->type == UCP_WIREUP_MSG_REQUEST);
     ucs_trace("got wireup request from 0x%"PRIx64" src_ep_id 0x%"PRIx64""
               " dst_ep_id 0x%"PRIx64" conn_sn %d", remote_address->uuid,
@@ -519,6 +524,7 @@ ucp_wireup_process_request(ucp_worker_h worker, ucp_ep_h ep,
         tl_bitmap  = ucp_wireup_get_ep_tl_bitmap(ep,
                                                  ucp_ep_config(ep)->p2p_lanes);
         ep->flags |= UCP_EP_FLAG_LOCAL_CONNECTED;
+        ep->local_conn_set[0]++;
 
         ucs_assert(send_reply);
     }
@@ -590,6 +596,7 @@ ucp_wireup_process_reply(ucp_worker_h worker, ucp_ep_h ep,
         }
 
         ep->flags |= UCP_EP_FLAG_LOCAL_CONNECTED;
+        ep->local_conn_set[1]++;
         ack = 1;
     } else {
         ack = 0;
@@ -1198,6 +1205,7 @@ ucs_status_t ucp_wireup_init_lanes(ucp_ep_h ep, unsigned ep_init_flags,
     /* If we don't have a p2p transport, we're connected */
     if (!ucp_ep_config(ep)->p2p_lanes) {
         ep->flags |= UCP_EP_FLAG_LOCAL_CONNECTED;
+        ep->local_conn_set[2]++;
     }
 
     ucp_wireup_replay_pending_requests(ep, &replay_pending_queue);

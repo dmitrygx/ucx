@@ -365,6 +365,7 @@ free_addr:
 out_check_err:
     if (status == UCS_OK) {
         ep->flags |= UCP_EP_FLAG_LOCAL_CONNECTED;
+        ep->local_conn_set[3]++;
     } else {
         ucp_worker_set_ep_failed(worker, ep,
                                  &ucp_ep_get_cm_wireup_ep(ep)->super.super,
@@ -471,6 +472,7 @@ static unsigned ucp_cm_client_connect_progress(void *arg)
     if (status != UCS_OK) {
         /* connection can't be established by UCT, no need to disconnect */
         ucp_ep->flags &= ~UCP_EP_FLAG_LOCAL_CONNECTED;
+        ucp_ep->local_conn_unset[0]++;
         goto out_free_addr;
     }
 
@@ -538,11 +540,13 @@ static void ucp_cm_client_connect_cb(uct_ep_h uct_cm_ep, void *arg,
         ucp_cm_client_try_fallback_cms(ucp_ep)) {
         /* connection can't be established by UCT, no need to disconnect */
         ucp_ep->flags &= ~UCP_EP_FLAG_LOCAL_CONNECTED;
+        ucp_ep->local_conn_unset[1]++;
         /* cms fallback has started */
         return;
     } else if (status != UCS_OK) {
         /* connection can't be established by UCT, no need to disconnect */
         ucp_ep->flags &= ~UCP_EP_FLAG_LOCAL_CONNECTED;
+        ucp_ep->local_conn_unset[2]++;
         ucs_debug("failed status on client connect callback: %s "
                   "(sockaddr_cm=%s, cms_used_idx=%d)", ucs_status_string(status),
                   ucp_context_cm_name(worker->context,
@@ -1072,13 +1076,22 @@ free_addr:
 out:
     if (status == UCS_OK) {
         ep->flags |= UCP_EP_FLAG_LOCAL_CONNECTED;
+        ep->local_conn_set[4]++;
     } else {
         ucp_worker_set_ep_failed(worker, ep,
                                  &ucp_ep_get_cm_wireup_ep(ep)->super.super,
                                  ucp_ep_get_cm_lane(ep), status);
     }
 
+    if (!(ep->flags & UCP_EP_FLAG_LOCAL_CONNECTED)) {
+        ucs_fatal("ep %p: don't have LOCAL_CONNECT flag - 1", ep);
+    }
+
     UCS_ASYNC_UNBLOCK(&worker->async);
+
+    if (!(ep->flags & UCP_EP_FLAG_LOCAL_CONNECTED)) {
+        ucs_fatal("ep %p: don't have LOCAL_CONNECT flag - 2", ep);
+    }
 
     return (status == UCS_OK) ? (sizeof(*sa_data) + ucp_addr_size) : status;
 }
@@ -1095,6 +1108,10 @@ static unsigned ucp_cm_server_conn_notify_progress(void *arg)
     if (!ucp_ep->worker->context->config.ext.cm_use_all_devices) {
         ucp_wireup_remote_connected(ucp_ep);
     } else {
+        if (!(ucp_ep->flags & UCP_EP_FLAG_LOCAL_CONNECTED)) {
+            ucs_fatal("ucp_ep %p doesn't have flag LOCAL_CONNECTED",
+                      ucp_ep);
+        }
         status = ucp_wireup_send_pre_request(ucp_ep);
         ucs_assert_always(status == UCS_OK);
     }
@@ -1113,6 +1130,11 @@ static void ucp_cm_server_conn_notify_cb(uct_ep_h ep, void *arg,
     uct_worker_cb_id_t prog_id = UCS_CALLBACKQ_ID_NULL;
     ucp_lane_index_t cm_lane;
     ucs_status_t status;
+
+    if (!(ucp_ep->flags & UCP_EP_FLAG_LOCAL_CONNECTED)) {
+        ucs_fatal("ucp_ep %p doesn't have flag LOCAL_CONNECTED",
+                  ucp_ep);
+    }
 
     ucs_assert_always(notify_args->field_mask &
                       UCT_CM_EP_SERVER_CONN_NOTIFY_ARGS_FIELD_STATUS);
@@ -1202,6 +1224,7 @@ void ucp_ep_cm_disconnect_cm_lane(ucp_ep_h ucp_ep)
     ucs_assert(!(ucp_ep->flags & UCP_EP_FLAG_FAILED));
 
     ucp_ep->flags &= ~UCP_EP_FLAG_LOCAL_CONNECTED;
+    ucp_ep->local_conn_unset[3]++;
     ucp_ep->flags |= UCP_EP_FLAG_DISCONNECTED_CM_LANE;
     /* this will invoke @ref ucp_cm_disconnect_cb on remote side */
     status = uct_ep_disconnect(uct_cm_ep, 0);
