@@ -805,6 +805,8 @@ unsigned ucp_ep_local_disconnect_progress(void *arg)
     ucp_ep_disconnected(ep, req->send.flush.uct_flags & UCT_FLUSH_FLAG_CANCEL);
     UCS_ASYNC_UNBLOCK(async);
 
+    ucs_list_del(&req->send.state.list_elem);
+
     /* Complete send request from here, to avoid releasing the request while
      * slow-path element is still pending */
     ucp_request_complete_send(req, req->status);
@@ -994,6 +996,9 @@ ucs_status_ptr_t ucp_ep_close_nbx(ucp_ep_h ep, const ucp_request_param_t *param)
             } else {
                 ucp_ep_disconnected(ep, 0);
             }
+        } else if (UCS_PTR_IS_PTR(request)) {
+            ucs_list_add_tail(&worker->close_eps,
+                              &((ucp_request_t*)request - 1)->send.state.list_elem);
         }
     }
 

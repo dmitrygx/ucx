@@ -226,6 +226,8 @@ typedef struct ucp_worker {
     ucs_strided_alloc_t              ep_alloc;            /* Endpoint allocator */
     ucs_list_link_t                  stream_ready_eps;    /* List of EPs with received stream data */
     ucs_list_link_t                  all_eps;             /* List of all endpoints */
+    ucs_list_link_t                  close_eps;           /* List of EPs for which close operation is
+                                                           * in-progress */
     ucs_conn_match_ctx_t             conn_match_ctx;      /* Endpoint-to-endpoint matching context */
     ucp_worker_iface_t               **ifaces;            /* Array of pointers to interfaces,
                                                              one for each resource */

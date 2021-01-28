@@ -112,6 +112,9 @@ typedef struct ucp_context_config {
     unsigned                               keepalive_num_eps;
     /** Enable indirect IDs to object pointers in wire protocols */
     ucs_on_off_auto_value_t                proto_indirect_id;
+    /** Enable waiting for waiting UCP EP close compeltions inside
+     * ucp_worker_destory() function */
+    int                                    worker_wait_eps_close;
 } ucp_context_config_t;
 
 

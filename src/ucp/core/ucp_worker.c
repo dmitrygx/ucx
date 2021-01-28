@@ -2012,6 +2012,7 @@ ucs_status_t ucp_worker_create(ucp_context_h context,
     ucs_list_head_init(&worker->arm_ifaces);
     ucs_list_head_init(&worker->stream_ready_eps);
     ucs_list_head_init(&worker->all_eps);
+    ucs_list_head_init(&worker->close_eps);
     kh_init_inplace(ucp_worker_rkey_config, &worker->rkey_config_hash);
     kh_init_inplace(ucp_worker_discard_uct_ep_hash, &worker->discard_uct_ep_hash);
 
@@ -2301,6 +2302,46 @@ static void ucp_worker_discarded_uct_eps_cleanup(ucp_worker_h worker)
 static void ucp_worker_destroy_eps(ucp_worker_h worker)
 {
     ucp_ep_ext_gen_t *ep_ext, *tmp;
+    ucp_request_t *req, *req_tmp;
+    ucs_status_t status;
+    void *request;
+    ucp_ep_h ep;
+    int must_free;
+
+    if (!ucs_list_is_empty(&worker->all_eps)) {
+        if (!worker->context->config.ext.worker_wait_eps_close) {
+            ucs_warn("worker %p: not all EPs were closed gracefully,"
+                     " ucp_ep_close_nb(x) caller has to wait for the completion",
+                     worker);
+        } else {
+            ucs_debug("worker %p: waiting for all EPs being closed gracefully",
+                      worker);
+            ucs_list_for_each_safe(req, req_tmp, &worker->close_eps,
+                                   send.state.list_elem) {
+                request   = req + 1;
+                ep        = req->send.ep;
+                must_free = !(req->flags & UCP_REQUEST_FLAG_RELEASED);
+
+                ucs_debug("worker %p: waiting for EP %p being closed gracefully",
+                          worker, ep);
+                do {
+                    ucp_worker_progress(worker);
+                    status = ucp_request_check_status(request);
+                } while (status == UCS_INPROGRESS);
+
+                if (must_free) {
+                    ucp_request_release(request);
+                }
+
+                ucs_debug("worker %p: EP %p was closed gracefully", worker, ep);
+            }
+            ucs_debug("worker %p: all EPs were closed gracefully by a worker",
+                      worker);
+        }
+    } else {
+        ucs_debug("worker %p: all EPs were closed gracefully by a user",
+                  worker);
+    }
 
     ucs_debug("worker %p: destroy all endpoints", worker);
     ucs_list_for_each_safe(ep_ext, tmp, &worker->all_eps, ep_list) {

@@ -140,7 +140,11 @@ struct ucp_request {
                     ucp_datatype_iter_t  dt_iter;  /* Send buffer state */
                     ucp_dt_state_t       dt;       /* Position in the send buffer */
                 };
-                uct_completion_t         uct_comp; /* UCT completion used by flush */
+                struct {
+                    uct_completion_t     uct_comp; /* UCT completion used by flush */
+                    ucs_list_link_t      list_elem; /* List element in worker's close_eps_list,
+                                                     * used by EP close operation */
+                };
             } state;
 
             union {

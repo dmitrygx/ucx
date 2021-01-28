@@ -613,6 +613,8 @@ static void ucp_ep_cm_remote_disconnect_progress(ucp_ep_h ucp_ep)
     ucs_assert(ucp_ep->flags & UCP_EP_FLAG_LOCAL_CONNECTED);
     if (ucs_test_all_flags(ucp_ep->flags, UCP_EP_FLAG_CLOSED |
                                           UCP_EP_FLAG_CLOSE_REQ_VALID)) {
+        ucs_list_del(&ucp_ep_ext_control(ucp_ep)->
+                     close_req.req->send.state.list_elem);
         ucp_request_complete_send(ucp_ep_ext_control(ucp_ep)->close_req.req,
                                   UCS_OK);
         return;
@@ -1213,6 +1215,7 @@ void ucp_ep_cm_disconnect_cm_lane(ucp_ep_h ucp_ep)
 
 ucp_request_t* ucp_ep_cm_close_request_get(ucp_ep_h ep, const ucp_request_param_t *param)
 {
+    ucp_worker_h worker    = ep->worker;
     ucp_request_t *request = ucp_request_get_param(ep->worker, param, {return NULL;});
 
     if (request == NULL) {
@@ -1220,12 +1223,14 @@ ucp_request_t* ucp_ep_cm_close_request_get(ucp_ep_h ep, const ucp_request_param_
         return NULL;
     }
 
-    request->status  = UCS_OK;
-    request->flags   = 0;
-    request->send.ep = ep;
+    request->status               = UCS_OK;
+    request->flags                = 0;
+    request->send.ep              = ep;
     request->send.flush.uct_flags = UCT_FLUSH_FLAG_LOCAL;
 
     ucp_request_set_send_callback_param(param, request, send);
+
+    ucs_list_add_tail(&worker->close_eps, &request->send.state.list_elem);
 
     return request;
 }

@@ -320,6 +320,10 @@ static ucs_config_field_t ucp_config_table[] = {
    "endpoint.",
    ucs_offsetof(ucp_config_t, ctx.proto_indirect_id), UCS_CONFIG_TYPE_ON_OFF_AUTO},
 
+  {"WORKER_WAIT_EPS_CLOSE", "y",
+   "Experimental: enables waiting for all EPs being closed inside ucp_worker_destroy()",
+   ucs_offsetof(ucp_config_t, ctx.worker_wait_eps_close), UCS_CONFIG_TYPE_BOOL},
+
    {NULL}
 };
 UCS_CONFIG_REGISTER_TABLE(ucp_config_table, "UCP context", NULL, ucp_config_t,
