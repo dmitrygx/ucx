@@ -287,6 +287,8 @@ static ssize_t ucp_cm_client_priv_pack_cb(void *arg,
 
     dev_name = pack_args->dev_name;
 
+    ucs_debug("ep %p: ucp_cm_client_priv_pack_cb: %s", ep, dev_name);
+
     /* At this point the ep has only CM lane */
     ucs_assert((ucp_ep_num_lanes(ep) == 1) && ucp_ep_has_cm_lane(ep));
     cm_wireup_ep = ucp_ep_get_cm_wireup_ep(ep);
@@ -295,8 +297,10 @@ static ssize_t ucp_cm_client_priv_pack_cb(void *arg,
     status = ucp_cm_ep_client_initial_config_get(ep, dev_name, &key);
     if (status != UCS_OK) {
         if (ucp_cm_client_try_fallback_cms(ep)) {
+            ucs_debug("ep %p: try_fallback status-%d", ep, status);
             goto out;
         } else {
+            ucs_debug("ep %p: not try_fallback status-%d", ep, status);
             goto out_check_err;
         }
     }
@@ -313,6 +317,7 @@ static ssize_t ucp_cm_client_priv_pack_cb(void *arg,
     status = ucp_ep_create_base(worker, "tmp_cm", "tmp cm client",
                                 &cm_wireup_ep->tmp_ep);
     if (status != UCS_OK) {
+        ucs_debug("ep %p: ep_create_base status-%d", ep, status);
         goto out_check_err;
     }
 
@@ -321,11 +326,13 @@ static ssize_t ucp_cm_client_priv_pack_cb(void *arg,
     status = ucp_worker_get_ep_config(worker, &key, 0,
                                       &cm_wireup_ep->tmp_ep->cfg_index);
     if (status != UCS_OK) {
+        ucs_debug("ep %p: get_ep_config status-%d", ep, status);
         goto out_check_err;
     }
 
     status = ucp_cm_ep_init_lanes(ep, &tl_bitmap, &dev_index);
     if (status != UCS_OK) {
+        ucs_debug("ep %p: ep_init_lanes status-%d", ep, status);
         goto out_check_err;
     }
 
@@ -339,6 +346,7 @@ static ssize_t ucp_cm_client_priv_pack_cb(void *arg,
                               UCP_ADDRESS_PACK_FLAGS_CM_DEFAULT,
                               NULL, &ucp_addr_size, &ucp_addr);
     if (status != UCS_OK) {
+        ucs_debug("ep %p: address_pack status-%d", ep, status);
         goto out_check_err;
     }
 
@@ -350,6 +358,7 @@ static ssize_t ucp_cm_client_priv_pack_cb(void *arg,
                   worker->cms[cm_wireup_ep->cm_idx].cm,
                   worker->cms[cm_wireup_ep->cm_idx].attr.max_conn_priv);
         status = UCS_ERR_BUFFER_TOO_SMALL;
+        ucs_debug("ep %p: TOO SMALL status-%d", ep, status);
         goto free_addr;
     }
 
@@ -427,6 +436,8 @@ static unsigned ucp_cm_client_connect_progress(void *arg)
 
     UCS_ASYNC_BLOCK(&worker->async);
 
+    ucs_debug("ucp_ep %p: ucp_cm_client_connect_progress", ucp_ep);
+
     wireup_ep = ucp_ep_get_cm_wireup_ep(ucp_ep);
     ucs_assert(wireup_ep != NULL);
     ucs_assert(wireup_ep->ep_init_flags & UCP_EP_INIT_CM_WIREUP_CLIENT);
@@ -434,11 +445,13 @@ static unsigned ucp_cm_client_connect_progress(void *arg)
     status = ucp_address_unpack(worker, progress_arg->sa_data + 1,
                                 UCP_ADDRESS_PACK_FLAGS_CM_DEFAULT, &addr);
     if (status != UCS_OK) {
+        ucs_debug("ucp_ep %p: address_unpack status-%d", ucp_ep, status);
         goto out;
     }
 
     if (addr.address_count == 0) {
         status = UCS_ERR_UNREACHABLE;
+        ucs_debug("ucp_ep %p: UNREACHABLE status-%d", ucp_ep, status);
         goto out_free_addr;
     }
 
@@ -462,11 +475,13 @@ static unsigned ucp_cm_client_connect_progress(void *arg)
     status    = ucp_wireup_init_lanes(ucp_ep, wireup_ep->ep_init_flags,
                                       tl_bitmap, &addr, addr_indices);
     if (status != UCS_OK) {
+        ucs_debug("ucp_ep %p: wireup_init_lanes status-%d", ucp_ep, status);
         goto out_free_addr;
     }
 
     status = ucp_wireup_connect_local(ucp_ep, &addr, NULL);
     if (status != UCS_OK) {
+        ucs_debug("ucp_ep %p: wireup_connect_local status-%d", ucp_ep, status);
         goto out_free_addr;
     }
 
@@ -474,6 +489,7 @@ static unsigned ucp_cm_client_connect_progress(void *arg)
     if (status != UCS_OK) {
         /* connection can't be established by UCT, no need to disconnect */
         ucp_ep->flags &= ~UCP_EP_FLAG_LOCAL_CONNECTED;
+        ucs_debug("ucp_ep %p: cm_client_ep_conn_notify status-%d", ucp_ep, status);
         goto out_free_addr;
     }
 
@@ -531,6 +547,7 @@ static void ucp_cm_client_connect_cb(uct_ep_h uct_cm_ep, void *arg,
     remote_data = connect_args->remote_data;
     status      = connect_args->status;
 
+    ucs_debug("ucp_ep %p: ucp_cm_client_connect_cb status-%d", ucp_ep, status);
 
     if (((status == UCS_ERR_NOT_CONNECTED) || (status == UCS_ERR_UNREACHABLE) ||
          (status == UCS_ERR_CONNECTION_RESET)) &&
@@ -539,6 +556,7 @@ static void ucp_cm_client_connect_cb(uct_ep_h uct_cm_ep, void *arg,
         /* connection can't be established by UCT, no need to disconnect */
         ucp_ep->flags &= ~UCP_EP_FLAG_LOCAL_CONNECTED;
         /* cms fallback has started */
+        ucs_debug("ucp_ep %p: try_fallback status-%d", ucp_ep, status);
         return;
     } else if (status != UCS_OK) {
         /* connection can't be established by UCT, no need to disconnect */
@@ -548,11 +566,13 @@ static void ucp_cm_client_connect_cb(uct_ep_h uct_cm_ep, void *arg,
                   ucp_context_cm_name(worker->context,
                                       ucp_ep_get_cm_wireup_ep(ucp_ep)->cm_idx),
                   ucp_ep_get_cm_wireup_ep(ucp_ep)->cm_idx);
+        ucs_debug("ucp_ep %p: not_try_fallback status-%d", ucp_ep, status);
         goto err_out;
     }
 
     status = ucp_cm_remote_data_check(remote_data);
     if (status != UCS_OK) {
+        ucs_debug("ucp_ep %p: cm_remote_data_check status-%d", ucp_ep, status);
         goto err_out;
     }
 
@@ -582,6 +602,8 @@ static void ucp_cm_client_connect_cb(uct_ep_h uct_cm_ep, void *arg,
            remote_data->dev_addr_length);
     memcpy(progress_arg->sa_data, remote_data->conn_priv_data,
            remote_data->conn_priv_data_length);
+
+    ucs_debug("ucp_ep %p: ucp_cm_client_connect_cb DONE status-%d", ucp_ep, status);
 
     uct_worker_progress_register_safe(worker->uct,
                                       ucp_cm_client_connect_progress,
