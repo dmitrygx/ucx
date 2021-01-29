@@ -2282,7 +2282,6 @@ size_t ucp_ep_config_get_zcopy_auto_thresh(size_t iovcnt,
 ucp_wireup_ep_t* ucp_ep_get_cm_wireup_ep(ucp_ep_h ep)
 {
     ucp_lane_index_t lane;
-    uct_ep_h uct_ep;
 
     if (ep->cfg_index == UCP_WORKER_CFG_INDEX_NULL) {
         return NULL;
@@ -2293,8 +2292,8 @@ ucp_wireup_ep_t* ucp_ep_get_cm_wireup_ep(ucp_ep_h ep)
         return NULL;
     }
 
-    uct_ep = ep->uct_eps[lane];
-    return (uct_ep != NULL) ? ucp_wireup_ep(uct_ep) : NULL;
+    return ucp_wireup_ep_test(ep->uct_eps[lane]) ?
+           ucs_derived_of(ep->uct_eps[lane], ucp_wireup_ep_t) : NULL;
 }
 
 uct_ep_h ucp_ep_get_cm_uct_ep(ucp_ep_h ep)
