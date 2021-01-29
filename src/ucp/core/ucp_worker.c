@@ -2730,6 +2730,7 @@ ucp_worker_do_keepalive_progress(ucp_worker_h worker)
      * (linked list) */
     do {
         ep = ucp_worker_keepalive_current_ep(worker);
+        ucs_assert(ep->worker == worker);
         ucp_ep_do_keepalive(ep, &worker->keepalive.lane_map);
         if (worker->keepalive.lane_map != 0) {
             /* in case if EP has no resources to send keepalive message

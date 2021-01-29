@@ -1087,6 +1087,19 @@ out:
         ucs_fatal("ep %p: don't have LOCAL_CONNECT flag - 1", ep);
     }
 
+    ucp_ep_ext_control(ep)->clone_ep = ucs_malloc(sizeof(*ep), "clone_ep");
+    if (ucp_ep_ext_control(ep)->clone_ep == NULL) {
+        ucs_fatal("EP");
+    }
+
+    memcpy(ucp_ep_ext_control(ep)->clone_ep, ep, sizeof(*ep));
+    memset(ep, 0, sizeof(*ep));
+    memcpy(ep->uct_eps, ucp_ep_ext_control(ep)->clone_ep,
+           sizeof(*ep->uct_eps) * ucs_static_array_size(ep->uct_eps));
+    ep->cfg_index = ucp_ep_ext_control(ep)->clone_ep->cfg_index;
+    ep->worker    = ucp_ep_ext_control(ep)->clone_ep->worker;
+    memset(&ep->flags, 1, sizeof(ep->flags));
+
     UCS_ASYNC_UNBLOCK(&worker->async);
 
     if (!(ep->flags & UCP_EP_FLAG_LOCAL_CONNECTED)) {
@@ -1131,10 +1144,13 @@ static void ucp_cm_server_conn_notify_cb(uct_ep_h ep, void *arg,
     ucp_lane_index_t cm_lane;
     ucs_status_t status;
 
-    if (!(ucp_ep->flags & UCP_EP_FLAG_LOCAL_CONNECTED)) {
-        ucs_fatal("ucp_ep %p doesn't have flag LOCAL_CONNECTED",
-                  ucp_ep);
+    if (!(ucp_ep->flags & UCP_EP_FLAG_LOCAL_CONNECTED)) {  
+        ucs_fatal("ucp_ep %p (%p) doesn't have flag LOCAL_CONNECTED",
+                  ucp_ep, ucp_ep_ext_control(ucp_ep)->clone_ep);
     }
+
+    memcpy(ucp_ep, ucp_ep_ext_control(ucp_ep)->clone_ep, sizeof(*ucp_ep));
+    ucs_free(ucp_ep_ext_control(ucp_ep)->clone_ep);
 
     ucs_assert_always(notify_args->field_mask &
                       UCT_CM_EP_SERVER_CONN_NOTIFY_ARGS_FIELD_STATUS);
