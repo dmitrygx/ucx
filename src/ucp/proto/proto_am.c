@@ -31,7 +31,7 @@ static size_t ucp_proto_pack(void *dest, void *arg)
     case UCP_AM_ID_RNDV_ATS:
     case UCP_AM_ID_RNDV_ATP:
         rep_hdr = dest;
-        rep_hdr->req_id = req->req_id.remote;
+        rep_hdr->req_id = req->send.req_id.remote;
         rep_hdr->status = req->send.proto.status;
         return sizeof(*rep_hdr);
     case UCP_AM_ID_OFFLOAD_SYNC_ACK:

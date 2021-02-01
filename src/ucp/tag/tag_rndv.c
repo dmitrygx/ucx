@@ -11,8 +11,6 @@
 #include "tag_rndv.h"
 #include "tag_match.inl"
 
-#include <ucp/rndv/rndv.inl>
-
 
 void ucp_tag_rndv_matched(ucp_worker_h worker, ucp_request_t *rreq,
                           const ucp_tag_rndv_rts_hdr_t *rts_hdr)
@@ -102,7 +100,7 @@ ucs_status_t ucp_tag_send_start_rndv(ucp_request_t *sreq)
         return status;
     }
 
-    sreq->req_id.local = ucp_send_request_get_id(sreq);
+    sreq->send.req_id.local = ucp_send_request_get_id(sreq);
 
     if (ucp_ep_config_key_has_tag_lane(&ucp_ep_config(ep)->key)) {
         status = ucp_tag_offload_start_rndv(sreq);

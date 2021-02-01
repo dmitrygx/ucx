@@ -119,12 +119,12 @@ ucs_status_t ucp_ep_create_base(ucp_worker_h worker, const char *peer_name,
     ucp_ep_ext_control(ep)->local_ep_id  =
     ucp_ep_ext_control(ep)->remote_ep_id = UCP_EP_ID_INVALID;
 
-    ucs_hlist_head_init(&ucp_ep_ext_gen(ep)->proto_reqs);
-
     UCS_STATIC_ASSERT(sizeof(ucp_ep_ext_gen(ep)->ep_match) >=
                       sizeof(ucp_ep_ext_gen(ep)->flush_state));
     memset(&ucp_ep_ext_gen(ep)->ep_match, 0,
            sizeof(ucp_ep_ext_gen(ep)->ep_match));
+
+    ucs_hlist_head_init(&ucp_ep_ext_gen(ep)->proto_reqs);
 
     ucp_stream_ep_init(ep);
     ucp_am_ep_init(ep);
@@ -2393,12 +2393,12 @@ static void ucp_ep_req_purge(ucp_ep_h ucp_ep, ucp_request_t *req,
                              ucs_status_t status, int recursive)
 {
     ucp_request_t *req_by_id = NULL;
+    ucs_status_t ret_status;
 
-    if (ucp_worker_get_request_by_id(ucp_ep->worker, req->req_id.local,
-                                     &req_by_id) == UCS_OK) {
-        ucs_assert(req == req_by_id);
-        ucp_worker_del_request_id(ucp_ep->worker, req);
-    }
+    ret_status = ucp_send_request_extract_by_id(ucp_ep->worker,
+                                                req->send.req_id.local,
+                                                &req_by_id);
+    ucs_assert((ret_status == UCS_ERR_NO_ELEM) || (req == req_by_id));
 
     if (req->flags & (UCP_REQUEST_FLAG_SEND_AM | UCP_REQUEST_FLAG_SEND_TAG)) {
         ucs_assert(req->super_req == NULL);
@@ -2431,13 +2431,12 @@ static void ucp_ep_req_purge(ucp_ep_h ucp_ep, ucp_request_t *req,
 void ucp_ep_reqs_purge(ucp_ep_h ucp_ep, ucs_status_t status,
                        int purge_flush_reqs)
 {
+    ucs_hlist_head_t *proto_reqs = &ucp_ep_ext_gen(ucp_ep)->proto_reqs;
     uct_ep_h wireup_ep;
     ucp_request_t *req;
 
-    while (!ucs_hlist_is_empty(&ucp_ep_ext_gen(ucp_ep)->proto_reqs)) {
-        req = ucs_hlist_head_elem(&ucp_ep_ext_gen(ucp_ep)->proto_reqs,
-                                  ucp_request_t, send.list_elem);
-        ucp_request_send_untrack(req);
+    while (!ucs_hlist_is_empty(proto_reqs)) {
+        req = ucs_hlist_head_elem(proto_reqs, ucp_request_t, send.list_elem);
         ucp_ep_req_purge(ucp_ep, req, status, 0);
     }
 

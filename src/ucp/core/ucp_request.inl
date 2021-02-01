@@ -153,7 +153,7 @@ ucp_request_put(ucp_request_t *req)
 {
     ucs_trace_req("put request %p", req);
     ucs_assert(!(req->flags & UCP_REQUEST_FLAG_IN_PTR_MAP));
-    ucs_assert(!(req->flags & UCP_REQUEST_DEBUG_FLAG_TRACK));
+    ucs_assert(!(req->flags & UCP_REQUEST_FLAG_ON_EP_LIST));
     UCS_PROFILE_REQUEST_FREE(req);
     ucs_mpool_put_inline(req);
 }
@@ -759,13 +759,6 @@ ucp_request_param_mem_type(const ucp_request_param_t *param)
            param->memory_type : UCS_MEMORY_TYPE_UNKNOWN;
 }
 
-static UCS_F_ALWAYS_INLINE ucs_ptr_map_key_t
-ucp_send_request_get_id(ucp_request_t *req)
-{
-    return ucp_worker_get_request_id(req->send.ep->worker, req,
-                                     ucp_ep_use_indirect_id(req->send.ep));
-}
-
 static UCS_F_ALWAYS_INLINE void
 ucp_request_param_rndv_thresh(ucp_request_t *req,
                               const ucp_request_param_t *param,
@@ -827,21 +820,103 @@ ucp_request_complete_and_dereg_recv_rndv(ucp_request_t *rreq, ucs_status_t statu
 static UCS_F_ALWAYS_INLINE void ucp_request_send_track(ucp_request_t *req)
 {
     ucs_assert(req->send.ep != NULL);
-    ucs_assert(!(req->flags & UCP_REQUEST_DEBUG_FLAG_TRACK));
+    ucs_assert(!(req->flags & UCP_REQUEST_FLAG_ON_EP_LIST));
 
     ucs_hlist_add_tail(&ucp_ep_ext_gen(req->send.ep)->proto_reqs,
                        &req->send.list_elem);
-    req->flags |= UCP_REQUEST_DEBUG_FLAG_TRACK;
+    req->flags |= UCP_REQUEST_FLAG_ON_EP_LIST;
 }
 
 static UCS_F_ALWAYS_INLINE void ucp_request_send_untrack(ucp_request_t *req)
 {
     ucs_assert(req->send.ep != NULL);
-    ucs_assert(req->flags & UCP_REQUEST_DEBUG_FLAG_TRACK);
+    ucs_assert(req->flags & UCP_REQUEST_FLAG_ON_EP_LIST);
 
     ucs_hlist_del(&ucp_ep_ext_gen(req->send.ep)->proto_reqs,
                   &req->send.list_elem);
-    req->flags &= ~UCP_REQUEST_DEBUG_FLAG_TRACK;
+    req->flags &= ~UCP_REQUEST_FLAG_ON_EP_LIST;
+}
+
+static UCS_F_ALWAYS_INLINE ucs_ptr_map_key_t
+ucp_send_request_get_id(ucp_request_t *req)
+{
+    ucp_worker_h worker = req->send.ep->worker;
+    int indirect        = ucp_ep_use_indirect_id(req->send.ep);
+    ucs_ptr_map_key_t id;
+    ucs_status_t status;
+
+    ucs_assert(!(req->flags & UCP_REQUEST_FLAG_IN_PTR_MAP));
+    status = ucs_ptr_map_put(&worker->ptr_map, req, indirect, &id);
+    if (ucs_unlikely(indirect)) {
+        if (ucs_unlikely(status != UCS_OK)) {
+            return UCP_REQUEST_ID_INVALID;
+        }
+
+        req->flags |= UCP_REQUEST_FLAG_IN_PTR_MAP;
+    }
+
+    ucp_request_send_track(req);
+    ucs_assert(status == UCS_OK);
+    return id;
+}
+
+static UCS_F_ALWAYS_INLINE ucs_status_t
+ucp_send_request_get_by_id(ucp_worker_h worker, ucs_ptr_map_key_t id,
+                           ucp_request_t **req_p)
+{
+    ucs_status_t status;
+    void *ptr;
+
+    status = ucs_ptr_map_get(&worker->ptr_map, id, 0, &ptr);
+    if (ucs_likely(status == UCS_OK)) {
+        *req_p = (ucp_request_t*)ptr;
+    }
+    return status;
+}
+
+static UCS_F_ALWAYS_INLINE void
+ucp_send_request_check_flags(const ucp_request_t *req)
+{
+    ucs_assert((req != NULL) &&
+               ((req->flags & UCP_REQUEST_FLAG_IN_PTR_MAP) ||
+                !ucs_ptr_map_key_indirect(req->send.req_id.local)));
+}
+
+static UCS_F_ALWAYS_INLINE void
+ucp_send_request_del_id(ucp_request_t *req)
+{
+    ucp_worker_h worker = req->send.ep->worker;
+    ucs_status_t status UCS_V_UNUSED;
+
+    ucp_send_request_check_flags(req);
+    status                 = ucs_ptr_map_del(&worker->ptr_map,
+                                             req->send.req_id.local);
+    req->flags            &= ~UCP_REQUEST_FLAG_IN_PTR_MAP;
+    req->send.req_id.local = UCP_REQUEST_ID_INVALID;
+    ucs_assert(status == UCS_OK);
+
+    ucp_request_send_untrack(req);
+}
+
+static UCS_F_ALWAYS_INLINE ucs_status_t
+ucp_send_request_extract_by_id(ucp_worker_h worker, ucs_ptr_map_key_t id,
+                               ucp_request_t **req_p)
+{
+    ucs_status_t status;
+    void *ptr;
+
+    status = ucs_ptr_map_get(&worker->ptr_map, id, 1, &ptr);
+    if (ucs_unlikely(status != UCS_OK)) {
+        return status;
+    }
+
+    *req_p = (ucp_request_t*)ptr;
+    ucp_send_request_check_flags(*req_p);
+    (*req_p)->flags &= ~UCP_REQUEST_FLAG_IN_PTR_MAP;
+
+    ucp_request_send_untrack(*req_p);
+
+    return UCS_OK;
 }
 
 

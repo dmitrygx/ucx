@@ -1058,8 +1058,9 @@ protected:
     typedef void (*stop_cb_t)(void *arg);
 
     void* do_unexp_recv(std::string &recv_buf, size_t size, void *sreq,
-                        bool err_handling, bool send_stop, bool recv_stop) {
+                        bool send_stop, bool recv_stop) {
         ucp_tag_recv_info_t recv_info = {};
+        bool err_handling             = send_stop || recv_stop;
         ucp_tag_message_h message;
 
         do {
@@ -1086,8 +1087,8 @@ protected:
                                          <ucp_tag_recv_nbx_callback_t>(
                                              !err_handling ? rtag_complete_cb :
                                              rtag_complete_err_handling_cb);
-        return ucp_tag_msg_recv_nbx(receiver().worker(), &recv_buf[0], size, message,
-                                    &recv_param);
+        return ucp_tag_msg_recv_nbx(receiver().worker(), &recv_buf[0], size,
+                                    message, &recv_param);
     }
 
     void extra_send_before_disconnect(entity &e, const std::string &send_buf,
@@ -1144,8 +1145,8 @@ protected:
             reqs.push_back(sreq);
 
             if (!is_exp) {
-                rreq = do_unexp_recv(recv_buf, size, sreq, err_handling_test,
-                                     send_stop, recv_stop);
+                rreq = do_unexp_recv(recv_buf, size, sreq, send_stop,
+                                     recv_stop);
                 reqs.push_back(rreq);
             }
 

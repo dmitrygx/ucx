@@ -284,9 +284,9 @@ UCS_PROFILE_FUNC(ucs_status_t, ucp_eager_sync_ack_handler,
     if (worker->context->config.ext.proto_enable) {
         ucp_proto_eager_sync_ack_handler(worker, rep_hdr);
     } else {
-        UCP_WORKER_EXTRACT_REQUEST_BY_ID(&req, worker, rep_hdr->req_id,
-                                         return UCS_OK, "EAGER_S ACK %p",
-                                         rep_hdr);
+        UCP_SEND_REQUEST_EXTRACT_BY_ID(&req, worker, rep_hdr->req_id,
+                                       return UCS_OK, "EAGER_S ACK %p",
+                                       rep_hdr);
         ucp_tag_eager_sync_completion(req, UCP_REQUEST_FLAG_REMOTE_COMPLETED,
                                       UCS_OK);
     }

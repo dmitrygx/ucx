@@ -1222,7 +1222,7 @@ ucp_request_t* ucp_ep_cm_close_request_get(ucp_ep_h ep, const ucp_request_param_
 
     request->status               = UCS_OK;
     request->flags                = 0;
-    request->req_id.local         = UCP_REQUEST_ID_INVALID;
+    request->send.req_id.local   = UCP_REQUEST_ID_INVALID;
     request->send.ep              = ep;
     request->send.flush.uct_flags = UCT_FLUSH_FLAG_LOCAL;
 

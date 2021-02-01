@@ -57,12 +57,12 @@ enum {
     UCP_REQUEST_FLAG_STREAM_RECV          = UCS_BIT(18),
     UCP_REQUEST_DEBUG_FLAG_EXTERNAL       = UCS_BIT(19),
     UCP_REQUEST_FLAG_IN_PTR_MAP           = UCS_BIT(20),
-    UCP_REQUEST_DEBUG_FLAG_TRACK          = UCS_BIT(21)
+    UCP_REQUEST_FLAG_ON_EP_LIST           = UCS_BIT(21)
 #else
     UCP_REQUEST_FLAG_STREAM_RECV          = 0,
     UCP_REQUEST_DEBUG_FLAG_EXTERNAL       = 0,
     UCP_REQUEST_FLAG_IN_PTR_MAP           = 0,
-    UCP_REQUEST_DEBUG_FLAG_TRACK          = 0
+    UCP_REQUEST_FLAG_ON_EP_LIST           = 0
 #endif
 };
 
@@ -120,10 +120,6 @@ struct ucp_request {
         ucp_request_t             *super_req; /* Super request that is used
                                                  by protocols */
     };
-    union {
-        ucs_ptr_map_key_t local;  /* Local request ID taken from PTR MAP */
-        ucs_ptr_map_key_t remote; /* Remote request ID received from a peer */
-    } req_id;
 
     union {
 
@@ -135,6 +131,13 @@ struct ucp_request {
             ucp_datatype_t          datatype;   /* Send type */
             size_t                  length;     /* Total length, in bytes */
             ucp_send_nbx_callback_t cb;         /* Completion callback */
+
+            union {
+                /* Local request ID taken from PTR MAP */
+                ucs_ptr_map_key_t local;
+                 /* Remote request ID received from a peer */
+                ucs_ptr_map_key_t remote;
+            } req_id;
 
             const ucp_proto_config_t *proto_config; /* Selected protocol for the request */
 
@@ -289,6 +292,9 @@ struct ucp_request {
             ssize_t               remaining;  /* How much more data
                                                * to be received */
 
+            /* Remote request ID received from a peer */
+            ucs_ptr_map_key_t remote_req_id;
+
             union {
                 struct {
                     ucp_tag_t                   tag;        /* Expected tag */
@@ -415,5 +421,6 @@ void ucp_request_send_state_ff(ucp_request_t *req, ucs_status_t status);
 
 ucs_status_t ucp_request_recv_msg_truncated(ucp_request_t *req, size_t length,
                                             size_t offset);
+
 
 #endif

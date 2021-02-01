@@ -16,7 +16,6 @@
 #include <ucp/core/ucp_context.h>
 #include <ucp/core/ucp_request.h>
 #include <ucp/core/ucp_mm.h>
-#include <ucp/rndv/rndv.inl>
 #include <ucp/tag/tag_match.inl>
 #include <ucs/sys/sys.h>
 
@@ -565,7 +564,6 @@ ucs_status_t ucp_tag_offload_sw_rndv(uct_pending_req_t *self)
         return status;
     }
 
-    ucp_request_send_track(req);
     return UCS_OK;
 }
 
@@ -591,7 +589,7 @@ ucs_status_t ucp_tag_offload_rndv_zcopy(uct_pending_req_t *self)
 
     ucp_tag_offload_unexp_rndv_hdr_t rndv_hdr = {
         .ep_id    = ucp_send_request_get_ep_remote_id(req),
-        .req_id   = req->req_id.local,
+        .req_id   = req->send.req_id.local,
         .md_index = ucp_ep_md_index(ep, req->send.lane)
     };
 

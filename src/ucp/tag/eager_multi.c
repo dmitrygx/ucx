@@ -184,7 +184,7 @@ static size_t ucp_eager_sync_bcopy_pack_first(void *dest, void *arg)
 
     ucp_proto_eager_set_first_hdr(req, &hdr->super);
     hdr->req.ep_id  = ucp_send_request_get_ep_remote_id(req);
-    hdr->req.req_id = req->req_id.local;
+    hdr->req.req_id = req->send.req_id.local;
     return sizeof(*hdr) + ucp_proto_multi_data_pack(pack_ctx, hdr + 1);
 }
 
@@ -216,8 +216,8 @@ void ucp_proto_eager_sync_ack_handler(ucp_worker_h worker,
 {
     ucp_request_t *req;
 
-    UCP_WORKER_EXTRACT_REQUEST_BY_ID(&req, worker, rep_hdr->req_id, return,
-                                     "EAGER_S ACK %p", rep_hdr);
+    UCP_SEND_REQUEST_EXTRACT_BY_ID(&req, worker, rep_hdr->req_id, return,
+                                   "EAGER_S ACK %p", rep_hdr);
 
     req->flags |= UCP_REQUEST_FLAG_REMOTE_COMPLETED;
     if (req->flags & UCP_REQUEST_FLAG_LOCAL_COMPLETED) {
@@ -229,7 +229,7 @@ static UCS_F_ALWAYS_INLINE void
 ucp_proto_eager_sync_bcopy_request_init(ucp_request_t *req)
 {
     ucp_proto_eager_multi_request_init(req);
-    req->req_id.local = ucp_send_request_get_id(req);
+    req->send.req_id.local = ucp_send_request_get_id(req);
 }
 
 static ucs_status_t
