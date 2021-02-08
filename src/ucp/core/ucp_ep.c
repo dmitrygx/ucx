@@ -2393,7 +2393,7 @@ static void ucp_ep_req_purge(ucp_ep_h ucp_ep, ucp_request_t *req,
                              ucs_status_t status, int recursive)
 {
     ucp_request_t *req_by_id = NULL;
-    ucs_status_t ret_status;
+    ucs_status_t UCS_V_UNUSED ret_status;
 
     ret_status = ucp_send_request_extract_by_id(ucp_ep->worker,
                                                 req->send.req_id.local,
