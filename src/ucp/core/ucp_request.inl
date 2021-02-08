@@ -853,10 +853,11 @@ ucp_send_request_get_id(ucp_request_t *req)
         }
 
         req->flags |= UCP_REQUEST_FLAG_IN_PTR_MAP;
+        ucp_request_send_track(req);
     }
 
-    ucp_request_send_track(req);
     ucs_assert(status == UCS_OK);
+
     return id;
 }
 
@@ -889,13 +890,14 @@ ucp_send_request_del_id(ucp_request_t *req)
     ucs_status_t status UCS_V_UNUSED;
 
     ucp_send_request_check_flags(req);
-    status                 = ucs_ptr_map_del(&worker->ptr_map,
-                                             req->send.req_id.local);
-    req->flags            &= ~UCP_REQUEST_FLAG_IN_PTR_MAP;
-    req->send.req_id.local = UCP_REQUEST_ID_INVALID;
+    status = ucs_ptr_map_del(&worker->ptr_map, req->send.req_id.local);
     ucs_assert(status == UCS_OK);
 
-    ucp_request_send_untrack(req);
+    if (ucp_ep_use_indirect_id(req->send.ep)) {
+        req->flags            &= ~UCP_REQUEST_FLAG_IN_PTR_MAP;
+        req->send.req_id.local = UCP_REQUEST_ID_INVALID;
+        ucp_request_send_untrack(req);
+    }
 }
 
 static UCS_F_ALWAYS_INLINE ucs_status_t
@@ -912,9 +914,12 @@ ucp_send_request_extract_by_id(ucp_worker_h worker, ucs_ptr_map_key_t id,
 
     *req_p = (ucp_request_t*)ptr;
     ucp_send_request_check_flags(*req_p);
-    (*req_p)->flags &= ~UCP_REQUEST_FLAG_IN_PTR_MAP;
 
-    ucp_request_send_untrack(*req_p);
+    if (ucp_ep_use_indirect_id((*req_p)->send.ep)) {
+        (*req_p)->flags            &= ~UCP_REQUEST_FLAG_IN_PTR_MAP;
+        (*req_p)->send.req_id.local = UCP_REQUEST_ID_INVALID;
+        ucp_request_send_untrack(*req_p);
+    }
 
     return UCS_OK;
 }
