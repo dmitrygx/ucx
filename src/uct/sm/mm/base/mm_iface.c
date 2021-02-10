@@ -162,7 +162,8 @@ static ucs_status_t uct_mm_iface_query(uct_iface_h tl_iface,
                                           UCT_IFACE_FLAG_PENDING             |
                                           UCT_IFACE_FLAG_CB_SYNC             |
                                           UCT_IFACE_FLAG_EP_CHECK            |
-                                          UCT_IFACE_FLAG_CONNECT_TO_IFACE;
+                                          UCT_IFACE_FLAG_CONNECT_TO_IFACE    |
+                                          UCT_IFACE_FLAG_ERRHANDLE_PEER_FAILURE;
     iface_attr->cap.event_flags         = UCT_IFACE_FLAG_EVENT_SEND_COMP     |
                                           UCT_IFACE_FLAG_EVENT_RECV          |
                                           UCT_IFACE_FLAG_EVENT_FD;
