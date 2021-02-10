@@ -569,6 +569,8 @@ static void ucp_cm_client_connect_cb(uct_ep_h uct_cm_ep, void *arg,
     const uct_cm_remote_data_t *remote_data;
     ucs_status_t status;
 
+    UCS_ASYNC_BLOCK(&worker->async);
+
     ucs_assert_always(ucs_test_all_flags(connect_args->field_mask,
                                          (UCT_CM_EP_CLIENT_CONNECT_ARGS_FIELD_REMOTE_DATA |
                                           UCT_CM_EP_CLIENT_CONNECT_ARGS_FIELD_STATUS)));
@@ -587,7 +589,7 @@ static void ucp_cm_client_connect_cb(uct_ep_h uct_cm_ep, void *arg,
         /* connection can't be established by UCT, no need to disconnect */
         ucp_ep->flags &= ~UCP_EP_FLAG_LOCAL_CONNECTED;
         /* cms fallback has started */
-        return;
+        goto out;
     } else if (status != UCS_OK) {
         /* connection can't be established by UCT, no need to disconnect */
         ucp_ep->flags &= ~UCP_EP_FLAG_LOCAL_CONNECTED;
@@ -636,6 +638,9 @@ static void ucp_cm_client_connect_cb(uct_ep_h uct_cm_ep, void *arg,
                                       progress_arg, UCS_CALLBACKQ_FLAG_ONESHOT,
                                       &prog_id);
     ucp_worker_signal_internal(ucp_ep->worker);
+
+out:
+    UCS_ASYNC_UNBLOCK(&worker->async);
     return;
 
 err_free_sa_data:
@@ -643,10 +648,9 @@ err_free_sa_data:
 err_free_arg:
     ucs_free(progress_arg);
 err_out:
-    UCS_ASYNC_BLOCK(&worker->async);
     ucp_worker_set_ep_failed(worker, ucp_ep, uct_cm_ep,
                              ucp_ep_get_cm_lane(ucp_ep), status);
-    UCS_ASYNC_UNBLOCK(&worker->async);
+    goto out;
 }
 
 static void ucp_ep_cm_remote_disconnect_progress(ucp_ep_h ucp_ep)
@@ -1163,6 +1167,8 @@ static void ucp_cm_server_conn_notify_cb(
     ucp_lane_index_t cm_lane;
     ucs_status_t status;
 
+    UCS_ASYNC_BLOCK(&ucp_ep->worker->async);
+
     ucs_assert_always(notify_args->field_mask &
                       UCT_CM_EP_SERVER_CONN_NOTIFY_ARGS_FIELD_STATUS);
 
@@ -1184,6 +1190,8 @@ static void ucp_cm_server_conn_notify_cb(
         ucp_worker_set_ep_failed(ucp_ep->worker, ucp_ep,
                                  ucp_ep->uct_eps[cm_lane], cm_lane, status);
     }
+
+    UCS_ASYNC_UNBLOCK(&ucp_ep->worker->async);
 }
 
 ucs_status_t ucp_ep_cm_connect_server_lane(ucp_ep_h ep,
