@@ -23,8 +23,8 @@
 #include <ucs/datastruct/array.inl>
 
 
-#define UCP_AM_SHORT_REPLY_MAX_SIZE  (UCS_ALLOCA_MAX_SIZE - \
-                                      sizeof(ucs_ptr_map_key_t))
+#define UCP_AM_SHORT_REPLY_MAX_SIZE  ((ssize_t)(UCS_ALLOCA_MAX_SIZE - \
+                                      sizeof(ucs_ptr_map_key_t)))
 
 UCS_ARRAY_IMPL(ucp_am_cbs, unsigned, ucp_am_entry_t, static)
 
@@ -162,9 +162,9 @@ UCS_PROFILE_FUNC_VOID(ucp_am_data_release, (worker, data),
 
     if (ucs_unlikely(rdesc->flags & UCP_RECV_DESC_FLAG_MALLOC)) {
         /* Don't use UCS_PTR_BYTE_OFFSET here due to coverity false
-         * positive report. Need to step back by first_header size, where
+         * positive report. Need to step back by am_malloc_offset, where
          * originally allocated pointer resides. */
-        ucs_free((char*)rdesc - sizeof(ucp_am_first_hdr_t));
+        ucs_free((char*)rdesc - rdesc->am_malloc_offset);
         return;
     }
 
@@ -765,7 +765,7 @@ static void ucp_am_send_req_init(ucp_request_t *req, ucp_ep_h ep,
                                  const void *header, size_t header_length,
                                  const void *buffer, ucp_datatype_t datatype,
                                  size_t count, uint16_t flags, uint16_t am_id,
-                                 ucs_memory_type_t mem_type)
+                                 const ucp_request_param_t *param)
 {
     req->flags                           = UCP_REQUEST_FLAG_SEND_AM;
     req->send.req_id.local               = UCP_REQUEST_ID_INVALID;
@@ -782,8 +782,9 @@ static void ucp_am_send_req_init(ucp_request_t *req, ucp_ep_h ep,
     ucp_request_send_state_init(req, datatype, count);
     req->send.length   = ucp_dt_length(req->send.datatype, count,
                                        req->send.buffer, &req->send.state.dt);
-    req->send.mem_type = ucp_get_memory_type(ep->worker->context, req->send.buffer,
-                                             req->send.length, mem_type);
+    req->send.mem_type = ucp_request_get_memory_type(ep->worker->context,
+                                                     req->send.buffer,
+                                                     req->send.length, param);
 }
 
 static UCS_F_ALWAYS_INLINE size_t
@@ -941,6 +942,7 @@ UCS_PROFILE_FUNC(ucs_status_ptr_t, ucp_am_send_nbx,
 
     UCP_CONTEXT_CHECK_FEATURE_FLAGS(ep->worker->context, UCP_FEATURE_AM,
                                     return UCS_STATUS_PTR(UCS_ERR_INVALID_PARAM));
+    UCP_REQUEST_CHECK_PARAM(param);
 
     UCP_WORKER_THREAD_CS_ENTER_CONDITIONAL(ep->worker);
 
@@ -982,7 +984,7 @@ UCS_PROFILE_FUNC(ucs_status_ptr_t, ucp_am_send_nbx,
                                  goto out;});
 
     ucp_am_send_req_init(req, ep, header, header_length, buffer, datatype,
-                         count, flags, id, ucp_request_param_mem_type(param));
+                         count, flags, id, param);
 
     /* Note that max_eager_short.memtype_on is always initialized to real
      * max_short value
@@ -1068,8 +1070,8 @@ UCS_PROFILE_FUNC(ucs_status_ptr_t, ucp_am_recv_data_nbx,
     ucp_dt_recv_state_init(&req->recv.state, buffer, datatype, count);
     req->recv.length   = ucp_dt_length(datatype, count, buffer,
                                        &req->recv.state);
-    req->recv.mem_type = ucp_get_memory_type(context, buffer, req->recv.length,
-                                             ucp_request_param_mem_type(param));
+    req->recv.mem_type = ucp_request_get_memory_type(context, buffer,
+                                                     req->recv.length, param);
     req->recv.am.desc  = (ucp_recv_desc_t*)rts - 1;
 
     ucp_request_set_callback_param(param, recv_am, req, recv.am);
@@ -1148,6 +1150,7 @@ ucp_am_handler_common(ucp_worker_h worker, ucp_am_hdr_t *am_hdr, size_t hdr_size
     ucp_am_entry_t *am_cb = &ucs_array_elem(&worker->am, am_hdr->am_id);
     void *data            = ucp_am_data_ptr(am_hdr, hdr_size);
     ucs_status_t status;
+    size_t payload_offset;
 
     ucs_assert(total_length >= am_hdr->header_length + hdr_size);
 
@@ -1161,10 +1164,10 @@ ucp_am_handler_common(ucp_worker_h worker, ucp_am_hdr_t *am_hdr, size_t hdr_size
          * right before the data, where user header resides).
          */
         status = ucp_recv_desc_init(worker, data,
-                                    total_length - hdr_size - am_hdr->header_length,
-                                    0,
-                                    0, /* pass as a const */
-                                    0, 0, -hdr_size, &desc);
+                                    total_length - hdr_size -
+                                        am_hdr->header_length,
+                                    0, 0, /* pass as a const */
+                                    0, 0, 0, &desc);
         if (ucs_unlikely(UCS_STATUS_IS_ERR(status))) {
             goto err;
         }
@@ -1194,11 +1197,11 @@ ucp_am_handler_common(ucp_worker_h worker, ucp_am_hdr_t *am_hdr, size_t hdr_size
         return UCS_OK;
     }
 
-    status = ucp_recv_desc_init(worker, data,
-                                total_length - hdr_size - am_hdr->header_length,
-                                0,
-                                UCT_CB_PARAM_FLAG_DESC, /* pass as a const */
-                                0, 0, -hdr_size, &desc);
+    payload_offset = hdr_size + am_hdr->header_length;
+    status         = ucp_recv_desc_init(worker, data,
+                                        total_length - payload_offset, 0,
+                                        UCT_CB_PARAM_FLAG_DESC, /* pass as a const */
+                                        0, 0, -payload_offset, &desc);
     if (ucs_unlikely(UCS_STATUS_IS_ERR(status))) {
         goto err;
     }
@@ -1289,6 +1292,7 @@ ucp_am_handle_unfinished(ucp_worker_h worker, ucp_recv_desc_t *first_rdesc,
     ucs_status_t status;
     void *msg;
     uint64_t recv_flags;
+    size_t desc_offset;
 
     ucp_am_copy_data_fragment(first_rdesc, data, length, offset);
 
@@ -1325,10 +1329,10 @@ ucp_am_handle_unfinished(ucp_worker_h worker, ucp_recv_desc_t *first_rdesc,
      *                                                       needed anymore,
      *                                                       can overwrite)
      */
-    msg                = UCS_PTR_BYTE_OFFSET(first_rdesc + 1,
-                                             first_rdesc->payload_offset);
-    first_rdesc        = (ucp_recv_desc_t*)msg - 1;
-    first_rdesc->flags = UCP_RECV_DESC_FLAG_MALLOC;
+    desc_offset                   = first_rdesc->payload_offset;
+    first_rdesc                   = (ucp_recv_desc_t*)msg - 1;
+    first_rdesc->flags            = UCP_RECV_DESC_FLAG_MALLOC;
+    first_rdesc->am_malloc_offset = desc_offset;
 
     return;
 }

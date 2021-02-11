@@ -486,12 +486,16 @@ ucs_status_t ucp_worker_set_ep_failed(ucp_worker_h worker, ucp_ep_h ucp_ep,
                                       uct_ep_h uct_ep, ucp_lane_index_t lane,
                                       ucs_status_t status)
 {
-    uct_worker_cb_id_t          prog_id    = UCS_CALLBACKQ_ID_NULL;
-    ucs_status_t                ret_status = UCS_OK;
-    ucp_rsc_index_t             rsc_index;
-    uct_tl_resource_desc_t      *tl_rsc;
+    uct_worker_cb_id_t prog_id = UCS_CALLBACKQ_ID_NULL;
+    ucs_status_t ret_status    = UCS_OK;
+    char lane_info_str[64];
+    ucp_rsc_index_t rsc_index;
+    uct_tl_resource_desc_t *tl_rsc;
     ucp_worker_err_handle_arg_t *err_handle_arg;
-    ucs_log_level_t             log_level;
+    ucs_log_level_t log_level;
+
+    ucs_debug("ep %p: set_ep_failed status %s on lane[%d]=%p", ucp_ep,
+              ucs_status_string(status), lane, uct_ep);
 
     /* In case if this is a local failure we need to notify remote side */
     if (ucp_ep_is_cm_local_connected(ucp_ep)) {
@@ -537,18 +541,26 @@ ucs_status_t ucp_worker_set_ep_failed(ucp_worker_h worker, ucp_ep_h ucp_ep,
                     UCS_LOG_LEVEL_ERROR;
 
         if (lane != UCP_NULL_LANE) {
-            rsc_index = ucp_ep_get_rsc_index(ucp_ep, lane);
-            tl_rsc    = &worker->context->tl_rscs[rsc_index].tl_rsc;
-            ucs_log(log_level, "error '%s' will not be handled for ep %p - "
-                    UCT_TL_RESOURCE_DESC_FMT " since no error callback is installed",
-                    ucs_status_string(status), ucp_ep,
-                    UCT_TL_RESOURCE_DESC_ARG(tl_rsc));
+            if (lane == ucp_ep_get_cm_lane(ucp_ep)) {
+                ucs_strncpy_safe(lane_info_str, "CM lane",
+                                 sizeof(lane_info_str));
+            } else {
+                rsc_index = ucp_ep_get_rsc_index(ucp_ep, lane);
+                tl_rsc    = &worker->context->tl_rscs[rsc_index].tl_rsc;
+
+                ucs_snprintf_safe(lane_info_str, sizeof(lane_info_str),
+                                  UCT_TL_RESOURCE_DESC_FMT,
+                                  UCT_TL_RESOURCE_DESC_ARG(tl_rsc));
+            }
         } else {
             ucs_assert(uct_ep == NULL);
-            ucs_log(log_level, "error '%s' occurred on wireup will not be "
-                    "handled for ep %p since no error callback is installed",
-                    ucs_status_string(status), ucp_ep);
+            ucs_strncpy_safe(lane_info_str, "wireup lane",
+                             sizeof(lane_info_str));
         }
+
+        ucs_log(log_level, "ep %p: error '%s' on %s will not be handled since"
+                " no error callback is installed",
+                ucp_ep, ucs_status_string(status), lane_info_str);
         ret_status = status;
         goto out;
     }
@@ -623,21 +635,17 @@ ucp_worker_iface_error_handler(void *arg, uct_ep_h uct_ep, ucs_status_t status)
     /* TODO: need to optimize uct_ep -> ucp_ep lookup */
     ucs_list_for_each(ep_ext, &worker->all_eps, ep_list) {
         ucp_ep = ucp_ep_from_ext_gen(ep_ext);
-        for (lane = 0; lane < ucp_ep_num_lanes(ucp_ep); ++lane) {
-            if ((uct_ep == ucp_ep->uct_eps[lane]) ||
-                ucp_wireup_ep_is_owner(ucp_ep->uct_eps[lane], uct_ep)) {
-                ret_status = ucp_worker_iface_handle_uct_ep_failure(ucp_ep,
-                                                                    lane,
-                                                                    uct_ep,
-                                                                    status);
-                goto out;
-            }
+        lane = ucp_ep_lookup_lane(ucp_ep, uct_ep);
+        if (lane != UCP_NULL_LANE) {
+            ret_status = ucp_worker_iface_handle_uct_ep_failure(ucp_ep, lane,
+                                                                uct_ep, status);
+            goto out;
         }
     }
 
-    ucs_error("UCT EP %p isn't associated with UCP EP and was not scheduled "
-              "to be discarded on UCP Worker %p",
-              uct_ep, worker);
+    ucs_error("worker %p: uct_ep %p isn't associated with any ucp endpoint and "
+              "was not scheduled to be discarded",
+              worker, uct_ep);
     ret_status = UCS_ERR_NO_ELEM;
 
 out:
@@ -1432,11 +1440,12 @@ static ucs_status_t ucp_worker_add_resource_cms(ucp_worker_h worker)
         }
 
         status = uct_cm_open(cmpt, worker->uct, cm_config, &worker->cms[i].cm);
+        uct_config_release(cm_config);
         if (status != UCS_OK) {
-            ucs_error("failed to open CM on component %s with status %s",
-                      context->tl_cmpts[cmpt_index].attr.name,
-                      ucs_status_string(status));
-            goto err_free_cms;
+            ucs_diag("failed to open CM on component %s with status %s",
+                     context->tl_cmpts[cmpt_index].attr.name,
+                     ucs_status_string(status));
+            continue;
         }
 
         worker->cms[i].attr.field_mask = UCT_CM_ATTR_FIELD_MAX_CONN_PRIV;
@@ -1449,7 +1458,6 @@ static ucs_status_t ucp_worker_add_resource_cms(ucp_worker_h worker)
             goto err_free_cms;
         }
 
-        uct_config_release(cm_config);
         worker->cms[i++].cmpt_idx = cmpt_index;
     }
 
@@ -1654,11 +1662,11 @@ static char* ucp_worker_add_feature_rsc(ucp_context_h context,
     return p;
 }
 
-static void ucp_worker_print_used_tls(const ucp_ep_config_key_t *key,
-                                      ucp_context_h context,
-                                      ucp_worker_cfg_index_t config_idx)
+char *ucp_worker_print_used_tls(const ucp_ep_config_key_t *key,
+                                ucp_context_h context,
+                                ucp_worker_cfg_index_t config_idx, char *info,
+                                size_t max)
 {
-    char info[256]                  = {0};
     ucp_lane_map_t tag_lanes_map    = 0;
     ucp_lane_map_t rma_lanes_map    = 0;
     ucp_lane_map_t amo_lanes_map    = 0;
@@ -1667,12 +1675,8 @@ static void ucp_worker_print_used_tls(const ucp_ep_config_key_t *key,
     ucp_lane_index_t lane;
     char *p, *endp;
 
-    if (!ucs_log_is_enabled(UCS_LOG_LEVEL_INFO)) {
-        return;
-    }
-
     p    = info;
-    endp = p + sizeof(info);
+    endp = p + max;
 
     snprintf(p, endp - p,  "ep_cfg[%d]: ", config_idx);
     p += strlen(p);
@@ -1720,7 +1724,8 @@ static void ucp_worker_print_used_tls(const ucp_ep_config_key_t *key,
                                    p, endp - p);
     ucp_worker_add_feature_rsc(context, key, stream_lanes_map, "stream",
                                p, endp - p);
-    ucs_info("%s", info);
+
+    return info;
 }
 
 static ucs_status_t ucp_worker_init_mpools(ucp_worker_h worker)
@@ -1807,7 +1812,8 @@ static void ucp_worker_destroy_mpools(ucp_worker_h worker)
     ucs_mpool_cleanup(&worker->reg_mp, 1);
     ucs_mpool_cleanup(&worker->am_mp, 1);
     ucs_mpool_cleanup(&worker->rkey_mp, 1);
-    ucs_mpool_cleanup(&worker->req_mp, 1);
+    ucs_mpool_cleanup(&worker->req_mp,
+                      !(worker->flags & UCP_WORKER_FLAG_IGNORE_REQUEST_LEAK));
 }
 
 /* All the ucp endpoints will share the configurations. No need for every ep to
@@ -1826,6 +1832,7 @@ ucp_worker_get_ep_config(ucp_worker_h worker, const ucp_ep_config_key_t *key,
     ucp_ep_config_t *ep_config;
     ucp_memtype_thresh_t *max_eager_short;
     ucs_status_t status;
+    char tl_info[256];
 
     /* Search for the given key in the ep_config array */
     for (ep_cfg_index = 0; ep_cfg_index < worker->ep_config_count;
@@ -1876,7 +1883,8 @@ ucp_worker_get_ep_config(ucp_worker_h worker, const ucp_ep_config_key_t *key,
     }
 
     if (print_cfg) {
-        ucp_worker_print_used_tls(key, context, ep_cfg_index);
+        ucs_info("%s", ucp_worker_print_used_tls(key, context, ep_cfg_index,
+                                                 tl_info, sizeof(tl_info)));
     }
 
     ++worker->ep_config_count;
@@ -1982,7 +1990,12 @@ ucs_status_t ucp_worker_create(ucp_context_h context,
     }
 
     uct_thread_mode = UCS_THREAD_MODE_SINGLE;
-    worker->flags   = 0;
+
+    /* copy user flags, and mask-out unsupported flags for compatibility */
+    worker->flags = UCP_PARAM_VALUE(WORKER, params, flags, FLAGS, 0) &
+                    UCS_MASK(UCP_WORKER_INTERNAL_FLAGS_SHIFT);
+    UCS_STATIC_ASSERT(UCP_WORKER_FLAG_IGNORE_REQUEST_LEAK <
+                      UCS_BIT(UCP_WORKER_INTERNAL_FLAGS_SHIFT));
 
     if (params->field_mask & UCP_WORKER_PARAM_FIELD_THREAD_MODE) {
 #if ENABLE_MT
@@ -2319,7 +2332,7 @@ static void ucp_worker_destroy_eps(ucp_worker_h worker)
 
 void ucp_worker_destroy(ucp_worker_h worker)
 {
-    ucs_trace_func("worker=%p", worker);
+    ucs_debug("destroy worker %p", worker);
 
     UCS_ASYNC_BLOCK(&worker->async);
     uct_worker_progress_unregister_safe(worker->uct, &worker->keepalive.cb_id);
@@ -2631,10 +2644,12 @@ void ucp_worker_release_address(ucp_worker_h worker, ucp_address_t *address)
 void ucp_worker_print_info(ucp_worker_h worker, FILE *stream)
 {
     ucp_context_h context = worker->context;
+    ucp_worker_cfg_index_t rkey_cfg_index;
+    ucp_rsc_index_t rsc_index;
+    ucs_string_buffer_t strb;
     ucp_address_t *address;
     size_t address_length;
     ucs_status_t status;
-    ucp_rsc_index_t rsc_index;
     int first;
 
     UCP_WORKER_THREAD_CS_ENTER_CONDITIONAL(worker);
@@ -2668,6 +2683,17 @@ void ucp_worker_print_info(ucp_worker_h worker, FILE *stream)
     }
 
     fprintf(stream, "#\n");
+
+    if (context->config.ext.proto_enable) {
+        ucs_string_buffer_init(&strb);
+        for (rkey_cfg_index = 0; rkey_cfg_index < worker->rkey_config_count;
+             ++rkey_cfg_index) {
+            ucp_rkey_proto_select_dump(worker, rkey_cfg_index, &strb);
+            ucs_string_buffer_appendf(&strb, "\n");
+        }
+        ucs_string_buffer_dump(&strb, "# ", stream);
+        ucs_string_buffer_cleanup(&strb);
+    }
 
     UCP_WORKER_THREAD_CS_EXIT_CONDITIONAL(worker);
 }
@@ -2713,8 +2739,11 @@ ucp_worker_do_keepalive_progress(ucp_worker_h worker)
         return 0;
     }
 
+    ucs_trace("worker %p: keepalive round", worker);
+
     if (ucs_unlikely(ucs_list_is_empty(&worker->all_eps))) {
         ucs_assert(worker->keepalive.iter == &worker->all_eps);
+        ucs_trace("worker %p: keepalive ep list is empty - disabling", worker);
         uct_worker_progress_unregister_safe(worker->uct,
                                             &worker->keepalive.cb_id);
         return 0;
@@ -2731,6 +2760,8 @@ ucp_worker_do_keepalive_progress(ucp_worker_h worker)
      * (linked list) */
     do {
         ep = ucp_worker_keepalive_current_ep(worker);
+        ucs_trace("worker %p: do keepalive on ep %p lane_map 0x%x", worker, ep,
+                  worker->keepalive.lane_map);
         ucp_ep_do_keepalive(ep, &worker->keepalive.lane_map);
         if (worker->keepalive.lane_map != 0) {
             /* in case if EP has no resources to send keepalive message
@@ -2744,6 +2775,8 @@ ucp_worker_do_keepalive_progress(ucp_worker_h worker)
     } while ((iter_begin != worker->keepalive.iter) &&
              (worker->keepalive.ep_count < worker->context->config.ext.keepalive_num_eps));
 
+    ucs_trace("worker %p: sent keepalive on %u endpoints", worker,
+              worker->keepalive.ep_count);
     worker->keepalive.last_round = now;
     worker->keepalive.ep_count   = 0;
 
@@ -2766,14 +2799,20 @@ void ucp_worker_keepalive_add_ep(ucp_ep_h ep)
 {
     ucp_worker_h worker = ep->worker;
 
-    if (ucp_ep_config(ep)->key.err_mode == UCP_ERR_HANDLING_MODE_NONE) {
+    ucs_assert(ep->cfg_index != UCP_WORKER_CFG_INDEX_NULL);
+
+    if ((ep->flags & UCP_EP_FLAG_INTERNAL) ||
+        (ucp_ep_config(ep)->key.ep_check_map == 0) ||
+        !ucp_worker_keepalive_is_enabled(worker)) {
+        ucs_trace("ep %p flags 0x%x cfg_index %d: not using keepalive, "
+                  "err_mode %d ep_check_map 0x%x",
+                  ep, ep->flags, ep->cfg_index, ucp_ep_config(ep)->key.err_mode,
+                  ucp_ep_config(ep)->key.ep_check_map);
         return;
     }
 
-    if (!ucp_worker_keepalive_is_enabled(worker)) {
-        return;
-    }
-
+    ucs_trace("ep %p flags 0x%x: adding to keepalive lane_map 0x%x", ep,
+              ep->flags, ucp_ep_config(ep)->key.ep_check_map);
     uct_worker_progress_register_safe(worker->uct,
                                       ucp_worker_keepalive_progress, worker,
                                       UCS_CALLBACKQ_FLAG_FAST,
@@ -2784,6 +2823,8 @@ void ucp_worker_keepalive_add_ep(ucp_ep_h ep)
 void ucp_worker_keepalive_remove_ep(ucp_ep_h ep)
 {
     ucp_worker_h worker = ep->worker;
+
+    ucs_assert(!(ep->flags & UCP_EP_FLAG_INTERNAL));
 
     if (!ucp_worker_keepalive_is_enabled(worker)) {
         ucs_assert(worker->keepalive.iter == &worker->all_eps);
@@ -2877,8 +2918,6 @@ ucp_worker_discard_wireup_ep(ucp_ep_h ucp_ep, ucp_wireup_ep_t *wireup_ep,
 
     ucp_worker_discard_wireup_uct_ep(ucp_ep, wireup_ep, ep_flush_flags,
                                      wireup_ep->aux_ep);
-    ucp_worker_discard_wireup_uct_ep(ucp_ep, wireup_ep, ep_flush_flags,
-                                     wireup_ep->sockaddr_ep);
 
     is_owner = wireup_ep->super.is_owner;
     uct_ep   = ucp_wireup_ep_extract_next_ep(&wireup_ep->super.super);

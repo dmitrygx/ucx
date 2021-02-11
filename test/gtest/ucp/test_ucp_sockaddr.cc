@@ -62,6 +62,7 @@ public:
 
     void init() {
         m_err_count = 0;
+        modify_config("KEEPALIVE_INTERVAL", "10s");
         get_sockaddr();
         ucp_test::init();
         skip_loopback();
@@ -424,9 +425,10 @@ public:
         return get_ep_params();
     }
 
-    void client_ep_connect()
+    void client_ep_connect_basic(const ucp_ep_params_t &base_ep_params)
     {
-        ucp_ep_params_t ep_params = get_ep_params();
+        ucp_ep_params_t ep_params = base_ep_params;
+
         ep_params.field_mask      |= UCP_EP_PARAM_FIELD_FLAGS |
                                      UCP_EP_PARAM_FIELD_SOCK_ADDR |
                                      UCP_EP_PARAM_FIELD_USER_DATA;
@@ -434,7 +436,13 @@ public:
         ep_params.sockaddr.addr    = m_test_addr.get_sock_addr_ptr();
         ep_params.sockaddr.addrlen = m_test_addr.get_addr_size();
         ep_params.user_data        = &sender();
+
         sender().connect(&receiver(), ep_params);
+    }
+
+    void client_ep_connect()
+    {
+        client_ep_connect_basic(get_ep_params());
     }
 
     void connect_and_send_recv(bool wakeup, uint64_t flags)
@@ -522,6 +530,42 @@ public:
         receiver().close_ep_req_free(receiver_ep_close_req);
     }
 
+    void setup_unreachable_listener()
+    {
+        ucs::sock_addr_storage listen_addr(m_test_addr.to_ucs_sock_addr());
+        ucs_status_t status = receiver().listen(cb_type(),
+                                                m_test_addr.get_sock_addr_ptr(),
+                                                m_test_addr.get_addr_size(),
+                                                get_server_ep_params());
+        if (status == UCS_ERR_UNREACHABLE) {
+            UCS_TEST_SKIP_R("cannot listen to " + m_test_addr.to_str());
+        }
+
+        /* make the client try to connect to a non-existing port on the server
+         * side */
+        m_test_addr.set_port(1);
+    }
+
+    static ucs_log_func_rc_t
+    detect_fail_no_err_cb(const char *file, unsigned line, const char *function,
+                          ucs_log_level_t level,
+                          const ucs_log_component_config_t *comp_conf,
+                          const char *message, va_list ap)
+    {
+        if (level == UCS_LOG_LEVEL_ERROR) {
+            std::string err_str = format_message(message, ap);
+
+            if (err_str.find("on CM lane will not be handled since no error"
+                             " callback is installed") != std::string::npos) {
+                UCS_TEST_MESSAGE << "< " << err_str << " >";
+                ++m_err_count;
+                return UCS_LOG_FUNC_RC_STOP;
+            }
+        }
+
+        return UCS_LOG_FUNC_RC_CONTINUE;
+    }
+
     static void close_completion(void *request, ucs_status_t status,
                                  void *user_data) {
         *reinterpret_cast<bool*>(user_data) = true;
@@ -581,7 +625,7 @@ protected:
                               ucp_ep_config_key_t *key2, ucp_lane_index_t lane2) {
         EXPECT_TRUE(((lane1 == UCP_NULL_LANE) && (lane2 == UCP_NULL_LANE)) ||
                     ((lane1 != UCP_NULL_LANE) && (lane2 != UCP_NULL_LANE) &&
-                     ucp_ep_config_lane_is_peer_equal(key1, lane1, key2, lane2)));
+                     ucp_ep_config_lane_is_peer_match(key1, lane1, key2, lane2)));
     }
 
 protected:
@@ -734,25 +778,38 @@ UCS_TEST_P(test_ucp_sockaddr, listener_query) {
     EXPECT_EQ(m_test_addr, listener_attr.sockaddr);
 }
 
-UCS_TEST_P(test_ucp_sockaddr, err_handle) {
-
-    ucs::sock_addr_storage listen_addr(m_test_addr.to_ucs_sock_addr());
-    ucs_status_t status = receiver().listen(cb_type(),
-                                            m_test_addr.get_sock_addr_ptr(),
-                                            m_test_addr.get_addr_size(),
-                                            get_server_ep_params());
-    if (status == UCS_ERR_UNREACHABLE) {
-        UCS_TEST_SKIP_R("cannot listen to " + m_test_addr.to_str());
-    }
-
-    /* make the client try to connect to a non-existing port on the server side */
-    m_test_addr.set_port(1);
+UCS_TEST_P(test_ucp_sockaddr, err_handle)
+{
+    setup_unreachable_listener();
 
     {
         scoped_log_handler slh(wrap_errors_logger);
         client_ep_connect();
         /* allow for the unreachable event to arrive before restoring errors */
         wait_for_flag(&sender().get_err_num());
+    }
+
+    EXPECT_EQ(1u, sender().get_err_num());
+}
+
+UCS_TEST_P(test_ucp_sockaddr, err_handle_without_err_cb)
+{
+    setup_unreachable_listener();
+
+    {
+        scoped_log_handler slh(detect_fail_no_err_cb);
+        ucp_ep_params_t ep_params = ucp_test::get_ep_params();
+
+        ep_params.field_mask |= UCP_EP_PARAM_FIELD_ERR_HANDLING_MODE;
+        ep_params.err_mode    = UCP_ERR_HANDLING_MODE_PEER;
+
+        client_ep_connect_basic(ep_params);
+
+        /* allow for the unreachable event to arrive before restoring errors */
+        wait_for_flag(&m_err_count);
+        if (m_err_count > 0) {
+            sender().add_err(UCS_ERR_CONNECTION_RESET);
+        }
     }
 
     EXPECT_EQ(1u, sender().get_err_num());
@@ -831,7 +888,102 @@ UCS_TEST_P(test_ucp_sockaddr, compare_cm_and_wireup_configs) {
     }
 }
 
+UCS_TEST_P(test_ucp_sockaddr, connect_and_fail_wireup)
+{
+    start_listener(cb_type());
+
+    scoped_log_handler slh(wrap_errors_logger);
+    client_ep_connect();
+    if (!wait_for_server_ep(false)) {
+        UCS_TEST_SKIP_R("cannot connect to server");
+    }
+
+    ucp_lane_index_t am_lane = ucp_ep_get_wireup_msg_lane(sender().ep());
+    uct_ep_h uct_ep          = sender().ep()->uct_eps[am_lane];
+
+    /* emulate failure of WIREUP MSG sending */
+    uct_ep->iface->ops.ep_am_bcopy = reinterpret_cast<uct_ep_am_bcopy_func_t>(
+            ucs_empty_function_return_bc_ep_timeout);
+
+    while (!(sender().ep()->flags & UCP_EP_FLAG_CONNECT_REQ_QUEUED)) {
+        progress();
+    }
+
+    concurrent_disconnect(UCP_EP_CLOSE_MODE_FORCE);
+}
+
 UCP_INSTANTIATE_ALL_TEST_CASE(test_ucp_sockaddr)
+
+
+class test_ucp_sockaddr_different_tl_rsc : public test_ucp_sockaddr
+{
+public:
+    static void get_test_variants(std::vector<ucp_test_variant>& variants)
+    {
+        uint64_t features = UCP_FEATURE_STREAM | UCP_FEATURE_TAG;
+        test_ucp_sockaddr::get_test_variants_mt(variants, features,
+                                                UNSET_SELF_DEVICES,
+                                                "unset_self_devices");
+        test_ucp_sockaddr::get_test_variants_mt(variants, features,
+                                                UNSET_SHM_DEVICES,
+                                                "unset_shm_devices");
+        test_ucp_sockaddr::get_test_variants_mt(variants, features,
+                                                UNSET_SELF_DEVICES |
+                                                UNSET_SHM_DEVICES,
+                                                "unset_self_shm_devices");
+    }
+
+protected:
+    enum {
+        UNSET_SELF_DEVICES = UCS_BIT(0),
+        UNSET_SHM_DEVICES  = UCS_BIT(1)
+    };
+
+    void init()
+    {
+        m_err_count = 0;
+        get_sockaddr();
+        test_base::init();
+        // entities will be created in a test
+    }
+};
+
+
+UCS_TEST_P(test_ucp_sockaddr_different_tl_rsc, unset_devices_and_communicate)
+{
+    int variants = get_variant_value();
+
+    // create entities with different set of MDs and TL resources on a client
+    // and on a server to test non-homogeneous setups
+    if (variants & UNSET_SELF_DEVICES) {
+        if (is_self()) {
+            UCS_TEST_SKIP_R("unable to run test for self transport with unset"
+                            " self devices");
+        }
+
+        modify_config("SELF_DEVICES", "");
+    }
+    if (variants & UNSET_SHM_DEVICES) {
+        modify_config("SHM_DEVICES", "");
+    }
+    push_config();
+
+    // create a client with restrictions
+    create_entity();
+
+    pop_config();
+
+    // create a server without restrictions
+    if (!is_self()) {
+        create_entity();
+    }
+
+    skip_loopback();
+    listen_and_communicate(false, SEND_DIRECTION_BIDI);
+}
+
+UCP_INSTANTIATE_TEST_CASE_TLS(test_ucp_sockaddr_different_tl_rsc, all, "all")
+
 
 class test_ucp_sockaddr_destroy_ep_on_err : public test_ucp_sockaddr {
 public:

@@ -51,6 +51,7 @@ static const char *uct_ib_devx_objs[] = {
     [UCT_IB_DEVX_OBJ_RCSRQ] = "rcsrq",
     [UCT_IB_DEVX_OBJ_DCT]   = "dct",
     [UCT_IB_DEVX_OBJ_DCSRQ] = "dcsrq",
+    [UCT_IB_DEVX_OBJ_DCI]   = "dci",
     NULL
 };
 
@@ -166,7 +167,7 @@ static ucs_config_field_t uct_ib_md_config_table[] = {
      "DEVX support\n",
      ucs_offsetof(uct_ib_md_config_t, devx), UCS_CONFIG_TYPE_TERNARY},
 
-    {"MLX5_DEVX_OBJECTS", "rcqp,rcsrq,dct,dcsrq",
+    {"MLX5_DEVX_OBJECTS", "rcqp,rcsrq,dct,dcsrq,dci",
      "Objects to be created by DevX\n",
      ucs_offsetof(uct_ib_md_config_t, devx_objs),
      UCS_CONFIG_TYPE_BITMAP(uct_ib_devx_objs)},
@@ -801,6 +802,8 @@ static ucs_status_t uct_ib_mem_reg(uct_md_h uct_md, void *address, size_t length
 
     memh = uct_ib_memh_alloc(md);
     if (memh == NULL) {
+        uct_md_log_mem_reg_error(flags,
+                                 "md %p: failed to allocate memory handle", md);
         return UCS_ERR_NO_MEMORY;
     }
 

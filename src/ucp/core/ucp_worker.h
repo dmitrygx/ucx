@@ -59,9 +59,21 @@
  * UCP worker flags
  */
 enum {
-    UCP_WORKER_FLAG_EXTERNAL_EVENT_FD = UCS_BIT(0), /**< worker event fd is external */
-    UCP_WORKER_FLAG_EDGE_TRIGGERED    = UCS_BIT(1), /**< events are edge-triggered */
-    UCP_WORKER_FLAG_MT                = UCS_BIT(2)  /**< MT locking is required */
+    /** Internal worker flags start from this bit index, to co-exist with user
+     * flags specified when worker is created */
+    UCP_WORKER_INTERNAL_FLAGS_SHIFT = 32,
+
+    /** MT locking is required */
+    UCP_WORKER_FLAG_MT =
+            UCS_BIT(UCP_WORKER_INTERNAL_FLAGS_SHIFT + 0),
+
+    /** Events are edge-triggered */
+    UCP_WORKER_FLAG_EDGE_TRIGGERED =
+            UCS_BIT(UCP_WORKER_INTERNAL_FLAGS_SHIFT + 1),
+
+    /** Worker event fd is external */
+    UCP_WORKER_FLAG_EXTERNAL_EVENT_FD =
+            UCS_BIT(UCP_WORKER_INTERNAL_FLAGS_SHIFT + 2)
 };
 
 
@@ -202,7 +214,7 @@ struct ucp_worker_cm {
  * UCP worker (thread context).
  */
 typedef struct ucp_worker {
-    unsigned                         flags;               /* Worker flags */
+    uint64_t                         flags;               /* Worker flags */
     ucs_async_context_t              async;               /* Async context for this worker */
     ucp_context_h                    context;             /* Back-reference to UCP context */
     uint64_t                         uuid;                /* Unique ID for wireup */
@@ -326,6 +338,11 @@ void ucp_worker_discard_uct_ep(ucp_ep_h ucp_ep, uct_ep_h uct_ep,
                                unsigned ep_flush_flags,
                                uct_pending_purge_callback_t purge_cb,
                                void *purge_arg);
+
+char *ucp_worker_print_used_tls(const ucp_ep_config_key_t *key,
+                                ucp_context_h context,
+                                ucp_worker_cfg_index_t config_idx, char *info,
+                                size_t max);
 
 /* must be called with async lock held */
 static UCS_F_ALWAYS_INLINE void

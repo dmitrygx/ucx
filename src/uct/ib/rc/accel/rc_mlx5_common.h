@@ -65,10 +65,10 @@
                      UCT_IB_MLX5_AM_ZCOPY_MAX_HDR(_av_size), "am_zcopy header");
 
 
-#define UCT_RC_MLX5_CHECK_AM_SHORT(_id, _length, _av_size) \
+#define UCT_RC_MLX5_CHECK_AM_SHORT(_id, _header_t, _length, _av_size) \
     UCT_CHECK_AM_ID(_id); \
-    UCT_CHECK_LENGTH(sizeof(uct_rc_mlx5_am_short_hdr_t) + _length, 0, \
-        UCT_IB_MLX5_AM_MAX_SHORT(_av_size), "am_short");
+    UCT_CHECK_LENGTH(sizeof(_header_t) + _length, 0, \
+                     UCT_IB_MLX5_AM_MAX_SHORT(_av_size), "am_short");
 
 
 /* there is no need to do a special check for length == 0 because in that
@@ -619,9 +619,6 @@ void uct_rc_mlx5_iface_common_update_cqs_ci(uct_rc_mlx5_iface_common_t *iface,
 
 void uct_rc_mlx5_iface_common_sync_cqs_ci(uct_rc_mlx5_iface_common_t *iface,
                                           uct_ib_iface_t *ib_iface);
-
-void uct_rc_mlx5_iface_common_check_cqs_ci(uct_rc_mlx5_iface_common_t *iface,
-                                           uct_ib_iface_t *ib_iface);
 
 ucs_status_t
 uct_rc_mlx5_iface_common_arm_cq(uct_ib_iface_t *ib_iface, uct_ib_dir_t dir,

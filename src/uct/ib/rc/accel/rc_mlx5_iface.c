@@ -259,7 +259,7 @@ ucs_status_t uct_rc_mlx5_iface_create_qp(uct_rc_mlx5_iface_common_t *iface,
     struct mlx5dv_qp_init_attr dv_attr = {};
 
     if (md->flags & UCT_IB_MLX5_MD_FLAG_DEVX_RC_QP) {
-        attr->mmio_mode = iface->tx.mmio_mode;
+        attr->uidx      = 0xffffff;
         status = uct_ib_mlx5_devx_create_qp(ib_iface, qp, txwq, attr);
         if (status != UCS_OK) {
             return status;
@@ -761,7 +761,6 @@ UCS_CLASS_INIT_FUNC(uct_rc_mlx5_iface_t,
 
     init_attr.fc_req_size           = sizeof(uct_rc_pending_req_t);
     init_attr.flags                 = UCT_IB_CQ_IGNORE_OVERRUN;
-    init_attr.rx_hdr_len            = sizeof(uct_rc_mlx5_hdr_t);
     init_attr.cq_len[UCT_IB_DIR_TX] = config->super.tx_cq_len;
     init_attr.qp_type               = IBV_QPT_RC;
 
@@ -807,7 +806,7 @@ static uct_rc_iface_ops_t uct_rc_mlx5_iface_ops = {
     .ep_get_bcopy             = uct_rc_mlx5_ep_get_bcopy,
     .ep_get_zcopy             = uct_rc_mlx5_ep_get_zcopy,
     .ep_am_short              = uct_rc_mlx5_ep_am_short,
-    .ep_am_short_iov          = uct_base_ep_am_short_iov,
+    .ep_am_short_iov          = uct_rc_mlx5_ep_am_short_iov,
     .ep_am_bcopy              = uct_rc_mlx5_ep_am_bcopy,
     .ep_am_zcopy              = uct_rc_mlx5_ep_am_zcopy,
     .ep_atomic_cswap64        = uct_rc_mlx5_ep_atomic_cswap64,

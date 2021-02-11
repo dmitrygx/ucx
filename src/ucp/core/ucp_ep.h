@@ -71,8 +71,11 @@ enum {
     UCP_EP_FLAG_CONNECT_REQ_IGNORED    = UCS_BIT(19),/* DEBUG: Connection request was ignored */
     UCP_EP_FLAG_CONNECT_PRE_REQ_SENT   = UCS_BIT(20),/* DEBUG: Connection pre-request was sent */
     UCP_EP_FLAG_FLUSH_STATE_VALID      = UCS_BIT(21),/* DEBUG: flush_state is valid */
-    UCP_EP_FLAG_DISCONNECTED_CM_LANE   = UCS_BIT(22) /* DEBUG: CM lane was disconnected, i.e.
+    UCP_EP_FLAG_DISCONNECTED_CM_LANE   = UCS_BIT(22),/* DEBUG: CM lane was disconnected, i.e.
                                                         @uct_ep_disconnect was called for CM EP */
+    UCP_EP_FLAG_CLIENT_CONNECT_CB      = UCS_BIT(23),/* DEBUG: Client connect callback invoked */
+    UCP_EP_FLAG_SERVER_NOTIFY_CB       = UCS_BIT(24),/* DEBUG: Server notify callback invoked */
+    UCP_EP_FLAG_DISCONNECT_CB_CALLED   = UCS_BIT(25) /* DEBUG: Got disconnect notification */
 };
 
 
@@ -108,6 +111,15 @@ enum {
     UCS_STATS_UPDATE_COUNTER((_ep)->stats, UCP_EP_STAT_TAG_TX_##_op, 1);
 
 
+typedef struct ucp_ep_config_key_lane {
+    ucp_rsc_index_t      rsc_index; /* Resource index */
+    ucp_md_index_t       dst_md_index; /* Destination memory domain index */
+    uint8_t              path_index; /* Device path index */
+    ucp_lane_type_mask_t lane_types; /* Which types of operations this lane
+                                        was selected for */
+} ucp_ep_config_key_lane_t;
+
+
 /*
  * Endpoint configuration key.
  * This is filled by to the transport selection logic, according to the local
@@ -116,15 +128,7 @@ enum {
 struct ucp_ep_config_key {
 
     ucp_lane_index_t         num_lanes;       /* Number of active lanes */
-
-    struct {
-        ucp_rsc_index_t      rsc_index;       /* Resource index */
-        ucp_rsc_index_t      dst_rsc_index;   /* Destination resource index */
-        ucp_md_index_t       dst_md_index;    /* Destination memory domain index */
-        uint8_t              path_index;      /* Device path index */
-        ucp_lane_type_mask_t lane_types;      /* Which types of operations this lane
-                                                 was selected for */
-    } lanes[UCP_MAX_LANES];
+    ucp_ep_config_key_lane_t lanes[UCP_MAX_LANES]; /* Active lanes */
 
     ucp_lane_index_t         am_lane;         /* Lane for AM (can be NULL) */
     ucp_lane_index_t         tag_lane;        /* Lane for tag matching offload (can be NULL) */
@@ -166,7 +170,6 @@ struct ucp_ep_config_key {
 
     /* Error handling mode */
     ucp_err_handling_mode_t  err_mode;
-    ucs_status_t             status;
 };
 
 
@@ -390,10 +393,11 @@ typedef struct {
  * Endpoint extension for control data path
  */
 typedef struct {
-    ucs_ptr_map_key_t             local_ep_id;   /* Local EP ID */
-    ucs_ptr_map_key_t             remote_ep_id;  /* Remote EP ID */
-    ucp_err_handler_cb_t          err_cb;        /* Error handler */
-    ucp_ep_close_proto_req_t      close_req;     /* Close protocol request */
+    ucp_rsc_index_t          cm_idx; /* CM index */
+    ucs_ptr_map_key_t        local_ep_id; /* Local EP ID */
+    ucs_ptr_map_key_t        remote_ep_id; /* Remote EP ID */
+    ucp_err_handler_cb_t     err_cb; /* Error handler */
+    ucp_ep_close_proto_req_t close_req; /* Close protocol request */
 } ucp_ep_ext_control_t;
 
 
@@ -540,13 +544,15 @@ ucs_status_t ucp_ep_config_init(ucp_worker_h worker, ucp_ep_config_t *config,
 
 void ucp_ep_config_cleanup(ucp_worker_h worker, ucp_ep_config_t *config);
 
-int ucp_ep_config_lane_is_peer_equal(const ucp_ep_config_key_t *key1,
+int ucp_ep_config_lane_is_peer_match(const ucp_ep_config_key_t *key1,
                                      ucp_lane_index_t lane1,
                                      const ucp_ep_config_key_t *key2,
                                      ucp_lane_index_t lane2);
 
 void ucp_ep_config_lanes_intersect(const ucp_ep_config_key_t *key1,
+                                   const ucp_rsc_index_t *dst_rsc_indices1,
                                    const ucp_ep_config_key_t *key2,
+                                   const ucp_rsc_index_t *dst_rsc_indices2,
                                    ucp_lane_index_t *lane_map);
 
 int ucp_ep_config_is_equal(const ucp_ep_config_key_t *key1,
@@ -585,6 +591,10 @@ void ucp_ep_flush_completion(uct_completion_t *self);
 void ucp_ep_flush_request_ff(ucp_request_t *req, ucs_status_t status);
 
 void ucp_ep_discard_lanes(ucp_ep_h ucp_ep, ucs_status_t status);
+
+void ucp_ep_register_disconnect_progress(ucp_request_t *req);
+
+ucp_lane_index_t ucp_ep_lookup_lane(ucp_ep_h ucp_ep, uct_ep_h uct_ep);
 
 /**
  * @brief Do keepalive operation.

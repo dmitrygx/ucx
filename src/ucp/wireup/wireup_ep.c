@@ -152,7 +152,7 @@ ucp_wireup_ep_pending_req_release(uct_pending_req_t *self, void *arg)
     ucp_request_t   *req;
 
     ucs_atomic_sub32(&wireup_ep->pending_count, 1);
- 
+
     if (proxy_req->send.proxy.req->func == ucp_wireup_msg_progress) {
         req = ucs_container_of(proxy_req->send.proxy.req, ucp_request_t,
                                send.uct);
@@ -336,26 +336,43 @@ static ucs_status_t ucp_wireup_ep_check(uct_ep_h uct_ep, unsigned flags,
 {
     ucp_wireup_ep_t *wireup_ep = ucp_wireup_ep(uct_ep);
     ucp_worker_h worker        = wireup_ep->super.ucp_ep->worker;
+    ucp_ep_h tmp_ep            = wireup_ep->tmp_ep;
+    ucp_lane_index_t lane;
+    ucp_worker_iface_t *wiface;
 
-    if (wireup_ep->flags & UCP_WIREUP_EP_FLAG_LOCAL_CONNECTED) {
+    if (wireup_ep->flags & UCP_WIREUP_EP_FLAG_READY) {
         return uct_ep_check(wireup_ep->super.uct_ep, flags, comp);
     }
 
     if (wireup_ep->aux_ep != NULL) {
         ucs_assert(wireup_ep->aux_rsc_index != UCP_NULL_RESOURCE);
 
-        if (ucp_worker_iface(worker, wireup_ep->aux_rsc_index)->attr.cap.flags &
-            UCT_IFACE_FLAG_EP_CHECK) {
+        wiface = ucp_worker_iface(worker, wireup_ep->aux_rsc_index);
+        if (wiface->attr.cap.flags & UCT_IFACE_FLAG_EP_CHECK) {
             return uct_ep_check(wireup_ep->aux_ep, flags, comp);
         }
 
-        /* if EP_CHECK is not supported by auxiliary transport, it has to support
-         * a built-in keepalive mechanism to be able to detect peer failure during
-         * wireup
+        /* if EP_CHECK is not supported by auxiliary transport, it has to
+         * support a built-in keepalive mechanism to be able to detect peer
+         * failure during wireup
          */
-        ucs_assert(ucp_worker_iface(worker,
-                                    wireup_ep->aux_rsc_index)->attr.cap.flags &
-                   UCT_IFACE_FLAG_EP_KEEPALIVE);
+        ucs_assert(wiface->attr.cap.flags & UCT_IFACE_FLAG_EP_KEEPALIVE);
+        return UCS_OK;
+    }
+
+    if ((tmp_ep != NULL) && (ucp_ep_config(tmp_ep)->key.ep_check_map != 0)) {
+        lane = ucs_ffs64_safe(wireup_ep->tmp_ep_check_map);
+        if (lane == 64) {
+            /* re-arm TMP EP check map */
+            wireup_ep->tmp_ep_check_map =
+                    ucp_ep_config(tmp_ep)->key.ep_check_map;
+
+            lane = ucs_ffs64_safe(wireup_ep->tmp_ep_check_map);
+            ucs_assert(lane != 64);
+        }
+
+        wireup_ep->tmp_ep_check_map &= ~UCS_BIT(lane);
+        return uct_ep_check(tmp_ep->uct_eps[lane], flags, comp);
     }
 
     return UCS_OK;
@@ -393,19 +410,22 @@ UCS_CLASS_INIT_FUNC(ucp_wireup_ep_t, ucp_ep_h ucp_ep)
         .ep_atomic32_fetch   = (uct_ep_atomic32_fetch_func_t)ucs_empty_function_return_no_resource,
         .ep_atomic_cswap32   = (uct_ep_atomic_cswap32_func_t)ucs_empty_function_return_no_resource
     };
+    ucp_lane_index_t lane;
 
     UCS_CLASS_CALL_SUPER_INIT(ucp_proxy_ep_t, &ops, ucp_ep, NULL, 0);
 
-    self->aux_ep             = NULL;
-    self->sockaddr_ep        = NULL;
-    self->tmp_ep             = NULL;
-    self->aux_rsc_index      = UCP_NULL_RESOURCE;
-    self->sockaddr_rsc_index = UCP_NULL_RESOURCE;
-    self->pending_count      = 0;
-    self->flags              = 0;
-    self->progress_id        = UCS_CALLBACKQ_ID_NULL;
-    self->cm_idx             = UCP_NULL_RESOURCE;
+    self->aux_ep           = NULL;
+    self->tmp_ep           = NULL;
+    self->tmp_ep_check_map = 0;
+    self->aux_rsc_index    = UCP_NULL_RESOURCE;
+    self->pending_count    = 0;
+    self->flags            = 0;
+    self->progress_id      = UCS_CALLBACKQ_ID_NULL;
     ucs_queue_head_init(&self->pending_q);
+
+    for (lane = 0; lane < UCP_MAX_LANES; ++lane) {
+        self->dst_rsc_indices[lane] = UCP_NULL_RESOURCE;
+    }
 
     UCS_ASYNC_BLOCK(&ucp_ep->worker->async);
     ucp_worker_flush_ops_count_inc(ucp_ep->worker);
@@ -439,13 +459,15 @@ static UCS_CLASS_CLEANUP_FUNC(ucp_wireup_ep_t)
         ucp_wireup_replay_pending_requests(ucp_ep, &tmp_pending_queue);
     }
 
-    if (self->sockaddr_ep != NULL) {
-        uct_ep_destroy(self->sockaddr_ep);
-    }
-
     if (self->tmp_ep != NULL) {
         ucs_assert(!(self->tmp_ep->flags & UCP_EP_FLAG_USED));
+        /* discard all TMP EP lanes before destroying TMP EP to make sure that
+         * all lanes are destroyed gracefully (i.e. purged and flushed prior) -
+         * it is required to prevent possible events after a lane was destroyed
+         * (e.g. errors due to broken link to a peer detected by KEEPALIVE) */
+        ucp_ep_discard_lanes(self->tmp_ep, UCS_ERR_CANCELED);
         ucp_ep_disconnected(self->tmp_ep, 1);
+        self->tmp_ep = NULL;
     }
 
     UCS_ASYNC_BLOCK(&worker->async);
@@ -497,9 +519,12 @@ ucs_status_t ucp_wireup_ep_connect(uct_ep_h uct_ep, unsigned ep_init_flags,
 
     ucp_proxy_ep_set_uct_ep(&wireup_ep->super, next_ep, 1);
 
-    ucs_debug("ep %p: created next_ep %p to %s using " UCT_TL_RESOURCE_DESC_FMT,
-              ucp_ep, wireup_ep->super.uct_ep, ucp_ep_peer_name(ucp_ep),
-              UCT_TL_RESOURCE_DESC_ARG(&worker->context->tl_rscs[rsc_index].tl_rsc));
+    ucs_debug("ep %p: wireup_ep %p created next_ep %p to %s "
+              "using " UCT_TL_RESOURCE_DESC_FMT,
+              ucp_ep, wireup_ep, wireup_ep->super.uct_ep,
+              ucp_ep_peer_name(ucp_ep),
+              UCT_TL_RESOURCE_DESC_ARG(
+                      &worker->context->tl_rscs[rsc_index].tl_rsc));
 
     /* we need to create an auxiliary transport only for active messages */
     if (connect_aux) {
@@ -528,6 +553,8 @@ void ucp_wireup_ep_set_next_ep(uct_ep_h uct_ep, uct_ep_h next_ep)
     ucs_assert(!ucp_wireup_ep_test(next_ep));
     wireup_ep->flags |= UCP_WIREUP_EP_FLAG_LOCAL_CONNECTED;
     ucp_proxy_ep_set_uct_ep(&wireup_ep->super, next_ep, 1);
+    ucs_debug("ep %p: wireup_ep %p set next_ep %p", wireup_ep->super.ucp_ep,
+              wireup_ep, wireup_ep->super.uct_ep);
 }
 
 uct_ep_h ucp_wireup_ep_extract_next_ep(uct_ep_h uct_ep)
@@ -554,19 +581,28 @@ void ucp_wireup_ep_destroy_next_ep(ucp_wireup_ep_t *wireup_ep)
     ucs_assert(wireup_ep->flags == 0);
 }
 
-void ucp_wireup_ep_remote_connected(uct_ep_h uct_ep)
+void ucp_wireup_ep_mark_ready(uct_ep_h uct_ep)
 {
     ucp_wireup_ep_t *wireup_ep = ucp_wireup_ep(uct_ep);
-    ucp_ep_h ucp_ep;
 
     ucs_assert(wireup_ep != NULL);
     ucs_assert(wireup_ep->super.uct_ep != NULL);
     ucs_assert(wireup_ep->flags & UCP_WIREUP_EP_FLAG_LOCAL_CONNECTED);
 
-    ucp_ep = wireup_ep->super.ucp_ep;
-
-    ucs_trace("ep %p: wireup ep %p is remote-connected", ucp_ep, wireup_ep);
+    ucs_trace("ep %p: wireup ep %p is ready", wireup_ep->super.ucp_ep,
+              wireup_ep);
     wireup_ep->flags |= UCP_WIREUP_EP_FLAG_READY;
+}
+
+void ucp_wireup_ep_remote_connected(uct_ep_h uct_ep)
+{
+    ucp_wireup_ep_t *wireup_ep = ucp_wireup_ep(uct_ep);
+    ucp_ep_h ucp_ep;
+
+    ucp_wireup_ep_mark_ready(uct_ep);
+
+    ucp_ep = wireup_ep->super.ucp_ep;
+    ucs_trace("ep %p: wireup ep %p is remote-connected", ucp_ep, wireup_ep);
     uct_worker_progress_register_safe(ucp_ep->worker->uct,
                                       ucp_wireup_ep_progress, wireup_ep, 0,
                                       &wireup_ep->progress_id);
@@ -594,15 +630,28 @@ int ucp_wireup_aux_ep_is_owner(ucp_wireup_ep_t *wireup_ep, uct_ep_h owned_ep)
 
 int ucp_wireup_ep_is_owner(uct_ep_h uct_ep, uct_ep_h owned_ep)
 {
-    ucp_wireup_ep_t *wireup_ep = ucp_wireup_ep(uct_ep);
+    ucp_wireup_ep_t *wireup_ep;
 
+    if (uct_ep == NULL) {
+        return 0;
+    }
+
+    wireup_ep = ucp_wireup_ep(uct_ep);
     if (wireup_ep == NULL) {
         return 0;
     }
 
-    return (ucp_wireup_aux_ep_is_owner(wireup_ep, owned_ep)) ||
-           (wireup_ep->sockaddr_ep == owned_ep) ||
-           (wireup_ep->super.uct_ep == owned_ep);
+    if ((ucp_wireup_aux_ep_is_owner(wireup_ep, owned_ep)) ||
+        (wireup_ep->super.uct_ep == owned_ep)) {
+        return 1;
+    }
+
+    /* Check if owned_ep belongs to tmp_ep */
+    if (wireup_ep->tmp_ep != NULL) {
+        return ucp_ep_lookup_lane(wireup_ep->tmp_ep, owned_ep) != UCP_NULL_LANE;
+    }
+
+    return 0;
 }
 
 void ucp_wireup_ep_disown(uct_ep_h uct_ep, uct_ep_h owned_ep)
@@ -612,8 +661,6 @@ void ucp_wireup_ep_disown(uct_ep_h uct_ep, uct_ep_h owned_ep)
     ucs_assert_always(wireup_ep != NULL);
     if (wireup_ep->aux_ep == owned_ep) {
         wireup_ep->aux_ep = NULL;
-    } else if (wireup_ep->sockaddr_ep == owned_ep) {
-        wireup_ep->sockaddr_ep = NULL;
     } else if (wireup_ep->super.uct_ep == owned_ep) {
         ucp_proxy_ep_extract(uct_ep);
     }
