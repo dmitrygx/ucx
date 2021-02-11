@@ -180,9 +180,10 @@ UCS_PROFILE_FUNC(ucs_status_t, ucp_proto_progress_rndv_rtr, (self),
     status           = ucp_do_am_single(self, UCP_AM_ID_RNDV_RTR, ucp_rndv_rtr_pack,
                                         sizeof(ucp_rndv_rtr_hdr_t) + packed_rkey_size);
     if (ucs_unlikely(status != UCS_OK)) {
-        if (ucs_unlikely(status != UCS_ERR_NO_RESOURCE)) {
-            ucp_request_put(rndv_req);
+        if (ucs_likely(status == UCS_ERR_NO_RESOURCE)) {
+            return UCS_ERR_NO_RESOURCE;
         }
+        ucp_request_put(rndv_req);
     }
 
     /* don't release rndv request in case of success, since it was sent to
@@ -190,7 +191,7 @@ UCS_PROFILE_FUNC(ucs_status_t, ucp_proto_progress_rndv_rtr, (self),
      * user-exposed receive request (and request for copying data from staging
      * buffer in case of pipelined RNDV) */
 
-    return status;
+    return UCS_OK;
 }
 
 ucs_status_t ucp_rndv_reg_send_buffer(ucp_request_t *sreq)
@@ -350,11 +351,10 @@ static void ucp_rndv_recv_data_init(ucp_request_t *rreq, size_t size)
 }
 
 ucs_status_t ucp_rndv_send_rts(ucp_request_t *sreq, uct_pack_callback_t pack_cb,
-                               size_t rts_body_size)
+                               size_t rts_size)
 {
-    size_t max_rts_size = sizeof(ucp_tag_rndv_rts_hdr_t) +
-                          ucp_ep_config(sreq->send.ep)->rndv.rkey_size +
-                          rts_body_size;
+    size_t max_rts_size = ucp_ep_config(sreq->send.ep)->rndv.rkey_size +
+                          rts_size;
     ucs_status_t status;
 
     status = ucp_do_am_single(&sreq->send.uct, UCP_AM_ID_RNDV_RTS, pack_cb,
@@ -1810,13 +1810,10 @@ UCS_PROFILE_FUNC(ucs_status_t, ucp_rndv_rtr_handler,
     put_zcopy = &ep_config->rndv.put_zcopy;
 
     ucs_assertv(rndv_rtr_hdr->sreq_id == sreq->send.req_id.local,
-                "received local sreq_id 0x%" PRIx64 " is not equal to expected"
-                " sreq_id 0x%" PRIx64,
-                rndv_rtr_hdr->sreq_id, sreq->send.req_id.local);
-    ucp_trace_req(sreq,
-                  "received rtr address 0x%" PRIx64 " remote rreq_id "
-                  "0x%" PRIx64,
-                  rndv_rtr_hdr->address, rndv_rtr_hdr->rreq_id);
+                "received local sreq_id 0x%"PRIx64" is not equal to expected"
+                " sreq_id 0x%"PRIx64, rndv_rtr_hdr->sreq_id, sreq->send.req_id.local);
+    ucp_trace_req(sreq, "received rtr address 0x%"PRIx64" remote rreq_id "
+                  "0x%"PRIx64, rndv_rtr_hdr->address, rndv_rtr_hdr->rreq_id);
     UCS_PROFILE_REQUEST_EVENT(sreq, "rndv_rtr_recv", 0);
 
     if (sreq->flags & UCP_REQUEST_FLAG_OFFLOADED) {

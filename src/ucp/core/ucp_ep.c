@@ -2440,8 +2440,7 @@ void ucp_ep_reqs_purge(ucp_ep_h ucp_ep, ucs_status_t status,
         ucp_ep_req_purge(ucp_ep, req, status, 0);
     }
 
-    if (/* no need to purge flush requests */
-        !purge_flush_reqs ||
+    if (!purge_flush_reqs ||
         /* flush state is not valid yet or already invalidated */
         (ucp_ep->flags &
          (UCP_EP_FLAG_ON_MATCH_CTX | UCP_EP_FLAG_CLOSE_REQ_VALID))) {

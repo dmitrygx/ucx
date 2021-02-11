@@ -543,7 +543,6 @@ ucs_status_t ucp_tag_offload_sw_rndv(uct_pending_req_t *self)
     ucp_rndv_rts_hdr_t *rndv_rts_hdr;
     unsigned rndv_hdr_len;
     size_t packed_len;
-    ucs_status_t status;
 
     ucs_assert((UCP_DT_IS_CONTIG(req->send.datatype) &&
                (req->send.length > ucp_ep_config(ep)->tag.offload.max_rndv_zcopy)) ||
@@ -557,14 +556,9 @@ ucs_status_t ucp_tag_offload_sw_rndv(uct_pending_req_t *self)
     rndv_rts_hdr = ucs_alloca(rndv_hdr_len);
     packed_len   = ucp_tag_rndv_rts_pack(rndv_rts_hdr, req);
 
-    status = uct_ep_tag_rndv_request(ep->uct_eps[req->send.lane],
-                                     req->send.msg_proto.tag.tag, rndv_rts_hdr,
-                                     packed_len, 0);
-    if (ucs_unlikely(status != UCS_OK)) {
-        return status;
-    }
-
-    return UCS_OK;
+    return uct_ep_tag_rndv_request(ep->uct_eps[req->send.lane],
+                                   req->send.msg_proto.tag.tag, rndv_rts_hdr,
+                                   packed_len, 0);
 }
 
 static void ucp_tag_offload_rndv_zcopy_completion(uct_completion_t *self)

@@ -739,7 +739,9 @@ UCS_PROFILE_FUNC(ucs_status_t, ucp_proto_progress_am_rndv_rts, (self),
 {
     ucp_request_t *sreq = ucs_container_of(self, ucp_request_t, send.uct);
 
+    /* RTS consists of: AM RTS header, packed rkeys and user header */
     return ucp_rndv_send_rts(sreq, ucp_am_rndv_rts_pack,
+                             sizeof(ucp_am_rndv_rts_hdr_t) +
                              sreq->send.msg_proto.am.header_length);
 }
 
