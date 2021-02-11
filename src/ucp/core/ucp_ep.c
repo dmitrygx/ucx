@@ -720,7 +720,6 @@ void ucp_ep_destroy_internal(ucp_ep_h ep)
     ucp_ep_cleanup_lanes(ep);
     if (ep->flags & UCP_EP_FLAG_INTERNAL) {
         /* it's failed tmp ep of main ep */
-        ucs_assert(ucp_ep_ext_control(ep)->local_ep_id == UCP_EP_ID_INVALID);
         ucp_ep_destroy_base(ep);
     } else {
         ucp_ep_delete(ep);
@@ -2407,17 +2406,6 @@ int ucp_ep_config_test_rndv_support(const ucp_ep_config_t *config)
            (config->key.cm_lane  != UCP_NULL_LANE);
 }
 
-static UCS_F_ALWAYS_INLINE int
-ucp_ep_is_am_keepalive(ucp_ep_h ep, ucp_lane_index_t lane)
-{
-    /* if we have ep2iface transport we need to send an active-message based
-     * keepalive message to check the remote endpoint still exists */
-    return (ep->flags & UCP_EP_FLAG_REMOTE_ID) && /* remote ID defined */
-           (ep->flags & UCP_EP_FLAG_REMOTE_CONNECTED) && /* wireup completed */
-           (ucp_ep_get_iface_attr(ep, lane)->cap.flags &
-            UCT_IFACE_FLAG_CONNECT_TO_IFACE); /* connect-to-iface */
-}
-
 void ucp_ep_do_keepalive(ucp_ep_h ep, ucp_lane_map_t *lane_map)
 {
     ucp_lane_map_t check_lanes;
@@ -2425,7 +2413,7 @@ void ucp_ep_do_keepalive(ucp_ep_h ep, ucp_lane_map_t *lane_map)
     ucs_status_t status;
     ucp_rsc_index_t rsc_index;
 
-    if (ep->flags & (UCP_EP_FLAG_FAILED | UCP_EP_FLAG_CLOSED)) {
+    if (ep->flags & UCP_EP_FLAG_FAILED) {
         *lane_map = 0;
         return;
     }
@@ -2437,19 +2425,13 @@ void ucp_ep_do_keepalive(ucp_ep_h ep, ucp_lane_map_t *lane_map)
         ucs_assert(lane < UCP_MAX_LANES);
         /* in case if remote ID is defined, wireup is completed and EP is
          * in connect-to-iface mode then use UCP/AM keepalive */
-        if (ucp_ep_is_am_keepalive(ep, lane)) {
-            rsc_index = ucp_ep_get_rsc_index(ep, lane);
-            status    = ucp_wireup_msg_send(ep, UCP_WIREUP_MSG_EP_CHECK,
-                                            UCS_BIT(rsc_index), NULL);
-            ucs_assert(status == UCS_OK);
+        rsc_index = ucp_ep_get_rsc_index(ep, lane);
+        status    = ucp_ep_do_uct_ep_keepalive(ep, ep->uct_eps[lane], rsc_index,
+                                               1, 0, NULL);
+        if (status != UCS_ERR_NO_RESOURCE) {
             *lane_map &= ~UCS_BIT(lane);
-        } else {
-            /* coverity[overrun-local] */
-            status = uct_ep_check(ep->uct_eps[lane], 0, NULL);
-            if (status == UCS_OK) {
-                *lane_map &= ~UCS_BIT(lane);
-            } else if (status != UCS_ERR_NO_RESOURCE) {
-                *lane_map &= ~UCS_BIT(lane);
+
+            if (ucs_unlikely(status != UCS_OK)) {
                 ucs_warn("unexpected return status from uct_ep_check(ep=%p, "
                          "lane[%d]=%p): %s",
                          ep, lane, ep->uct_eps[lane],

@@ -277,4 +277,34 @@ static UCS_F_ALWAYS_INLINE int ucp_ep_use_indirect_id(ucp_ep_h ep)
     UCS_STATIC_ASSERT(sizeof(ep->flags) <= sizeof(int));
     return ep->flags & UCP_EP_FLAG_INDIRECT_ID;
 }
+
+static UCS_F_ALWAYS_INLINE int
+ucp_ep_is_am_keepalive(ucp_ep_h ep, ucp_rsc_index_t rsc_idx,
+                       int remote_conn_required)
+{
+    /* if we have ep2iface transport we need to send an active-message based
+     * keepalive message to check the remote endpoint still exists */
+    return (ep->flags & UCP_EP_FLAG_REMOTE_ID) && /* remote ID defined */
+           ((ep->flags & UCP_EP_FLAG_REMOTE_CONNECTED) || /* wireup completed */
+            !remote_conn_required) && /* wireup completed isn't required */
+           (ucp_worker_iface(ep->worker, rsc_idx)->attr.cap.flags &
+            UCT_IFACE_FLAG_CONNECT_TO_IFACE); /* connect-to-iface */
+}
+
+static UCS_F_ALWAYS_INLINE ucs_status_t
+ucp_ep_do_uct_ep_keepalive(ucp_ep_h ucp_ep, uct_ep_h uct_ep,
+                           ucp_rsc_index_t rsc_idx, int remote_conn_required,
+                           unsigned flags, uct_completion_t *comp)
+{
+    ucs_status_t status;
+
+    if (ucp_ep_is_am_keepalive(ucp_ep, rsc_idx, remote_conn_required)) {
+        status = ucp_wireup_msg_send(ucp_ep, UCP_WIREUP_MSG_EP_CHECK,
+                                     UCS_BIT(rsc_idx), NULL);
+        ucs_assert(status == UCS_OK);
+        return status;
+    }
+
+    return uct_ep_check(uct_ep, flags, comp);
+}
 #endif
