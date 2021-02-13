@@ -2406,6 +2406,38 @@ int ucp_ep_config_test_rndv_support(const ucp_ep_config_t *config)
            (config->key.cm_lane  != UCP_NULL_LANE);
 }
 
+static UCS_F_ALWAYS_INLINE int
+ucp_ep_is_am_keepalive(ucp_ep_h ucp_ep, ucp_rsc_index_t rsc_idx)
+{
+    /* if we have ep2iface transport we need to send an active-message based
+     * keepalive message to check the remote endpoint still exists */
+    return (ucp_ep->flags & UCP_EP_FLAG_REMOTE_ID) && /* remote ID defined */
+           (rsc_idx != UCP_NULL_RESOURCE) && /* rsc index is not NULL, i.e.
+                                                it is not a CM lane */
+           (ucp_worker_iface(ucp_ep->worker, rsc_idx)->attr.cap.flags &
+            UCT_IFACE_FLAG_CONNECT_TO_IFACE); /* connect-to-iface */
+}
+
+ucs_status_t ucp_ep_do_uct_ep_keepalive(ucp_ep_h ucp_ep, uct_ep_h uct_ep,
+                                        ucp_rsc_index_t rsc_idx, unsigned flags,
+                                        uct_completion_t *comp)
+{
+    ucs_status_t status;
+
+    ucs_assert((rsc_idx == UCP_NULL_RESOURCE) ||
+               (ucp_worker_iface(ucp_ep->worker, rsc_idx)->attr.cap.flags &
+                UCT_IFACE_FLAG_EP_CHECK));
+
+    if (ucp_ep_is_am_keepalive(ucp_ep, rsc_idx)) {
+        status = ucp_wireup_msg_send(ucp_ep, UCP_WIREUP_MSG_EP_CHECK,
+                                     UCS_BIT(rsc_idx), NULL);
+        ucs_assert(status == UCS_OK);
+        return status;
+    }
+
+    return uct_ep_check(uct_ep, flags, comp);
+}
+
 void ucp_ep_do_keepalive(ucp_ep_h ep, ucp_lane_map_t *lane_map)
 {
     ucp_lane_map_t check_lanes;
@@ -2426,8 +2458,11 @@ void ucp_ep_do_keepalive(ucp_ep_h ep, ucp_lane_map_t *lane_map)
         /* in case if remote ID is defined, wireup is completed and EP is
          * in connect-to-iface mode then use UCP/AM keepalive */
         rsc_index = ucp_ep_get_rsc_index(ep, lane);
-        status    = ucp_ep_do_uct_ep_keepalive(ep, ep->uct_eps[lane], rsc_index,
-                                               1, 0, NULL);
+        ucs_assert((rsc_index != UCP_NULL_RESOURCE) ||
+                   (lane == ucp_ep_get_cm_lane(ep)));
+
+        status = ucp_ep_do_uct_ep_keepalive(ep, ep->uct_eps[lane], rsc_index, 0,
+                                            NULL);
         if (status != UCS_ERR_NO_RESOURCE) {
             *lane_map &= ~UCS_BIT(lane);
 
