@@ -986,7 +986,8 @@ static ucs_status_t ucp_perf_test_fill_params(ucx_perf_params_t *params,
         return UCS_ERR_INVALID_PARAM;
     }
 
-    if (params->flags & UCX_PERF_TEST_FLAG_WAKEUP) {
+    if ((params->flags & UCX_PERF_TEST_FLAG_WAKEUP) ||
+        (params->wait_mode == UCX_PERF_WAIT_MODE_SLEEP)) {
         ucp_params->features |= UCP_FEATURE_WAKEUP;
     }
 
@@ -1871,6 +1872,12 @@ static ucs_status_t ucx_perf_thread_run_test(void* arg)
     ucx_perf_context_t* perf        = &tctx->perf;
     ucx_perf_params_t* params       = &perf->params;
     ucs_status_t status;
+
+    /* new threads need explicit device association */
+    status = perf->allocator->init(perf);
+    if (status != UCS_OK) {
+        goto out;
+    }
 
     if (params->warmup_iter > 0) {
         ucx_perf_set_warmup(perf, params);
