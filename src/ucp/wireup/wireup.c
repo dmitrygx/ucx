@@ -654,6 +654,8 @@ ucp_wireup_process_ep_check(ucp_worker_h worker, ucp_ep_h ep,
         return;
     }
 
+    ep->flags |= UCP_EP_FLAG_INTERNAL;
+
     /* Initialize lanes (possible destroy existing lanes) */
     status = ucp_wireup_init_lanes_by_request(worker, reply_ep, 0,
                                               remote_address, addr_indices);
@@ -670,9 +672,15 @@ ucp_wireup_process_ep_check(ucp_worker_h worker, ucp_ep_h ep,
     req = ucp_ep_flush_internal(reply_ep, UCP_REQUEST_FLAG_RELEASED,
                                 &ucp_request_null_param, NULL,
                                 ucp_ep_register_disconnect_progress, "close");
-    if (!UCS_PTR_IS_PTR(req)) {
-        ucp_ep_disconnected(ep, 0);
+    if (UCS_PTR_IS_PTR(req)) {
+        ucp_worker_flush_ops_count_inc(worker);
+        return;
+    } else if (UCS_PTR_IS_ERR(req)) {
+        ucs_error("reply_ep %p: failed to be flushed '%s'",
+                  reply_ep, ucs_status_string(UCS_PTR_STATUS(req)));
     }
+
+    ucp_ep_disconnected(ep, 0);
 
     return;
 

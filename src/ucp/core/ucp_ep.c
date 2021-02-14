@@ -797,6 +797,10 @@ unsigned ucp_ep_local_disconnect_progress(void *arg)
     ucs_assert(!(req->flags & UCP_REQUEST_FLAG_COMPLETED));
 
     UCS_ASYNC_BLOCK(async);
+    if (ep->flags & UCP_EP_FLAG_INTERNAL) {
+        ucp_worker_flush_ops_count_inc(ep->worker);
+    }
+
     ucs_debug("ep %p: disconnected with request %p, %s", ep, req,
               ucs_status_string(req->status));
     ucp_ep_disconnected(ep, req->send.flush.uct_flags & UCT_FLUSH_FLAG_CANCEL);
