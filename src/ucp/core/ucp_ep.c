@@ -756,16 +756,28 @@ void ucp_ep_cleanup_lanes(ucp_ep_h ep)
     }
 }
 
+static int
+ucp_ep_local_disconnect_progress_remove_filter(const ucs_callbackq_elem_t *elem,
+                                               void *arg)
+{
+    ucp_ep_h ep = (ucp_ep_h)arg;
+    ucp_request_t *req;
+
+    if (elem->cb == ucp_ep_local_disconnect_progress) {
+        req = (ucp_request_t*)elem->arg;
+        if (ep == req->send.ep) {
+            ucp_request_complete_send(req, UCS_OK);
+            return 1;
+        }
+    }
+
+    return 0;
+}
+
 /* Must be called with async lock held */
 void ucp_ep_disconnected(ucp_ep_h ep, int force)
 {
-    /* remove pending slow-path progress in case it wasn't removed yet */
-    ucs_callbackq_remove_if(&ep->worker->uct->progress_q,
-                            ucp_worker_err_handle_remove_filter, ep);
-
-    /* remove pending slow-path function if it wasn't removed yet */
-    ucs_callbackq_remove_if(&ep->worker->uct->progress_q,
-                            ucp_listener_accept_cb_remove_filter, ep);
+    ucp_worker_h worker = ep->worker;
 
     ucp_ep_cm_slow_cbq_cleanup(ep);
 
@@ -784,8 +796,20 @@ void ucp_ep_disconnected(ucp_ep_h ep, int force)
         return;
     }
 
-    ucp_ep_match_remove_ep(ep->worker, ep);
+    ucp_ep_match_remove_ep(worker, ep);
     ucp_ep_destroy_internal(ep);
+
+    /* remove pending slow-path progress in case it wasn't removed yet */
+    ucs_callbackq_remove_if(&worker->uct->progress_q,
+                            ucp_worker_err_handle_remove_filter, ep);
+
+    /* remove pending slow-path function if it wasn't removed yet */
+    ucs_callbackq_remove_if(&worker->uct->progress_q,
+                            ucp_listener_accept_cb_remove_filter, ep);
+
+    /* remove pending slow-path disconnect progress if it wasn't removed yet */
+    ucs_callbackq_remove_if(&worker->uct->progress_q,
+                            ucp_ep_local_disconnect_progress_remove_filter, ep);
 }
 
 unsigned ucp_ep_local_disconnect_progress(void *arg)
