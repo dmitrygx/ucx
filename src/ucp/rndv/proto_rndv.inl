@@ -37,8 +37,8 @@ ucp_proto_rndv_rts_request_init(ucp_request_t *req)
         return status;
     }
 
-    req->send.msg_proto.sreq_id = ucp_send_request_get_id(req);
-    req->flags                 |= UCP_REQUEST_FLAG_PROTO_INITIALIZED;
+    req->send.req_id.local = ucp_send_request_get_id(req);
+    req->flags            |= UCP_REQUEST_FLAG_PROTO_INITIALIZED;
 
     return UCS_OK;
 }
@@ -50,8 +50,8 @@ ucp_proto_rndv_ats_handler(void *arg, void *data, size_t length, unsigned flags)
     const ucp_reply_hdr_t *ats = data;
     ucp_request_t *req;
 
-    UCP_WORKER_EXTRACT_REQUEST_BY_ID(&req, worker, ats->req_id, return UCS_OK,
-                                     "ATS %p", ats);
+    UCP_SEND_REQUEST_EXTRACT_BY_ID(&req, worker, ats->req_id, return UCS_OK,
+                                   "ATS %p", ats);
     ucp_proto_request_zcopy_complete(req, ats->status);
     return UCS_OK;
 }
@@ -62,7 +62,7 @@ static UCS_F_ALWAYS_INLINE size_t ucp_proto_rndv_rts_pack(
     void *rkey_buffer = UCS_PTR_BYTE_OFFSET(rts, hdr_len);
     size_t rkey_size;
 
-    rts->sreq.req_id = req->send.msg_proto.sreq_id;
+    rts->sreq.req_id = req->send.req_id.local;
     rts->sreq.ep_id  = ucp_send_request_get_ep_remote_id(req);
     rts->size        = req->send.state.dt_iter.length;
 

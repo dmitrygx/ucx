@@ -340,7 +340,7 @@ size_t ucp_proto_rndv_pack_ack(void *dest, void *arg)
     ucp_request_t *req       = arg;
     ucp_reply_hdr_t *ack_hdr = dest;
 
-    ack_hdr->req_id = req->send.rndv.remote_req_id;
+    ack_hdr->req_id = req->send.req_id.remote;
     ack_hdr->status = UCS_OK;
 
     return sizeof(*ack_hdr);
@@ -401,8 +401,7 @@ ucp_proto_rndv_send_reply(ucp_worker_h worker, ucp_request_t *req,
     ucp_trace_req(req,
                   "%s rva 0x%" PRIx64 " rreq_id 0x%" PRIx64 " with protocol %s",
                   ucp_operation_names[op_id], req->send.rndv.remote_address,
-                  req->send.rndv.remote_req_id,
-                  req->send.proto_config->proto->name);
+                  req->send.req_id.remote, req->send.proto_config->proto->name);
 
     ucp_request_send(req, 0);
     return UCS_OK;
@@ -459,7 +458,7 @@ void ucp_proto_rndv_receive(ucp_worker_h worker, ucp_request_t *recv_req,
     /* Initialize send request */
     req->send.ep                  = ep;
     req->send.rndv.remote_address = rts->address;
-    req->send.rndv.remote_req_id  = rts->sreq.req_id;
+    req->send.req_id.remote       = rts->sreq.req_id;
 
     if (ucs_likely(rts->size <= recv_req->recv.length)) {
         req->super_req = recv_req;

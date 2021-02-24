@@ -1448,17 +1448,12 @@ UCS_PROFILE_FUNC(ucs_status_t, ucp_rndv_ats_handler,
     ucp_reply_hdr_t *rep_hdr = data;
     ucp_request_t *sreq;
 
-<<<<<<< HEAD
-    UCP_SEND_REQUEST_EXTRACT_BY_ID(&sreq, worker, rep_hdr->req_id,
-                                   return UCS_OK, "RNDV ATS %p", rep_hdr);
-=======
     if (worker->context->config.ext.proto_enable) {
         return ucp_proto_rndv_ats_handler(arg, data, length, flags);
     }
 
-    UCP_WORKER_EXTRACT_REQUEST_BY_ID(&sreq, worker, rep_hdr->req_id,
-                                     return UCS_OK, "RNDV ATS %p", rep_hdr);
->>>>>>> upstream/master
+    UCP_SEND_REQUEST_EXTRACT_BY_ID(&sreq, worker, rep_hdr->req_id,
+                                   return UCS_OK, "RNDV ATS %p", rep_hdr);
 
     /* dereg the original send request and set it to complete */
     UCS_PROFILE_REQUEST_EVENT(sreq, "rndv_ats_recv", 0);

@@ -813,6 +813,7 @@ ucp_request_invoke_uct_completion_success(ucp_request_t *req)
 static UCS_F_ALWAYS_INLINE void
 ucp_request_complete_and_dereg_send(ucp_request_t *sreq, ucs_status_t status)
 {
+    ucs_assert(!sreq->send.ep->worker->context->config.ext.proto_enable);
     ucp_request_send_generic_dt_finish(sreq);
     ucp_request_send_buffer_dereg(sreq);
     ucp_request_complete_send(sreq, status);
