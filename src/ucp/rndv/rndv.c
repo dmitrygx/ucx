@@ -9,6 +9,7 @@
 #endif
 
 #include "rndv.h"
+#include "proto_rndv.inl"
 
 /* TODO: Avoid dependency on tag (or other API) specifics, since this is common
  * basic rendezvous implementation.
@@ -275,7 +276,7 @@ void ucp_rndv_req_send_ack(ucp_request_t *ack_req, ucp_request_t *req,
                     "req=%p offset=%zu length=%zu", req,
                     req->send.state.dt.offset, req->send.length);
     }
-    
+
     ucp_trace_req(req, "%s remote_req_id 0x%"PRIxPTR, ack_str, remote_req_id);
     UCS_PROFILE_REQUEST_EVENT(req, ack_str, 0);
 
@@ -1447,8 +1448,17 @@ UCS_PROFILE_FUNC(ucs_status_t, ucp_rndv_ats_handler,
     ucp_reply_hdr_t *rep_hdr = data;
     ucp_request_t *sreq;
 
+<<<<<<< HEAD
     UCP_SEND_REQUEST_EXTRACT_BY_ID(&sreq, worker, rep_hdr->req_id,
                                    return UCS_OK, "RNDV ATS %p", rep_hdr);
+=======
+    if (worker->context->config.ext.proto_enable) {
+        return ucp_proto_rndv_ats_handler(arg, data, length, flags);
+    }
+
+    UCP_WORKER_EXTRACT_REQUEST_BY_ID(&sreq, worker, rep_hdr->req_id,
+                                     return UCS_OK, "RNDV ATS %p", rep_hdr);
+>>>>>>> upstream/master
 
     /* dereg the original send request and set it to complete */
     UCS_PROFILE_REQUEST_EVENT(sreq, "rndv_ats_recv", 0);
@@ -1509,14 +1519,23 @@ UCS_PROFILE_FUNC(ucs_status_t, ucp_rndv_progress_am_bcopy, (self),
         /* send a single bcopy message */
         status = ucp_do_am_bcopy_single(self, UCP_AM_ID_RNDV_DATA,
                                         ucp_rndv_pack_data);
+        ucs_assert(status != UCS_INPROGRESS);
     } else {
         status = ucp_do_am_bcopy_multi(self, UCP_AM_ID_RNDV_DATA,
                                        UCP_AM_ID_RNDV_DATA,
                                        ucp_rndv_pack_data,
                                        ucp_rndv_pack_data, 1);
+        
+        if (status == UCS_INPROGRESS) {
+            return UCS_INPROGRESS;
+        } else if (ucs_unlikely(status == UCP_STATUS_PENDING_SWITCH)) {
+            return UCS_OK;
+        }
     }
 
-    UCP_AM_BCOPY_HANDLE_STATUS(!single, status);
+    if (ucs_unlikely(status == UCS_ERR_NO_RESOURCE)) {
+        return UCS_ERR_NO_RESOURCE;
+    }
 
     ucp_request_complete_and_dereg_send(sreq, status);
 

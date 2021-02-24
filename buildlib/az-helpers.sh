@@ -99,7 +99,9 @@ function az_module_load() {
         module load $module
         return 0
     else
-        azure_log_warning "Module $module cannot be load"
+        echo "MODULEPATH='${MODULEPATH}'"
+        module avail || true
+        azure_log_warning "Module $module cannot be loaded"
         return 1
     fi
 }
@@ -110,4 +112,21 @@ function az_module_load() {
 function az_module_unload() {
     module=$1
     module unload "${module}" || true
+}
+
+
+#
+# try load cuda modules if nvidia driver is installed
+#
+try_load_cuda_env() {
+	num_gpus=0
+	have_cuda=no
+	have_gdrcopy=no
+	if [ -f "/proc/driver/nvidia/version" ]; then
+		have_cuda=yes
+		have_gdrcopy=yes
+		az_module_load dev/cuda11.1.1 || have_cuda=no
+		az_module_load dev/gdrcopy2.1_cuda11.1.1 || have_gdrcopy=no
+		num_gpus=$(nvidia-smi -L | wc -l)
+	fi
 }

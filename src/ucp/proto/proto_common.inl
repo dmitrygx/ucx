@@ -102,11 +102,17 @@ ucp_proto_request_set_proto(ucp_worker_h worker, ucp_ep_h ep,
 
     thresh_elem = ucp_proto_select_lookup(worker, proto_select, ep->cfg_index,
                                           rkey_cfg_index, sel_param, msg_length);
-    if (ucs_unlikely(thresh_elem == NULL)) {
+    if (UCS_ENABLE_ASSERT && (thresh_elem == NULL)) {
+        /* We expect that a protocol will always be found, or we will fallback
+           to 'reconfig' placeholder */
         ucp_proto_request_select_error(req, proto_select, rkey_cfg_index,
                                        sel_param, msg_length);
         return UCS_ERR_UNREACHABLE;
     }
+
+    /* Set pointer to request's protocol configuration */
+    ucs_assert(thresh_elem->proto_config.ep_cfg_index == ep->cfg_index);
+    ucs_assert(thresh_elem->proto_config.rkey_cfg_index == rkey_cfg_index);
 
     proto                  = thresh_elem->proto_config.proto;
     req->send.proto_config = &thresh_elem->proto_config;
@@ -171,6 +177,31 @@ out_put_request:
     status = req->status;
     ucp_request_put_param(param, req);
     return UCS_STATUS_PTR(status);
+}
+
+static UCS_F_ALWAYS_INLINE size_t
+ucp_proto_request_pack_rkey(ucp_request_t *req, void *rkey_buffer)
+{
+    ssize_t packed_rkey_size;
+
+    /* For contiguous buffer, pack one rkey
+     * TODO to support IOV datatype write N [address+length] records,
+     */
+    ucs_assert(req->send.state.dt_iter.dt_class == UCP_DATATYPE_CONTIG);
+    ucs_assert(req->send.state.dt_iter.type.contig.reg.md_map != 0);
+
+    packed_rkey_size = ucp_rkey_pack_uct(req->send.ep->worker->context,
+                                         req->send.state.dt_iter.type.contig.reg.md_map,
+                                         req->send.state.dt_iter.type.contig.reg.memh,
+                                         req->send.state.dt_iter.mem_info.type,
+                                         rkey_buffer);
+    if (packed_rkey_size < 0) {
+        ucs_error("failed to pack remote key: %s",
+                  ucs_status_string((ucs_status_t)packed_rkey_size));
+        return 0;
+    }
+
+    return packed_rkey_size;
 }
 
 #endif

@@ -6,6 +6,8 @@ parameters:
 jobs:
   - ${{each mode in parameters.modes }}:
     - job: coverity_${{ mode }}
+      workspace:
+        clean: all
       pool:
         name: MLNX
         demands: ${{ parameters.demands }}
@@ -31,7 +33,6 @@ jobs:
             else
               echo "##vso[task.complete result=Failed;]Coverity have errors"
             fi
-
           displayName: ${{ mode }}
         - task: PublishPipelineArtifact@1
           inputs:

@@ -13,6 +13,7 @@
 #include <ucp/proto/lane_type.h>
 #include <ucp/proto/proto_select.h>
 #include <ucp/wireup/ep_match.h>
+#include <ucp/api/ucp.h>
 #include <uct/api/uct.h>
 #include <ucs/datastruct/queue.h>
 #include <ucs/datastruct/ptr_map.inl>
@@ -507,11 +508,12 @@ void ucp_ep_release_id(ucp_ep_h ep);
 ucs_status_t ucp_ep_init_create_wireup(ucp_ep_h ep, unsigned ep_init_flags,
                                        ucp_wireup_ep_t **wireup_ep);
 
-ucs_status_t ucp_ep_create_to_worker_addr(ucp_worker_h worker,
-                                          uint64_t local_tl_bitmap,
-                                          const ucp_unpacked_address_t *remote_address,
-                                          unsigned ep_init_flags,
-                                          const char *message, ucp_ep_h *ep_p);
+ucs_status_t
+ucp_ep_create_to_worker_addr(ucp_worker_h worker,
+                             const ucp_tl_bitmap_t *local_tl_bitmap,
+                             const ucp_unpacked_address_t *remote_address,
+                             unsigned ep_init_flags, const char *message,
+                             ucp_ep_h *ep_p);
 
 ucs_status_t ucp_ep_create_server_accept(ucp_worker_h worker,
                                          const ucp_conn_request_h conn_request,
@@ -572,7 +574,7 @@ void ucp_worker_destroy_mem_type_endpoints(ucp_worker_h worker);
 
 ucp_wireup_ep_t * ucp_ep_get_cm_wireup_ep(ucp_ep_h ep);
 
-uint64_t ucp_ep_get_tl_bitmap(ucp_ep_h ep);
+ucp_tl_bitmap_t ucp_ep_get_tl_bitmap(ucp_ep_h ep);
 
 uct_ep_h ucp_ep_get_cm_uct_ep(ucp_ep_h ep);
 
@@ -586,6 +588,8 @@ void ucp_ep_invoke_err_cb(ucp_ep_h ep, ucs_status_t status);
 
 int ucp_ep_config_test_rndv_support(const ucp_ep_config_t *config);
 
+ucs_status_t ucp_ep_flush_progress_pending(uct_pending_req_t *self);
+
 void ucp_ep_flush_completion(uct_completion_t *self);
 
 void ucp_ep_flush_request_ff(ucp_request_t *req, ucs_status_t status);
@@ -595,6 +599,21 @@ void ucp_ep_discard_lanes(ucp_ep_h ucp_ep, ucs_status_t status);
 void ucp_ep_register_disconnect_progress(ucp_request_t *req);
 
 ucp_lane_index_t ucp_ep_lookup_lane(ucp_ep_h ucp_ep, uct_ep_h uct_ep);
+
+/**
+ * @brief Do keepalive operation for a specific UCT EP.
+ *
+ * @param [in] ucp_ep  UCP Endpoint object to operate keepalive.
+ * @param [in] uct_ep  UCT Endpoint object to do keepalive on.
+ * @param [in] rsc_idx Resource index to check. 
+ * @param [in] flags   Flags for keepalive operation.
+ * @param [in] comp    Pointer to keepalive completion object.
+ *
+ * @return Status of keepalive operation.
+ */
+ucs_status_t ucp_ep_do_uct_ep_keepalive(ucp_ep_h ucp_ep, uct_ep_h uct_ep,
+                                        ucp_rsc_index_t rsc_idx, unsigned flags,
+                                        uct_completion_t *comp);
 
 /**
  * @brief Do keepalive operation.
