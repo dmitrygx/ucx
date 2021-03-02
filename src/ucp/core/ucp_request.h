@@ -53,14 +53,13 @@ enum {
     UCP_REQUEST_FLAG_RNDV_FRAG            = UCS_BIT(15),
     UCP_REQUEST_FLAG_RECV_AM              = UCS_BIT(16),
     UCP_REQUEST_FLAG_RECV_TAG             = UCS_BIT(17),
+    UCP_REQUEST_FLAG_LOCAL_ID             = UCS_BIT(18),
 #if UCS_ENABLE_ASSERT
-    UCP_REQUEST_FLAG_STREAM_RECV          = UCS_BIT(18),
-    UCP_REQUEST_DEBUG_FLAG_EXTERNAL       = UCS_BIT(19),
-    UCP_REQUEST_FLAG_IN_PTR_MAP           = UCS_BIT(20)
+    UCP_REQUEST_FLAG_STREAM_RECV          = UCS_BIT(19),
+    UCP_REQUEST_DEBUG_FLAG_EXTERNAL       = UCS_BIT(20)
 #else
     UCP_REQUEST_FLAG_STREAM_RECV          = 0,
-    UCP_REQUEST_DEBUG_FLAG_EXTERNAL       = 0,
-    UCP_REQUEST_FLAG_IN_PTR_MAP           = 0
+    UCP_REQUEST_DEBUG_FLAG_EXTERNAL       = 0
 #endif
 };
 
@@ -130,6 +129,9 @@ struct ucp_request {
             size_t                  length;     /* Total length, in bytes */
             ucp_send_nbx_callback_t cb;         /* Completion callback */
 
+            /* Local request ID taken from PTR MAP */
+            ucs_ptr_map_key_t local_req_id;
+
             const ucp_proto_config_t *proto_config; /* Selected protocol for the request */
 
             /* This structure holds all mutable fields, and everything else
@@ -149,17 +151,12 @@ struct ucp_request {
                 struct {
                     uint64_t               message_id;  /* used to identify matching parts
                                                            of a large message */
-                    union {
-                        ucs_ptr_map_key_t  sreq_id;     /* send request ID on the
-                                                           sender side */
-                        ucs_ptr_map_key_t  rreq_id;     /* receive request ID on the
-                                                           recv side (used in AM rndv) */
-                    };
+                    /* Remote request ID received from a peer (used in AM rndv) */
+                    ucs_ptr_map_key_t      remote_req_id;
 
                     union {
-                        struct {
-                            ucp_tag_t         tag;
-                            ucs_ptr_map_key_t req_id;
+                        union {
+                            ucp_tag_t tag;
                         } tag;
 
                         struct {
@@ -185,8 +182,8 @@ struct ucp_request {
                 } rma;
 
                 struct {
-                    ucs_ptr_map_key_t      remote_req_id; /* send request ID on
-                                                             receiver side */
+                    /* Remote request ID received from a peer */
+                    ucs_ptr_map_key_t      remote_req_id;
                     uint8_t                am_id;
                     ucs_status_t           status;
                     ucp_tag_t              sender_tag; /* Sender tag, which is
@@ -203,8 +200,8 @@ struct ucp_request {
                 struct {
                     uint64_t          remote_address;  /* address of the sender/receiver's data
                                                           buffer for the GET/PUT operation */
-                    ucs_ptr_map_key_t remote_req_id;   /* the sender/receiver's request ID of
-                                                          the target of the GET/PUT operation */
+                    /* Remote request ID received from a peer */
+                    ucs_ptr_map_key_t remote_req_id;
                     ucp_rkey_h        rkey;            /* key for remote send/receive buffer for
                                                           the GET/PUT operation */
                     ucp_lane_map_t    lanes_map_all;   /* actual lanes map */
@@ -213,16 +210,21 @@ struct ucp_request {
                 } rndv;
 
                 struct {
-                    ucs_queue_elem_t     queue_elem;
-                    ucs_ptr_map_key_t    req_id;         /* sender's request ID */
-                    ucp_rkey_h           rkey;           /* key for remote send buffer */
+                    ucs_queue_elem_t  queue_elem;
+                    /* Remote request ID received from a peer */
+                    ucs_ptr_map_key_t remote_req_id;
+                    /* Key for remote send buffer */
+                    ucp_rkey_h        rkey;
                 } rkey_ptr;
 
                 struct {
-                    ucs_ptr_map_key_t remote_req_id;  /* the send request ID on receiver side */
-                    size_t            length;         /* the length of the data that should be fetched
-                                                       * from sender side */
-                    size_t            offset;         /* offset in recv buffer */
+                    /* Remote request ID received from a peer */
+                    ucs_ptr_map_key_t remote_req_id;
+                    /* The length of the data that should be fetched from sender
+                     * side */
+                    size_t            length;
+                    /* Offset in the receiver's buffer */
+                    size_t            offset;
                 } rndv_rtr;
 
                 struct {
@@ -250,7 +252,6 @@ struct ucp_request {
                 } discard_uct_ep;
 
                 struct {
-                    ucs_ptr_map_key_t     sreq_id;     /* Send request ID */
                     uint64_t              remote_addr; /* Remote address */
                     ucp_rkey_h            rkey;        /* Remote memory key */
                     uint64_t              value;       /* Atomic argument */
@@ -265,12 +266,15 @@ struct ucp_request {
                 } tag_offload;
 
                 struct {
-                    ucs_ptr_map_key_t req_id;   /* Remote get request ID */
+                    /* Remote request ID received from a peer */
+                    ucs_ptr_map_key_t remote_req_id;
                 } get_reply;
 
                 struct {
-                    ucs_ptr_map_key_t   req_id; /* Remote atomic request ID */
-                    ucp_atomic_reply_t  data;   /* Atomic reply data */
+                    /* Remote request ID received from a peer */
+                    ucs_ptr_map_key_t   remote_req_id;
+                    /* Atomic reply data */
+                    ucp_atomic_reply_t  data;
                 } atomic_reply;
             };
 
@@ -300,7 +304,9 @@ struct ucp_request {
             uct_tag_context_t     uct_ctx;  /* Transport offload context */
             ssize_t               remaining;  /* How much more data
                                                * to be received */
-            ucs_ptr_map_key_t     rreq_id;  /* the receive request ID on receiver side */
+
+            /* Remote request ID received from a peer */
+            ucs_ptr_map_key_t     remote_req_id;
 
             union {
                 struct {

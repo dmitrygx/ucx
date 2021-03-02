@@ -742,17 +742,11 @@ UCS_PROFILE_FUNC(ucs_status_t, ucp_proto_progress_am_rndv_rts, (self),
                  uct_pending_req_t *self)
 {
     ucp_request_t *sreq = ucs_container_of(self, ucp_request_t, send.uct);
-    size_t max_rts_size;
-    ucs_status_t status;
 
     /* RTS consists of: AM RTS header, packed rkeys and user header */
-    max_rts_size = sizeof(ucp_am_rndv_rts_hdr_t) +
-                   ucp_ep_config(sreq->send.ep)->rndv.rkey_size +
-                   sreq->send.msg_proto.am.header_length;
-
-    status = ucp_do_am_single(self, UCP_AM_ID_RNDV_RTS, ucp_am_rndv_rts_pack,
-                              max_rts_size);
-    return ucp_rndv_rts_handle_status_from_pending(sreq, status);
+    return ucp_rndv_send_rts(sreq, ucp_am_rndv_rts_pack,
+                             sizeof(ucp_am_rndv_rts_hdr_t) +
+                             sreq->send.msg_proto.am.header_length);
 }
 
 static ucs_status_t ucp_am_send_start_rndv(ucp_request_t *sreq)
@@ -762,7 +756,7 @@ static ucs_status_t ucp_am_send_start_rndv(ucp_request_t *sreq)
                   sreq->send.length);
     UCS_PROFILE_REQUEST_EVENT(sreq, "start_rndv", sreq->send.length);
 
-    ucp_send_request_set_id(sreq);
+    ucp_send_request_init_local_id(sreq);
 
     /* Note: no need to call ucp_ep_resolve_remote_id() here, because it
      * was done in ucp_am_send_nbx

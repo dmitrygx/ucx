@@ -338,11 +338,12 @@ void ucp_request_init_multi_proto(ucp_request_t *req,
     UCS_PROFILE_REQUEST_EVENT(req, multi_func_str, req->send.length);
 }
 
-static UCS_F_ALWAYS_INLINE void ucp_send_request_init_id(ucp_request_t *req)
+static UCS_F_ALWAYS_INLINE void
+ucp_send_request_proto_init_local_id(ucp_request_t *req)
 {
     if (req->flags & UCP_REQUEST_FLAG_SYNC) {
         ucs_assert(req->flags & UCP_REQUEST_FLAG_SEND_TAG);
-        ucp_send_request_set_id(req);
+        ucp_send_request_init_local_id(req);
     }
 }
 
@@ -375,7 +376,7 @@ ucp_request_send_start(ucp_request_t *req, ssize_t max_short,
                                          "start_bcopy_multi");
         }
 
-        ucp_send_request_init_id(req);
+        ucp_send_request_proto_init_local_id(req);
         return UCS_OK;
     } else if (length < zcopy_max) {
         /* zcopy */
@@ -407,7 +408,7 @@ ucp_request_send_start(ucp_request_t *req, ssize_t max_short,
             UCS_PROFILE_REQUEST_EVENT(req, "start_zcopy_single", req->send.length);
         }
 
-        ucp_send_request_init_id(req);
+        ucp_send_request_proto_init_local_id(req);
         return UCS_OK;
     }
 

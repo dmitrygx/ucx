@@ -24,7 +24,7 @@ static size_t ucp_proto_get_am_bcopy_pack(void *dest, void *arg)
     getreqh->address    = req->send.rma.remote_addr;
     getreqh->length     = req->send.state.dt_iter.length;
     getreqh->req.ep_id  = ucp_send_request_get_ep_remote_id(req);
-    getreqh->req.req_id = req->send.rma.sreq_id;
+    getreqh->req.req_id = ucp_send_request_get_local_id(req);
     getreqh->mem_type   = req->send.rma.rkey->mem_type;
 
     return sizeof(*getreqh);
@@ -33,8 +33,7 @@ static size_t ucp_proto_get_am_bcopy_pack(void *dest, void *arg)
 static UCS_F_ALWAYS_INLINE ucs_status_t
 ucp_proto_get_am_bcopy_complete(ucp_request_t *req)
 {
-    ucp_worker_del_request_id(req->send.ep->worker, req,
-                              req->send.rma.sreq_id);
+    ucp_send_request_del_local_id(req);
     ucp_ep_rma_remote_request_sent(req->send.ep);
     return UCS_OK;
 }
@@ -55,11 +54,10 @@ static ucs_status_t ucp_proto_get_am_bcopy_progress(uct_pending_req_t *self)
 
         /* initialize some request fields, for compatibility of get_reply
          * processing */
-        req->send.buffer      = req->send.state.dt_iter.type.contig.buffer;
-        req->send.length      = req->send.state.dt_iter.length;
-        req->send.rma.sreq_id = ucp_send_request_get_id(req);
-
-        req->flags           |= UCP_REQUEST_FLAG_PROTO_INITIALIZED;
+        req->send.buffer = req->send.state.dt_iter.type.contig.buffer;
+        req->send.length = req->send.state.dt_iter.length;
+        req->flags      |= UCP_REQUEST_FLAG_PROTO_INITIALIZED;
+        ucp_send_request_init_local_id(req);
     }
 
     ucp_worker_flush_ops_count_inc(worker);

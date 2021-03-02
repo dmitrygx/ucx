@@ -12,7 +12,6 @@
 #include "ucp_ep.inl"
 
 
-#include <ucp/core/ucp_worker.h>
 #include <ucp/dt/dt.h>
 #include <ucs/profile/profile.h>
 #include <ucs/datastruct/mpool.inl>
@@ -160,7 +159,7 @@ static UCS_F_ALWAYS_INLINE void
 ucp_request_put(ucp_request_t *req)
 {
     ucs_trace_req("put request %p", req);
-    ucs_assert(!(req->flags & UCP_REQUEST_FLAG_IN_PTR_MAP));
+    ucs_assert(!(req->flags & UCP_REQUEST_FLAG_LOCAL_ID));
     UCS_PROFILE_REQUEST_FREE(req);
     ucs_mpool_put_inline(req);
 }
@@ -168,7 +167,8 @@ ucp_request_put(ucp_request_t *req)
 static UCS_F_ALWAYS_INLINE void
 ucp_request_complete_send(ucp_request_t *req, ucs_status_t status)
 {
-    ucs_trace_req("completing send request %p (%p) "UCP_REQUEST_FLAGS_FMT" %s",
+    ucs_trace_req("completing send request %p (%p) " UCP_REQUEST_FLAGS_FMT
+                  " %s",
                   req, req + 1, UCP_REQUEST_FLAGS_ARG(req->flags),
                   ucs_status_string(status));
     UCS_PROFILE_REQUEST_EVENT(req, "complete_send", status);
@@ -178,7 +178,7 @@ ucp_request_complete_send(ucp_request_t *req, ucs_status_t status)
 static UCS_F_ALWAYS_INLINE void
 ucp_request_complete_tag_recv(ucp_request_t *req, ucs_status_t status)
 {
-    ucs_trace_req("completing receive request %p (%p) "UCP_REQUEST_FLAGS_FMT
+    ucs_trace_req("completing receive request %p (%p) " UCP_REQUEST_FLAGS_FMT
                   " stag 0x%" PRIx64" len %zu, %s",
                   req, req + 1, UCP_REQUEST_FLAGS_ARG(req->flags),
                   req->recv.tag.info.sender_tag, req->recv.tag.info.length,
@@ -201,7 +201,7 @@ ucp_request_complete_stream_recv(ucp_request_t *req, ucp_ep_ext_proto_t* ep_ext,
 
     req->recv.stream.length = req->recv.stream.offset;
     ucs_trace_req("completing stream receive request %p (%p) "
-                  UCP_REQUEST_FLAGS_FMT" count %zu, %s",
+                  UCP_REQUEST_FLAGS_FMT " count %zu, %s",
                   req, req + 1, UCP_REQUEST_FLAGS_ARG(req->flags),
                   req->recv.stream.length, ucs_status_string(status));
     UCS_PROFILE_REQUEST_EVENT(req, "complete_recv", status);
@@ -437,7 +437,8 @@ ucp_request_send_buffer_reg(ucp_request_t *req, ucp_md_map_t md_map,
     return ucp_request_memory_reg(req->send.ep->worker->context, md_map,
                                   (void*)req->send.buffer, req->send.length,
                                   req->send.datatype, &req->send.state.dt,
-                                  req->send.mem_type, req, uct_flags);
+                                  (ucs_memory_type_t)req->send.mem_type, req,
+                                  uct_flags);
 }
 
 static UCS_F_ALWAYS_INLINE ucs_status_t
@@ -567,13 +568,14 @@ ucp_request_recv_data_unpack(ucp_request_t *req, const void *data,
 
     case UCP_DATATYPE_IOV:
         if (offset != req->recv.state.offset) {
-            ucp_dt_iov_seek(req->recv.buffer, req->recv.state.dt.iov.iovcnt,
+            ucp_dt_iov_seek((ucp_dt_iov_t*)req->recv.buffer,
+                            req->recv.state.dt.iov.iovcnt,
                             offset - req->recv.state.offset,
                             &req->recv.state.dt.iov.iov_offset,
                             &req->recv.state.dt.iov.iovcnt_offset);
             req->recv.state.offset = offset;
         }
-        UCS_PROFILE_CALL(ucp_dt_iov_scatter, req->recv.buffer,
+        UCS_PROFILE_CALL(ucp_dt_iov_scatter, (ucp_dt_iov_t*)req->recv.buffer,
                          req->recv.state.dt.iov.iovcnt, data, length,
                          &req->recv.state.dt.iov.iov_offset,
                          &req->recv.state.dt.iov.iovcnt_offset);
@@ -653,7 +655,7 @@ ucp_recv_desc_release(ucp_recv_desc_t *rdesc)
 static UCS_F_ALWAYS_INLINE void
 ucp_request_complete_am_recv(ucp_request_t *req, ucs_status_t status)
 {
-    ucs_trace_req("completing AM receive request %p (%p) "UCP_REQUEST_FLAGS_FMT
+    ucs_trace_req("completing AM receive request %p (%p) " UCP_REQUEST_FLAGS_FMT
                   " length %zu, %s",
                   req, req + 1, UCP_REQUEST_FLAGS_ARG(req->flags),
                   req->recv.length, ucs_status_string(status));
@@ -672,7 +674,7 @@ ucp_request_complete_am_recv(ucp_request_t *req, ucs_status_t status)
 static UCS_F_ALWAYS_INLINE ucs_status_t
 ucp_request_process_recv_data(ucp_request_t *req, const void *data,
                               size_t length, size_t offset, int is_zcopy,
-                              int is_am, ucs_ptr_map_key_t req_id)
+                              int is_am)
 {
     ucs_status_t status;
     int last;
@@ -697,10 +699,6 @@ ucp_request_process_recv_data(ucp_request_t *req, const void *data,
     status = req->status;
     if (is_zcopy) {
         ucp_request_recv_buffer_dereg(req);
-    }
-
-    if (req_id != UCP_REQUEST_ID_INVALID) {
-        ucp_worker_del_request_id(req->recv.worker, req, req_id);
     }
 
     if (is_am) {
@@ -780,17 +778,63 @@ ucp_request_get_memory_type(ucp_context_h context, const void *address,
     return param->memory_type;
 }
 
-static UCS_F_ALWAYS_INLINE ucs_ptr_map_key_t
-ucp_send_request_get_id(ucp_request_t *req)
+static UCS_F_ALWAYS_INLINE void
+ucp_send_request_init_local_id(ucp_request_t *req)
 {
-    return ucp_worker_get_request_id(req->send.ep->worker, req,
-                                     ucp_ep_use_indirect_id(req->send.ep));
+    ucp_worker_h worker = req->send.ep->worker;
+    int indirect        = ucp_ep_use_indirect_id(req->send.ep);
+    ucs_status_t status;
+
+    ucs_assert(!(req->flags & UCP_REQUEST_FLAG_LOCAL_ID));
+    status = ucs_ptr_map_put(&worker->ptr_map, req, indirect,
+                             &req->send.local_req_id);
+    ucs_assertv_always(status == UCS_OK, "%p: failed to get local id", req);
+
+    req->flags |= UCP_REQUEST_FLAG_LOCAL_ID;
+}
+
+static UCS_F_ALWAYS_INLINE ucs_ptr_map_key_t
+ucp_send_request_get_local_id(const ucp_request_t *req)
+{
+    ucs_assert(req->flags & UCP_REQUEST_FLAG_LOCAL_ID);
+    return req->send.local_req_id;
 }
 
 static UCS_F_ALWAYS_INLINE void
-ucp_send_request_set_id(ucp_request_t *req)
+ucp_send_request_del_local_id(ucp_request_t *req)
 {
-    req->send.msg_proto.sreq_id = ucp_send_request_get_id(req);
+    ucp_worker_h worker = req->send.ep->worker;
+    ucs_status_t status UCS_V_UNUSED;
+
+    ucs_assert(req->flags & UCP_REQUEST_FLAG_LOCAL_ID);
+    status = ucs_ptr_map_del(&worker->ptr_map, req->send.local_req_id);
+    ucs_assert_always(status == UCS_OK);
+
+    if (ucp_ep_use_indirect_id(req->send.ep)) {
+        req->send.local_req_id = UCP_REQUEST_ID_INVALID;
+    }
+
+    req->flags &= ~UCP_REQUEST_FLAG_LOCAL_ID;
+}
+
+static UCS_F_ALWAYS_INLINE ucs_status_t
+ucp_send_request_get_by_id(ucp_worker_h worker, ucs_ptr_map_key_t id,
+                           ucp_request_t **req_p, int extract)
+{
+    ucs_status_t status;
+    void *ptr;
+
+    status = ucs_ptr_map_get(&worker->ptr_map, id, extract, &ptr);
+    if (ucs_unlikely(status != UCS_OK)) {
+        return status;
+    }
+
+    *req_p = (ucp_request_t*)ptr;
+    if (extract) {
+        (*req_p)->flags &= ~UCP_REQUEST_FLAG_LOCAL_ID;
+    }
+
+    return status;
 }
 
 static UCS_F_ALWAYS_INLINE void
@@ -825,5 +869,19 @@ ucp_request_invoke_uct_completion_success(ucp_request_t *req)
     ucp_invoke_uct_completion(&req->send.state.uct_comp, UCS_OK);
     return UCS_OK;
 }
+
+
+#define UCP_SEND_REQUEST_GET_BY_ID(_req_p, _worker, _req_id, _extract, \
+                                   _action, _fmt_str, ...) \
+    { \
+        ucs_status_t __status = ucp_send_request_get_by_id(_worker, _req_id, \
+                                                           _req_p, _extract); \
+        if (ucs_unlikely(__status != UCS_OK)) { \
+            ucs_trace_data("worker %p: req id 0x%" PRIx64 " doesn't exist" \
+                           " drop " _fmt_str, \
+                           _worker, _req_id, ##__VA_ARGS__); \
+            _action; \
+        } \
+    }
 
 #endif

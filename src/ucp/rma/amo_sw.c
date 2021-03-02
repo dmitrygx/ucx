@@ -25,7 +25,8 @@ static size_t ucp_amo_sw_pack(void *dest, void *arg, uint8_t fetch)
 
     atomich->address    = req->send.amo.remote_addr;
     atomich->req.ep_id  = ucp_ep_remote_id(ep);
-    atomich->req.req_id = req->send.amo.sreq_id;
+    atomich->req.req_id = fetch ? ucp_send_request_get_local_id(req) :
+                                  UCP_REQUEST_ID_INVALID;
     atomich->length     = size;
     atomich->opcode     = req->send.amo.uct_op;
 
@@ -58,16 +59,16 @@ ucp_amo_sw_progress(uct_pending_req_t *self, uct_pack_callback_t pack_cb,
     ucp_request_t *req = ucs_container_of(self, ucp_request_t, send.uct);
     ucs_status_t status;
 
-    req->send.lane        = ucp_ep_get_am_lane(req->send.ep);
-    req->send.amo.sreq_id = fetch ? ucp_send_request_get_id(req) :
-                            UCP_REQUEST_ID_INVALID;
+    req->send.lane = ucp_ep_get_am_lane(req->send.ep);
+    if (fetch) {
+        ucp_send_request_init_local_id(req);
+    }
 
     status = ucp_rma_sw_do_am_bcopy(req, UCP_AM_ID_ATOMIC_REQ,
                                     req->send.lane, pack_cb, req, NULL);
     if ((status != UCS_OK) || ((status == UCS_OK) && !fetch)) {
         if (fetch) {
-            ucp_worker_del_request_id(req->send.ep->worker, req,
-                                      req->send.amo.sreq_id);
+            ucp_send_request_del_local_id(req);
         }
 
         if (status != UCS_ERR_NO_RESOURCE) {
@@ -102,7 +103,7 @@ static size_t ucp_amo_sw_pack_atomic_reply(void *dest, void *arg)
     ucp_rma_rep_hdr_t *hdr = dest;
     ucp_request_t *req     = arg;
 
-    hdr->req_id = req->send.get_reply.req_id;
+    hdr->req_id = req->send.get_reply.remote_req_id;
 
     switch (req->send.length) {
     case sizeof(uint32_t):
@@ -255,11 +256,11 @@ UCS_PROFILE_FUNC(ucs_status_t, ucp_atomic_req_handler, (arg, data, length, am_fl
             ucs_fatal("invalid atomic length: %u", atomicreqh->length);
         }
 
-        req->flags                    = 0;
-        req->send.ep                  = ep;
-        req->send.atomic_reply.req_id = atomicreqh->req.req_id;
-        req->send.length              = atomicreqh->length;
-        req->send.uct.func            = ucp_progress_atomic_reply;
+        req->flags                           = 0;
+        req->send.ep                         = ep;
+        req->send.atomic_reply.remote_req_id = atomicreqh->req.req_id;
+        req->send.length                     = atomicreqh->length;
+        req->send.uct.func                   = ucp_progress_atomic_reply;
         ucp_request_send(req, 0);
     }
 
@@ -275,8 +276,8 @@ UCS_PROFILE_FUNC(ucs_status_t, ucp_atomic_rep_handler, (arg, data, length, am_fl
     ucp_request_t *req;
     ucp_ep_h ep;
 
-    UCP_WORKER_EXTRACT_REQUEST_BY_ID(&req, worker, hdr->req_id, return UCS_OK,
-                                     "ATOMIC_REP %p", hdr);
+    UCP_SEND_REQUEST_GET_BY_ID(&req, worker, hdr->req_id, 1, return UCS_OK,
+                               "ATOMIC_REP %p", hdr);
     ep = req->send.ep;
     memcpy(req->send.buffer, hdr + 1, frag_length);
     ucp_request_complete_send(req, UCS_OK);
