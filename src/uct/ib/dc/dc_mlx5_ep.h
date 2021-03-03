@@ -384,6 +384,7 @@ uct_dc_mlx5_iface_dci_put(uct_dc_mlx5_iface_t *iface, uint8_t dci_index)
     if (ucs_unlikely(ep == NULL)) {
         if (!uct_dc_mlx5_iface_dci_has_outstanding(iface, dci_index)) {
             uct_dc_mlx5_iface_dci_release(iface, dci_index);
+            goto dispatch_pending;
         }
         return;
     }
@@ -422,6 +423,11 @@ uct_dc_mlx5_iface_dci_put(uct_dc_mlx5_iface_t *iface, uint8_t dci_index)
      */
     ucs_arbiter_group_desched(uct_dc_mlx5_iface_tx_waitq(iface), &ep->arb_group);
     uct_dc_mlx5_iface_schedule_dci_alloc(iface, ep);
+
+dispatch_pending:
+    /* dispatch pending requests after releasing DCI */
+    uct_dc_mlx5_iface_progress_pending(iface,
+                                       iface->tx.dcis[dci_index].pool_index);
 }
 
 static inline void uct_dc_mlx5_iface_dci_alloc(uct_dc_mlx5_iface_t *iface, uct_dc_mlx5_ep_t *ep)
