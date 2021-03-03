@@ -230,8 +230,6 @@ uct_dc_mlx5_poll_tx(uct_dc_mlx5_iface_t *iface)
      *       to avoid OOO sends when this is the only missing resource.
      */
     uct_dc_mlx5_iface_dci_put(iface, dci_index);
-    uct_dc_mlx5_iface_progress_pending(iface,
-                                       iface->tx.dcis[dci_index].pool_index);
 
     return 1;
 }
