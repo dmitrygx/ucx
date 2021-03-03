@@ -252,12 +252,27 @@ err:
     return status;
 }
 
+static void ucp_ep_worker_flush_remove(ucp_ep_h ep)
+{
+    ucp_worker_h worker      = ep->worker;
+    ucp_ep_ext_gen_t *ep_ext = ucp_ep_ext_gen(ep);
+    ucp_request_t *req;
+
+    ucs_list_for_each(req, &worker->flush_reqs, flush_worker.list_elem) {
+        if (req->flush_worker.next_ep == ep_ext) {
+            req->flush_worker.next_ep = ucs_list_next(
+                    &ep_ext->ep_list, ucp_ep_ext_gen_t, ep_list);
+        }
+    }
+}
+
 static void ucp_ep_delete(ucp_ep_h ep)
 {
     ucs_callbackq_remove_if(&ep->worker->uct->progress_q,
                             ucp_wireup_msg_ack_cb_pred, ep);
     if (!(ep->flags & UCP_EP_FLAG_INTERNAL)) {
         ucp_worker_keepalive_remove_ep(ep);
+        ucp_ep_worker_flush_remove(ep);
         ucs_list_del(&ucp_ep_ext_gen(ep)->ep_list);
     }
 

@@ -227,6 +227,8 @@ typedef struct ucp_worker {
     char                             name[UCP_WORKER_NAME_MAX]; /* Worker name */
 
     unsigned                         flush_ops_count;     /* Number of pending operations */
+    ucs_list_link_t                  flush_reqs;          /* List of in-progress
+                                                           * flush operations */
 
     int                              event_fd;            /* Allocated (on-demand) event fd for wakeup */
     ucs_sys_event_set_t              *event_set;          /* Allocated UCS event set for wakeup */

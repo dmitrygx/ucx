@@ -439,6 +439,7 @@ static void ucp_worker_flush_complete_one(ucp_request_t *req, ucs_status_t statu
 
     if (complete) {
         ucs_assert(status != UCS_INPROGRESS);
+        ucs_list_del(&req->flush_worker.list_elem);
         ucp_request_complete(req, flush_worker.cb, status, req->user_data);
     }
 }
@@ -530,6 +531,8 @@ ucp_worker_flush_nbx_internal(ucp_worker_h worker,
     req->flush_worker.prog_id    = UCS_CALLBACKQ_ID_NULL;
     req->flush_worker.next_ep    = ucs_list_head(&worker->all_eps,
                                                  ucp_ep_ext_gen_t, ep_list);
+
+    ucs_list_add_tail(&worker->flush_reqs, &req->flush_worker.list_elem);
 
     ucp_request_set_send_callback_param(param, req, flush_worker);
     uct_worker_progress_register_safe(worker->uct, ucp_worker_flush_progress,

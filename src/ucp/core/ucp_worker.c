@@ -2030,6 +2030,7 @@ ucs_status_t ucp_worker_create(ucp_context_h context,
     worker->keepalive.iter_count = 0;
     ucp_worker_keepalive_reset(worker);
     ucs_queue_head_init(&worker->rkey_ptr_reqs);
+    ucs_list_head_init(&worker->flush_reqs);
     ucs_list_head_init(&worker->arm_ifaces);
     ucs_list_head_init(&worker->stream_ready_eps);
     ucs_list_head_init(&worker->all_eps);
