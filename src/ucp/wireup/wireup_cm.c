@@ -17,6 +17,24 @@
 #include <ucs/sys/string.h>
 
 
+/* if CM callback is invoked for CM lane of UCP EP which is marked as
+ * failed one, i.e. the failing UCP is in progress, because UCT CM EP is
+ * still alive (e.g. err_handling progress part was scheduled on worker
+ * or discarding) - so, don't do any actions in the callback -
+ * discarding functionality will destroy UCT EP */
+#define UCP_CM_CB_CHECK_UCP_EP(_ucp_ep, _uct_cm_ep) \
+    do { \
+        if ((_ucp_ep)->flags & UCP_EP_FLAG_FAILED) {    \
+            return; \
+        } \
+        \
+        ucs_assertv_always((_uct_cm_ep) == ucp_ep_get_cm_uct_ep(_ucp_ep), \
+                           "%p: uct_cm_ep=%p vs found_uct_ep=%p", \
+                           _ucp_ep, _uct_cm_ep, \
+                           ucp_ep_get_cm_uct_ep(_ucp_ep)); \
+    } while (0)
+
+
 unsigned
 ucp_cm_ep_init_flags(const ucp_ep_params_t *params)
 {
@@ -589,6 +607,8 @@ static void ucp_cm_client_connect_cb(uct_ep_h uct_cm_ep, void *arg,
               ucp_ep, ucp_ep->flags, ucp_ep->cfg_index,
               ucs_status_string(status));
 
+    UCP_CM_CB_CHECK_UCP_EP(ucp_ep, uct_cm_ep);
+
     if (((status == UCS_ERR_NOT_CONNECTED) || (status == UCS_ERR_UNREACHABLE) ||
          (status == UCS_ERR_CONNECTION_RESET)) &&
         /* try connecting through another cm (next one in the priority list) */
@@ -764,6 +784,8 @@ static void ucp_cm_disconnect_cb(uct_ep_h uct_cm_ep, void *arg)
     ucp_ep->flags |= UCP_EP_FLAG_DISCONNECT_CB_CALLED;
     ucs_trace("ep %p flags 0x%x: remote disconnect callback invoked", ucp_ep,
               ucp_ep->flags);
+
+    UCP_CM_CB_CHECK_UCP_EP(ucp_ep, uct_cm_ep);
 
     uct_ep = ucp_ep_get_cm_uct_ep(ucp_ep);
     ucs_assertv_always(uct_cm_ep == uct_ep,
@@ -1173,7 +1195,7 @@ static unsigned ucp_cm_server_conn_notify_progress(void *arg)
  * Async callback on a server side which notifies that client is connected.
  */
 static void ucp_cm_server_conn_notify_cb(
-        uct_ep_h ep, void *arg,
+        uct_ep_h uct_cm_ep, void *arg,
         const uct_cm_ep_server_conn_notify_args_t *notify_args)
 {
     ucp_ep_h ucp_ep            = arg;
@@ -1188,6 +1210,8 @@ static void ucp_cm_server_conn_notify_cb(
     ucp_ep->flags |= UCP_EP_FLAG_SERVER_NOTIFY_CB;
     ucs_trace("ep %p flags 0x%x: notify callback invoked, status %s", ucp_ep,
               ucp_ep->flags, ucs_status_string(status));
+
+    UCP_CM_CB_CHECK_UCP_EP(ucp_ep, uct_cm_ep);
 
     if (status == UCS_OK) {
         uct_worker_progress_register_safe(ucp_ep->worker->uct,
