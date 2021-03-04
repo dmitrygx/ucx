@@ -24,7 +24,7 @@
  * discarding functionality will destroy UCT EP */
 #define UCP_CM_CB_CHECK_UCP_EP(_ucp_ep, _uct_cm_ep) \
     do { \
-        if ((_ucp_ep)->flags & UCP_EP_FLAG_FAILED) {    \
+        if ((_ucp_ep)->flags & UCP_EP_FLAG_FAILED) { \
             return; \
         } \
         \

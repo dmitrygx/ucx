@@ -347,9 +347,6 @@ struct ucp_request {
             uct_worker_cb_id_t      prog_id;    /* Progress callback ID */
             int                     comp_count; /* Countdown to request completion */
             ucp_ep_ext_gen_t        *next_ep;   /* Next endpoint to flush */
-            ucs_list_link_t         list_elem; /* Element in Worker's list of
-                                                * in-progress flush operations
-                                                */
         } flush_worker;
     };
 };
