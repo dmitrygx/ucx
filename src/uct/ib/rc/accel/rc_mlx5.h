@@ -33,6 +33,9 @@ typedef struct uct_rc_mlx5_ep {
     struct {
         uct_ib_mlx5_txwq_t   wq;
     } tx;
+    unsigned                 closed;
+    unsigned                 flushed;
+    unsigned                 flushed_cancel;
     uct_ib_mlx5_qp_t         tm_qp;
     uct_rc_mlx5_mp_context_t mp;
 } uct_rc_mlx5_ep_t;

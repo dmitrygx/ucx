@@ -116,7 +116,8 @@ uct_rc_mlx5_iface_poll_tx(uct_rc_mlx5_iface_common_t *iface)
     qp_num = ntohl(cqe->sop_drop_qpn) & UCS_MASK(UCT_IB_QPN_ORDER);
     ep = ucs_derived_of(uct_rc_iface_lookup_ep(&iface->super, qp_num),
                         uct_rc_mlx5_ep_t);
-    ucs_assert(ep != NULL);
+    ucs_assertv(ep != NULL, "qp_num - %d", qp_num);
+    ucs_assert(!ep->closed);
 
     hw_ci = ntohs(cqe->wqe_counter);
     ucs_trace_poll("rc_mlx5 iface %p tx_cqe: ep %p qpn 0x%x hw_ci %d", iface, ep,
@@ -797,6 +798,17 @@ static UCS_CLASS_DEFINE_NEW_FUNC(uct_rc_mlx5_iface_t, uct_iface_t, uct_md_h,
 
 static UCS_CLASS_DEFINE_DELETE_FUNC(uct_rc_mlx5_iface_t, uct_iface_t);
 
+void uct_rc_mlx5_ep_destroy(uct_ep_h tl_ep)
+{
+    uct_rc_mlx5_ep_t *ep = ucs_derived_of(tl_ep, uct_rc_mlx5_ep_t);
+    ep->closed = 1;
+
+    if (!ep->flushed) {
+        ucs_log_print_backtrace(UCS_LOG_LEVEL_ERROR);
+        ucs_assertv(ep->flushed, "ep-%p", ep);
+    }
+}
+
 static uct_rc_iface_ops_t uct_rc_mlx5_iface_ops = {
     {
     {
@@ -821,7 +833,7 @@ static uct_rc_iface_ops_t uct_rc_mlx5_iface_ops = {
     .ep_fence                 = uct_rc_mlx5_ep_fence,
     .ep_check                 = uct_rc_ep_check,
     .ep_create                = UCS_CLASS_NEW_FUNC_NAME(uct_rc_mlx5_ep_t),
-    .ep_destroy               = UCS_CLASS_DELETE_FUNC_NAME(uct_rc_mlx5_ep_t),
+    .ep_destroy               = uct_rc_mlx5_ep_destroy,
     .ep_get_address           = uct_rc_mlx5_ep_get_address,
     .ep_connect_to_ep         = uct_rc_mlx5_ep_connect_to_ep,
 #if IBV_HW_TM

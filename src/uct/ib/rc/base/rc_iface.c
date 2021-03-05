@@ -271,6 +271,7 @@ void uct_rc_iface_remove_qp(uct_rc_iface_t *iface, unsigned qp_num)
     memb = &iface->eps[qp_num >> UCT_RC_QP_TABLE_ORDER]
                       [qp_num &  UCS_MASK(UCT_RC_QP_TABLE_MEMB_ORDER)];
     ucs_assert(*memb != NULL);
+    ucs_error("removed QP %d - EP  %p", qp_num, *memb);
     *memb = NULL;
     ucs_spin_unlock(&iface->eps_lock);
 }

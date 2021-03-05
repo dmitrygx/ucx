@@ -570,10 +570,16 @@ ucs_status_t uct_rc_mlx5_ep_flush(uct_ep_h tl_ep, unsigned flags,
     ucs_status_t status;
     uint16_t sn;
 
+    ep->flushed = 1;
+
     status = uct_rc_ep_flush(&ep->super, ep->tx.wq.bb_max, flags);
     if (status != UCS_INPROGRESS) {
         return status;
     }
+
+    ucs_error("flush(cancel-%d) EP - %p with qp - %d",
+              flags & UCT_FLUSH_FLAG_CANCEL,
+              ep, ep->tx.wq.super.qp_num);
 
     if (uct_rc_txqp_unsignaled(&ep->super.txqp) != 0) {
         sn = ep->tx.wq.sw_pi;
@@ -590,6 +596,7 @@ ucs_status_t uct_rc_mlx5_ep_flush(uct_ep_h tl_ep, unsigned flags,
     }
 
     if (ucs_unlikely((flags & UCT_FLUSH_FLAG_CANCEL) && !already_canceled)) {
+        ep->flushed_cancel = 1;
         status = uct_ib_mlx5_modify_qp_state(md, &ep->tx.wq.super, IBV_QPS_ERR);
         if (status != UCS_OK) {
             return status;
@@ -968,6 +975,9 @@ UCS_CLASS_INIT_FUNC(uct_rc_mlx5_ep_t, const uct_ep_params_t *params)
         uct_rc_iface_add_qp(&iface->super, &self->super, self->tm_qp.qp_num);
     }
 
+    self->closed         = 0;
+    self->flushed        = 0;
+    self->flushed_cancel = 0;
     self->tx.wq.bb_max = ucs_min(self->tx.wq.bb_max, iface->tx.bb_max);
     self->mp.free      = 1;
     uct_rc_txqp_available_set(&self->super.txqp, self->tx.wq.bb_max);
@@ -991,31 +1001,14 @@ void uct_rc_mlx5_ep_cleanup_qp(uct_ib_async_event_wait_t *wait_ctx)
                                                        uct_rc_mlx5_ep_cleanup_ctx_t);
     uct_rc_mlx5_iface_common_t *iface = ucs_derived_of(ep_cleanup_ctx->super.iface,
                                                        uct_rc_mlx5_iface_common_t);
-    uct_ib_mlx5_md_t *md              = ucs_derived_of(iface->super.super.super.md,
-                                                       uct_ib_mlx5_md_t);
-#if !HAVE_DECL_MLX5DV_INIT_OBJ
-    int count;
+    uct_rc_mlx5_ep_t *ep;
 
-    count = uct_rc_mlx5_iface_commom_clean(&iface->cq[UCT_IB_DIR_RX],
-                                           &iface->rx.srq,
-                                           ep_cleanup_ctx->qp.qp_num);
-    iface->super.rx.srq.available += count;
-    uct_rc_mlx5_iface_common_update_cqs_ci(iface, &iface->super.super);
-#endif
+    
+    ep = ucs_derived_of(uct_rc_iface_lookup_ep(&iface->super,
+                                               ep_cleanup_ctx->qp.qp_num),
+                        uct_rc_mlx5_ep_t);
 
-#if IBV_HW_TM
-    if (UCT_RC_MLX5_TM_ENABLED(iface)) {
-        /* using uct_ib_mlx5_iface_put_res_domain and not
-         * uct_ib_mlx5_qp_mmio_cleanup: in case of devx, we don't have uar,
-         * and uct_ib_mlx5_qp_mmio_cleanup would try to release uar */
-        uct_ib_mlx5_iface_put_res_domain(&ep_cleanup_ctx->tm_qp);
-        uct_ib_mlx5_destroy_qp(md, &ep_cleanup_ctx->tm_qp);
-    }
-#endif
-
-    uct_ib_mlx5_qp_mmio_cleanup(&ep_cleanup_ctx->qp, ep_cleanup_ctx->reg);
-    uct_ib_mlx5_destroy_qp(md, &ep_cleanup_ctx->qp);
-    uct_rc_ep_cleanup_qp_done(&ep_cleanup_ctx->super, ep_cleanup_ctx->qp.qp_num);
+    ucs_error("closed %d, ep - %p", ep_cleanup_ctx->qp.qp_num, ep);
 }
 
 UCS_CLASS_CLEANUP_FUNC(uct_rc_mlx5_ep_t)
@@ -1042,6 +1035,7 @@ UCS_CLASS_CLEANUP_FUNC(uct_rc_mlx5_ep_t)
 
     ucs_assert(self->mp.free == 1);
     (void)uct_ib_mlx5_modify_qp_state(md, &self->tx.wq.super, IBV_QPS_ERR);
+    ucs_error("CLEANUP QP here for ep-%p, qo-%d", self, self->tx.wq.super.qp_num);
     uct_rc_ep_cleanup_qp(&iface->super, &self->super, &ep_cleanup_ctx->super,
                          self->tx.wq.super.qp_num);
 }
