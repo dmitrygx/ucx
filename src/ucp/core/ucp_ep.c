@@ -163,6 +163,9 @@ ucs_status_t ucp_ep_create_base(ucp_worker_h worker, const char *peer_name,
     ucp_ep_ext_control(ep)->err_cb       = NULL;
     ucp_ep_ext_control(ep)->local_ep_id  =
     ucp_ep_ext_control(ep)->remote_ep_id = UCP_EP_ID_INVALID;
+#if UCS_ENABLE_ASSERT
+    ucp_ep_ext_gen(ep)->num_discarded    = 0;
+#endif
 
     UCS_STATIC_ASSERT(sizeof(ucp_ep_ext_gen(ep)->ep_match) >=
                       sizeof(ucp_ep_ext_gen(ep)->flush_state));
@@ -788,6 +791,7 @@ void ucp_ep_destroy_internal(ucp_ep_h ep)
 
 static void ucp_ep_set_lanes_failed(ucp_ep_h ep, uct_ep_h *uct_eps)
 {
+    ucp_ep_ext_gen_t UCS_V_UNUSED *ep_ext = ucp_ep_ext_gen(ep);
     ucp_lane_index_t lane;
     uct_ep_h uct_ep;
 
@@ -806,7 +810,12 @@ static void ucp_ep_set_lanes_failed(ucp_ep_h ep, uct_ep_h *uct_eps)
          * If UCT lane is destroyed, but some operations are still in-progress,
          * acompletions can be received for his UCT EP - this will lead to
          * undefined behavior, because a real UCT EP was already destroyed */
-        ucs_assert(ucp_is_uct_ep_failed(uct_ep) || (ep->ref_cnt == 1));
+        if (ucp_is_uct_ep_failed(uct_ep)) {
+            ucs_assert((ep->ref_cnt == ep_ext->num_discarded) ||
+                       (ep->ref_cnt == (ep_ext->num_discarded + 1)));
+        } else {
+            ucs_assert(ep->ref_cnt == (ep_ext->num_discarded + 1));
+        }
 
         /* set UCT EP to failed UCT EP to make sure if UCP EP won't be destroyed
          * due to some UCT EP discarding procedures are in-progress and UCP EP

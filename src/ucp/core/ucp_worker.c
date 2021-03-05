@@ -2189,6 +2189,9 @@ static void ucp_worker_put_flush_req(ucp_request_t *req)
     ucp_ep_h ucp_ep = req->send.ep;
 
     ucp_worker_flush_ops_count_dec(ucp_ep->worker);
+#if UCS_ENABLE_ASSERT
+    --ucp_ep_ext_gen(ucp_ep)->num_discarded;
+#endif
     ucp_ep_destroy_base(ucp_ep);
     ucp_request_put(req);
 }
@@ -2869,6 +2872,9 @@ ucp_worker_discard_tl_uct_ep(ucp_ep_h ucp_ep, uct_ep_h uct_ep,
 
     ucs_assert(ucp_ep->ref_cnt < UINT8_MAX);
     ++ucp_ep->ref_cnt;
+#if UCS_ENABLE_ASSERT
+    ++ucp_ep_ext_gen(ucp_ep)->num_discarded;
+#endif
     ucp_worker_flush_ops_count_inc(worker);
     iter = kh_put(ucp_worker_discard_uct_ep_hash, &worker->discard_uct_ep_hash,
                   uct_ep, &ret);

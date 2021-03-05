@@ -417,6 +417,10 @@ typedef struct {
         ucp_ep_flush_state_t      flush_state;   /* Remote completion status */
     };
     ucp_ep_ext_control_t          *control_ext;  /* Control data path extension */
+#if UCS_ENABLE_ASSERT
+    unsigned                      num_discarded; /* Number of UCT EPs which are
+                                                  * discarded */
+#endif
 } ucp_ep_ext_gen_t;
 
 
