@@ -842,6 +842,12 @@ static void ucp_ep_set_lanes_failed(ucp_ep_h ep, uct_ep_h *uct_eps)
     ucp_lane_index_t lane;
     uct_ep_h uct_ep;
 
+    if (!(ep->flags & (UCP_EP_FLAG_FAILED | UCP_EP_FLAG_INTERNAL))) {
+        ucp_ep_release_id(ep);
+    }
+
+    ucp_ep_update_flags(ep, UCP_EP_FLAG_FAILED, 0);
+
     for (lane = 0; lane < ucp_ep_num_lanes(ep); ++lane) {
         uct_ep        = ep->uct_eps[lane];
         uct_eps[lane] = uct_ep;
@@ -1020,12 +1026,6 @@ void ucp_ep_discard_lanes(ucp_ep_h ep, ucs_status_t status)
     uct_ep_h uct_ep;
 
     ucs_debug("ep %p: discarding lanes", ep);
-
-    if (!(ep->flags & (UCP_EP_FLAG_FAILED | UCP_EP_FLAG_INTERNAL))) {
-        ucp_ep_release_id(ep);
-    }
-
-    ucp_ep_update_flags(ep, UCP_EP_FLAG_FAILED, 0);
 
     /* flush CANCEL mustn't be called for EPs without error handling support */
     ucs_assert(ucp_ep_config(ep)->key.err_mode == UCP_ERR_HANDLING_MODE_PEER);
