@@ -423,6 +423,18 @@ static ucs_status_t ucp_worker_flush_check(ucp_worker_h worker)
     return UCS_OK;
 }
 
+static UCS_F_ALWAYS_INLINE void
+ucp_worker_flush_complete_ep(ucp_ep_ext_gen_t *ep_ext)
+{
+#if UCS_ENABLE_ASSERT
+    --ep_ext->flush_started;
+#endif
+
+    /* Decrement UCP EP reference counter which is set by worker flush operation
+     * and if the reference counter is '0', UCP EP will be destroyed */
+    ucp_ep_destroy_base(ucp_ep_from_ext_gen(ep_ext));
+}
+
 static void ucp_worker_flush_complete_one(ucp_request_t *req, ucs_status_t status,
                                           int force_progress_unreg)
 {
@@ -441,10 +453,7 @@ static void ucp_worker_flush_complete_one(ucp_request_t *req, ucs_status_t statu
         ucs_assert(status != UCS_INPROGRESS);
 
         if (&req->flush_worker.next_ep->ep_list != &worker->all_eps) {
-            /* Decrement UCP EP reference counter which is set by worker flush
-             * operation and if the reference counter is '0', UCP EP will be
-             * destroyed */
-            ucp_ep_destroy_base(ucp_ep_from_ext_gen(req->flush_worker.next_ep));
+            ucp_worker_flush_complete_ep(req->flush_worker.next_ep);
         }
 
         ucp_request_complete(req, flush_worker.cb, status, req->user_data);
@@ -458,15 +467,19 @@ static void ucp_worker_flush_ep_flushed_cb(ucp_request_t *req)
 }
 
 static UCS_F_ALWAYS_INLINE void
-ucp_worker_flush_req_set_next_ep(
-        ucp_worker_h worker, ucp_request_t *req, ucp_ep_ext_gen_t *ep_ext)
+ucp_worker_flush_req_set_next_ep(ucp_request_t *req, ucp_ep_ext_gen_t *ep_ext)
 {
+    ucp_worker_h worker = req->flush_worker.worker;
+
     req->flush_worker.next_ep = ep_ext;
 
-    if (&req->flush_worker.next_ep->ep_list != &worker->all_eps) {
+    if (&ep_ext->ep_list != &worker->all_eps) {
         /* Increment UCP EP reference counter to avoid destroying UCP EP while
          * it is being scheduled to be flushed */
-        ++ucp_ep_from_ext_gen(req->flush_worker.next_ep)->ref_cnt;
+        ++ucp_ep_from_ext_gen(ep_ext)->ref_cnt;
+#if UCS_ENABLE_ASSERT
+        ++ep_ext->flush_started;
+#endif
     }
 }
 
@@ -505,18 +518,18 @@ static unsigned ucp_worker_flush_progress(void *arg)
         ep = ucp_ep_from_ext_gen(next_ep);
 
         ucp_worker_flush_req_set_next_ep(
-                worker, req, ucs_list_next(
-                                 &next_ep->ep_list, ucp_ep_ext_gen_t, ep_list));
+                req, ucs_list_next(
+                             &next_ep->ep_list, ucp_ep_ext_gen_t, ep_list));
 
         if (ep->flags & (UCP_EP_FLAG_CLOSED | UCP_EP_FLAG_FAILED)) {
-            ucp_ep_destroy_base(ep);
+            ucp_worker_flush_complete_ep(next_ep);
             goto out;
         }
 
         /* UCP EP reference counter is not expected to be '0', because UCP EP is
          * neither closed nor failed. So, just decrement reference counter */
         ucs_assert(ep->ref_cnt > 1);
-        --ep->ref_cnt;
+        ucp_worker_flush_complete_ep(next_ep);
 
         ep_flush_request = ucp_ep_flush_internal(ep, UCP_REQUEST_FLAG_RELEASED,
                                                  &ucp_request_null_param, req,
@@ -563,8 +576,7 @@ ucp_worker_flush_nbx_internal(ucp_worker_h worker,
     req->flush_worker.prog_id    = UCS_CALLBACKQ_ID_NULL;
 
     ucp_worker_flush_req_set_next_ep(
-            worker, req, ucs_list_head(
-                                 &worker->all_eps, ucp_ep_ext_gen_t, ep_list));
+            req, ucs_list_head(&worker->all_eps, ucp_ep_ext_gen_t, ep_list));
     ucp_request_set_send_callback_param(param, req, flush_worker);
     uct_worker_progress_register_safe(worker->uct, ucp_worker_flush_progress,
                                       req, 0, &req->flush_worker.prog_id);

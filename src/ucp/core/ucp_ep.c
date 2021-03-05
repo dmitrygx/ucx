@@ -135,6 +135,8 @@ ucs_status_t ucp_ep_create_base(ucp_worker_h worker, const char *peer_name,
     ucp_lane_index_t lane;
     ucs_status_t status;
     ucp_ep_h ep;
+    ucp_ep_ext_gen_t *ep_ext;
+    ucp_ep_ext_control_t *ep_ext_control;
 
     ep = ucs_strided_alloc_get(&worker->ep_alloc, "ucp_ep");
     if (ep == NULL) {
@@ -143,31 +145,34 @@ ucs_status_t ucp_ep_create_base(ucp_worker_h worker, const char *peer_name,
         goto err;
     }
 
-    ucp_ep_ext_gen(ep)->control_ext = ucs_calloc(1,
-                                                 sizeof(ucp_ep_ext_control_t),
-                                                 "ep_control_ext");
-    if (ucp_ep_ext_gen(ep)->control_ext == NULL) {
+    ep_ext = ucp_ep_ext_gen(ep);
+
+    ep_ext_control = ucs_calloc(1, sizeof(ucp_ep_ext_control_t),
+                                "ep_control_ext");
+    if (ep_ext_control == NULL) {
         ucs_error("Failed to allocate ep control extension");
         status = UCS_ERR_NO_MEMORY;
         goto err_free_ep;
     }
 
-    ep->ref_cnt                          = 1;
-    ep->cfg_index                        = UCP_WORKER_CFG_INDEX_NULL;
-    ep->worker                           = worker;
-    ep->am_lane                          = UCP_NULL_LANE;
-    ep->flags                            = 0;
-    ep->conn_sn                          = UCP_EP_MATCH_CONN_SN_MAX;
-    ucp_ep_ext_gen(ep)->user_data        = NULL;
-    ucp_ep_ext_control(ep)->cm_idx       = UCP_NULL_RESOURCE;
-    ucp_ep_ext_control(ep)->err_cb       = NULL;
-    ucp_ep_ext_control(ep)->local_ep_id  =
-    ucp_ep_ext_control(ep)->remote_ep_id = UCP_EP_ID_INVALID;
+    ep->ref_cnt                  = 1;
+    ep->cfg_index                = UCP_WORKER_CFG_INDEX_NULL;
+    ep->worker                   = worker;
+    ep->am_lane                  = UCP_NULL_LANE;
+    ep->flags                    = 0;
+    ep->conn_sn                  = UCP_EP_MATCH_CONN_SN_MAX;
+    ep_ext->user_data            = NULL;
+    ep_ext->control_ext          = ep_ext_control;
+    ep_ext_control->cm_idx       = UCP_NULL_RESOURCE;
+    ep_ext_control->err_cb       = NULL;
+    ep_ext_control->local_ep_id  =
+    ep_ext_control->remote_ep_id = UCP_EP_ID_INVALID;
+#if UCS_ENABLE_ASSERT
+    ep_ext->flush_started        = 0;
+#endif
 
-    UCS_STATIC_ASSERT(sizeof(ucp_ep_ext_gen(ep)->ep_match) >=
-                      sizeof(ucp_ep_ext_gen(ep)->flush_state));
-    memset(&ucp_ep_ext_gen(ep)->ep_match, 0,
-           sizeof(ucp_ep_ext_gen(ep)->ep_match));
+    UCS_STATIC_ASSERT(sizeof(ep_ext->ep_match) >= sizeof(ep_ext->flush_state));
+    memset(&ep_ext->ep_match, 0, sizeof(ep_ext->ep_match));
 
     ucp_stream_ep_init(ep);
     ucp_am_ep_init(ep);
@@ -192,7 +197,7 @@ ucs_status_t ucp_ep_create_base(ucp_worker_h worker, const char *peer_name,
     return UCS_OK;
 
 err_free_ep_control_ext:
-    ucs_free(ucp_ep_ext_control(ep));
+    ucs_free(ep_ext_control);
 err_free_ep:
     ucs_strided_alloc_put(&worker->ep_alloc, ep);
 err:
@@ -232,6 +237,8 @@ void ucp_ep_destroy_base(ucp_ep_h ep)
     if (--ep->ref_cnt != 0) {
         return;
     }
+
+    ucs_assert(ucp_ep_ext_gen(ep)->flush_started == 0);
 
     /* remove pending slow-path functions after EP cleanup, because it does
      * cleanup lanes which purges all outstanding operation and purged
@@ -839,20 +846,22 @@ static void ucp_ep_set_lanes_failed(ucp_ep_h ep, uct_ep_h *uct_eps)
         uct_ep        = ep->uct_eps[lane];
         uct_eps[lane] = uct_ep;
 
-        /* an attempt to destroy UCT lanes can be done several times inside
+        /* An attempt to destroy UCT lanes can be done several times inside
          * ucp_ep_cleanup_lanes()/ucp_ep_discard_lanes(), i.e. discarding lanes
          * and then cleanup lanes during UCP EP close - so, if it happens, UCT
          * lane has to be already set to '&ucp_failed_tl_ep' and UCP EP's
          * 'ref_cnt' can be >= 1, when UCP EP is going to be destroyed.
          * Otherwise - UCT lane is set to a real UCT EP and it means that
-         * discarding of UCT lanes was not started yet,  i.e. called from UCP EP
-         * destroy function and UCP EP's ref_cnt has to be '1'.
+         * discarding of UCT lanes was not started yet, i.e. called from UCP EP
+         * destroy function and UCP EP's ref_cnt has to be ('number of worker
+         * flush operation started for the UCP EP' + '1').
          * If UCT lane is destroyed, but some operations are still in-progress,
-         * acompletions can be received for his UCT EP - this will lead to
+         * completions can be received for this UCT EP - this will lead to
          * undefined behavior, because a real UCT EP was already destroyed */
-        ucs_assert(ucp_is_uct_ep_failed(uct_ep) || (ep->ref_cnt == 1));
+        ucs_assert(ucp_is_uct_ep_failed(uct_ep) ||
+                   (ep->ref_cnt == (ucp_ep_ext_gen(ep)->flush_started + 1)));
 
-        /* set UCT EP to failed UCT EP to make sure if UCP EP won't be destroyed
+        /* Set UCT EP to failed UCT EP to make sure if UCP EP won't be destroyed
          * due to some UCT EP discarding procedures are in-progress and UCP EP
          * may get some operation completions which could try to dereference its
          * lanes */
