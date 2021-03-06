@@ -22,10 +22,10 @@
  * still alive (e.g. err_handling progress part was scheduled on worker
  * or discarding) - so, don't do any actions in the callback -
  * discarding functionality will destroy UCT EP */
-#define UCP_CM_CB_CHECK_UCP_EP(_ucp_ep, _uct_cm_ep) \
+#define UCP_CM_CB_CHECK_UCP_EP(_ucp_ep, _uct_cm_ep, _exit_action) \
     do { \
         if ((_ucp_ep)->flags & UCP_EP_FLAG_FAILED) { \
-            return; \
+            _exit_action; \
         } \
         \
         ucs_assertv_always((_uct_cm_ep) == ucp_ep_get_cm_uct_ep(_ucp_ep), \
@@ -323,6 +323,13 @@ static ssize_t ucp_cm_client_priv_pack_cb(void *arg,
 
     /* At this point the ep has only CM lane */
     ucs_assert((ucp_ep_num_lanes(ep) == 1) && ucp_ep_has_cm_lane(ep));
+
+    UCP_CM_CB_CHECK_UCP_EP(ep, ucp_ep_get_cm_uct_ep(ep),
+                           {
+                               status = UCS_ERR_NOT_CONNECTED;
+                               goto out;
+                           });
+
     cm_wireup_ep = ucp_ep_get_cm_wireup_ep(ep);
     ucs_assert(cm_wireup_ep != NULL);
 
@@ -607,7 +614,7 @@ static void ucp_cm_client_connect_cb(uct_ep_h uct_cm_ep, void *arg,
               ucp_ep, ucp_ep->flags, ucp_ep->cfg_index,
               ucs_status_string(status));
 
-    UCP_CM_CB_CHECK_UCP_EP(ucp_ep, uct_cm_ep);
+    UCP_CM_CB_CHECK_UCP_EP(ucp_ep, uct_cm_ep, return);
 
     if (((status == UCS_ERR_NOT_CONNECTED) || (status == UCS_ERR_UNREACHABLE) ||
          (status == UCS_ERR_CONNECTION_RESET)) &&
@@ -785,7 +792,7 @@ static void ucp_cm_disconnect_cb(uct_ep_h uct_cm_ep, void *arg)
     ucs_trace("ep %p flags 0x%x: remote disconnect callback invoked", ucp_ep,
               ucp_ep->flags);
 
-    UCP_CM_CB_CHECK_UCP_EP(ucp_ep, uct_cm_ep);
+    UCP_CM_CB_CHECK_UCP_EP(ucp_ep, uct_cm_ep, return);
 
     uct_ep = ucp_ep_get_cm_uct_ep(ucp_ep);
     ucs_assertv_always(uct_cm_ep == uct_ep,
@@ -1130,6 +1137,12 @@ static ssize_t ucp_cm_server_priv_pack_cb(void *arg,
 
     UCS_ASYNC_BLOCK(&worker->async);
 
+    UCP_CM_CB_CHECK_UCP_EP(ep, ucp_ep_get_cm_uct_ep(ep),
+                           {
+                               status = UCS_ERR_NOT_CONNECTED;
+                               goto out;
+                           });
+
     tl_bitmap = ucp_ep_get_tl_bitmap(ep);
     /* make sure that all lanes are created on correct device */
     ucs_assert_always(pack_args->field_mask &
@@ -1211,7 +1224,7 @@ static void ucp_cm_server_conn_notify_cb(
     ucs_trace("ep %p flags 0x%x: notify callback invoked, status %s", ucp_ep,
               ucp_ep->flags, ucs_status_string(status));
 
-    UCP_CM_CB_CHECK_UCP_EP(ucp_ep, uct_cm_ep);
+    UCP_CM_CB_CHECK_UCP_EP(ucp_ep, uct_cm_ep, return);
 
     if (status == UCS_OK) {
         uct_worker_progress_register_safe(ucp_ep->worker->uct,
