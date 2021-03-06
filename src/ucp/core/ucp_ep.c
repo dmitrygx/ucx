@@ -265,6 +265,7 @@ ucs_status_t ucp_worker_create_ep(ucp_worker_h worker, unsigned ep_init_flags,
                                   const char *peer_name, const char *message,
                                   ucp_ep_h *ep_p)
 {
+    ucp_context_h context = worker->context;
     ucs_status_t status;
     ucp_ep_h ep;
 
@@ -273,10 +274,14 @@ ucs_status_t ucp_worker_create_ep(ucp_worker_h worker, unsigned ep_init_flags,
         goto err;
     }
 
-    if ((worker->context->config.ext.proto_indirect_id == UCS_CONFIG_ON) ||
-        ((worker->context->config.ext.proto_indirect_id == UCS_CONFIG_AUTO) &&
-         (ep_init_flags & UCP_EP_INIT_ERR_MODE_PEER_FAILURE) &&
-         !(ep_init_flags & UCP_EP_INIT_FLAG_MEM_TYPE))) {
+    if (ep_init_flags & UCP_EP_INIT_FLAG_MEM_TYPE) {
+        ucp_ep_update_flags(ep, UCP_EP_FLAG_INTERNAL, 0);
+        goto out;
+    }
+
+    if ((context->config.ext.proto_indirect_id == UCS_CONFIG_ON) ||
+        ((context->config.ext.proto_indirect_id == UCS_CONFIG_AUTO) &&
+         (ep_init_flags & UCP_EP_INIT_ERR_MODE_PEER_FAILURE))) {
         ucp_ep_update_flags(ep, UCP_EP_FLAG_INDIRECT_ID, 0);
     }
 
@@ -287,14 +292,10 @@ ucs_status_t ucp_worker_create_ep(ucp_worker_h worker, unsigned ep_init_flags,
         goto err_destroy_ep_base;
     }
 
-    if (ep_init_flags & UCP_EP_INIT_FLAG_MEM_TYPE) {
-        ucp_ep_update_flags(ep, UCP_EP_FLAG_INTERNAL, 0);
-    } else {
-        ucs_list_add_tail(&worker->all_eps, &ucp_ep_ext_gen(ep)->ep_list);
-    }
+    ucs_list_add_tail(&worker->all_eps, &ucp_ep_ext_gen(ep)->ep_list);
 
+out:
     *ep_p = ep;
-
     return UCS_OK;
 
 err_destroy_ep_base:
@@ -314,7 +315,7 @@ static void ucp_ep_delete(ucp_ep_h ep)
 
     if (!(ep->flags & UCP_EP_FLAG_FAILED)) {
         ucp_ep_release_id(ep);
-    } else {
+    } else if (!(ep->flags & UCP_EP_FLAG_INTERNAL)) {
         /* If FAILED flag set, EP ID was already released */
         ucs_assert(ucp_ep_ext_control(ep)->local_ep_id == UCP_EP_ID_INVALID);
     }
@@ -438,6 +439,10 @@ void ucp_worker_destroy_mem_type_endpoints(ucp_worker_h worker)
     ucs_memory_type_t mem_type;
     ucp_ep_h ep;
 
+    /* Destroy memtype UCP EPs after blocking async context, because cleanup
+     * lanes set FAILED flag (setting EP flags is expected to be guarded) */
+    UCS_ASYNC_BLOCK(&worker->async);
+
     ucs_memory_type_for_each(mem_type) {
         ep = worker->mem_type_ep[mem_type];
         if (ep == NULL) {
@@ -447,10 +452,11 @@ void ucp_worker_destroy_mem_type_endpoints(ucp_worker_h worker)
         ucs_debug("memtype ep %p: destroy", ep);
         ucs_assert(ep->flags & UCP_EP_FLAG_INTERNAL);
 
-        ucp_ep_cleanup_lanes(ep);
-        ucp_ep_delete(ep);
+        ucp_ep_destroy_internal(ep);
         worker->mem_type_ep[mem_type] = NULL;
     }
+
+    UCS_ASYNC_UNBLOCK(&worker->async);
 }
 
 ucs_status_t ucp_ep_init_create_wireup(ucp_ep_h ep, unsigned ep_init_flags,
@@ -829,12 +835,7 @@ void ucp_ep_destroy_internal(ucp_ep_h ep)
 {
     ucs_debug("ep %p: destroy", ep);
     ucp_ep_cleanup_lanes(ep);
-    if (ep->flags & UCP_EP_FLAG_INTERNAL) {
-        /* it's failed tmp ep of main ep */
-        ucp_ep_destroy_base(ep);
-    } else {
-        ucp_ep_delete(ep);
-    }
+    ucp_ep_delete(ep);
 }
 
 static void ucp_ep_set_lanes_failed(ucp_ep_h ep, uct_ep_h *uct_eps)
