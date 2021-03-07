@@ -420,6 +420,14 @@ typedef struct {
         ucp_ep_flush_state_t      flush_state;   /* Remote completion status */
     };
     ucp_ep_ext_control_t          *control_ext;  /* Control data path extension */
+#if UCS_ENABLE_ASSERT
+    /* How many Worker flush operations are in-progress where the EP is the next
+     * EP for flushing */
+    uint8_t                       num_flush_inprog;
+    /* How many UCT EP discarding operations are in-progress scheduled for the
+     * EP */
+    uint8_t                       num_discard_inprog;
+#endif
 } ucp_ep_ext_gen_t;
 
 

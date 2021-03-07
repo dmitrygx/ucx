@@ -289,4 +289,17 @@ static UCS_F_ALWAYS_INLINE int ucp_ep_use_indirect_id(ucp_ep_h ep)
     UCS_STATIC_ASSERT(sizeof(ep->flags) <= sizeof(int));
     return ep->flags & UCP_EP_FLAG_INDIRECT_ID;
 }
+
+static UCS_F_ALWAYS_INLINE void ucp_ep_cnt_inc(uint8_t *cnt)
+{
+    ucs_assert(*cnt < UINT8_MAX);
+    ++(*cnt);
+}
+
+static UCS_F_ALWAYS_INLINE void ucp_ep_cnt_dec(uint8_t *cnt)
+{
+    ucs_assert(*cnt > 0);
+    --(*cnt);
+}
+
 #endif
