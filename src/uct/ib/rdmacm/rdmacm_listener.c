@@ -54,6 +54,10 @@ UCS_CLASS_INIT_FUNC(uct_rdmacm_listener_t, uct_cm_h cm,
         goto err;
     }
 
+    ucs_diag("created id=%p on %s",
+             self->id, ucs_sockaddr_str(saddr, ip_port_str,
+                                        UCS_SOCKADDR_STRING_LEN));
+
     if (rdmacm_cm->super.config.reuse_addr) {
         if (rdma_set_option(self->id, RDMA_OPTION_ID, RDMA_OPTION_ID_REUSEADDR,
                             &id_reuse_optval, sizeof(id_reuse_optval))) {

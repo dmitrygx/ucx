@@ -277,9 +277,9 @@ static ucs_status_t uct_rdamcm_cm_ep_client_init(uct_rdmacm_cm_ep_t *cep,
         goto err;
     }
 
-    ucs_trace("%s rdma_create_id on client (rdmacm %p, event_channel=%p)",
-              uct_rdmacm_cm_ep_str(cep, ep_str, UCT_RDMACM_EP_STRING_LEN),
-              rdmacm_cm, rdmacm_cm->ev_ch);
+    ucs_diag("%s rdma_create_id on client (rdmacm %p, event_channel=%p)",
+             uct_rdmacm_cm_ep_str(cep, ep_str, UCT_RDMACM_EP_STRING_LEN),
+             rdmacm_cm, rdmacm_cm->ev_ch);
 
     /* rdma_resolve_addr needs to be called last in the ep_create flow to
      * prevent a race where there are uninitialized fields used when the

@@ -18,7 +18,7 @@
 
 ucs_status_t uct_rdmacm_cm_destroy_id(struct rdma_cm_id *id)
 {
-    ucs_trace("destroying cm_id %p", id);
+    ucs_diag("destroying cm_id %p", id);
 
     if (rdma_destroy_id(id)) {
         ucs_warn("rdma_destroy_id() failed: %m");
