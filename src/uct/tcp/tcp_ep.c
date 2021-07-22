@@ -25,6 +25,11 @@ const uct_tcp_cm_state_t uct_tcp_ep_cm_state[] = {
         .tx_progress = (uct_tcp_ep_progress_t)ucs_empty_function_return_zero,
         .rx_progress = (uct_tcp_ep_progress_t)ucs_empty_function_return_zero
     },
+    [UCT_TCP_EP_CONN_STATE_CLOSING] = {
+        .name        = "CONNECTING",
+        .tx_progress = (uct_tcp_ep_progress_t)ucs_empty_function_return_zero,
+        .rx_progress = uct_tcp_ep_progress_data_rx
+    },
     [UCT_TCP_EP_CONN_STATE_CONNECTING] = {
         .name        = "CONNECTING",
         .tx_progress = uct_tcp_cm_conn_progress,
@@ -371,34 +376,46 @@ static void uct_tcp_ep_purge(uct_tcp_ep_t *ep)
     }
 }
 
-static UCS_CLASS_CLEANUP_FUNC(uct_tcp_ep_t)
+static void uct_tcp_ep_pre_destroy(uct_tcp_ep_t *ep)
 {
-    uct_tcp_iface_t *iface = ucs_derived_of(self->super.super.iface,
+    uct_tcp_iface_t *iface = ucs_derived_of(ep->super.super.iface,
                                             uct_tcp_iface_t);
 
-    if (self->flags & UCT_TCP_EP_FLAG_ON_MATCH_CTX) {
-        uct_tcp_cm_remove_ep(iface, self);
+    if (ep->flags & UCT_TCP_EP_FLAG_ON_MATCH_CTX) {
+        uct_tcp_cm_remove_ep(iface, ep);
     } else {
-        uct_tcp_iface_remove_ep(self);
+        uct_tcp_iface_remove_ep(ep);
     }
 
-    if (self->flags & UCT_TCP_EP_FLAG_ON_PTR_MAP) {
-        uct_tcp_ep_ptr_map_del(self);
+    if (ep->flags & UCT_TCP_EP_FLAG_ON_PTR_MAP) {
+        uct_tcp_ep_ptr_map_del(ep);
     }
 
-    uct_tcp_ep_remove_ctx_cap(self, UCT_TCP_EP_CTX_CAPS);
-    uct_tcp_ep_purge(self);
+    uct_tcp_ep_remove_ctx_cap(ep, UCT_TCP_EP_CTX_CAPS);
+    uct_tcp_ep_purge(ep);
 
-    if (self->flags & UCT_TCP_EP_FLAG_FAILED) {
+    if (ep->flags & UCT_TCP_EP_FLAG_FAILED) {
         /* a failed EP callback can be still scheduled on the UCT worker,
          * remove it to prevent a callback is being invoked for the
          * destroyed EP */
         ucs_callbackq_remove_if(&iface->super.worker->super.progress_q,
-                                uct_tcp_ep_failed_remove_filter, self);
+                                uct_tcp_ep_failed_remove_filter, ep);
     }
 
     ucs_callbackq_remove_if(&iface->super.worker->super.progress_q,
-                            uct_tcp_ep_progress_rx_remove_filter, self);
+                            uct_tcp_ep_progress_rx_remove_filter, ep);
+}
+
+static UCS_CLASS_CLEANUP_FUNC(uct_tcp_ep_t)
+{
+    uct_tcp_iface_t UCS_V_UNUSED *iface =
+            ucs_derived_of(self->super.super.iface, uct_tcp_iface_t);
+
+    if (self->conn_state != UCT_TCP_EP_CONN_STATE_CONNECTING) {
+        uct_tcp_ep_pre_destroy(self);
+    } else {
+        uct_tcp_iface_remove_ep(self);
+    }
 
     uct_tcp_ep_cleanup(self);
     uct_tcp_cm_change_conn_state(self, UCT_TCP_EP_CONN_STATE_CLOSED);
@@ -420,6 +437,7 @@ void uct_tcp_ep_destroy(uct_ep_h tl_ep)
     uct_tcp_ep_t *ep       = ucs_derived_of(tl_ep, uct_tcp_ep_t);
     uct_tcp_iface_t *iface = ucs_derived_of(ep->super.super.iface,
                                             uct_tcp_iface_t);
+    int ret;
 
     if (/* EPs that are connected as CONNECT_TO_EP have to be full duplex */
         !(ep->flags & UCT_TCP_EP_FLAG_CONNECT_TO_EP) &&
@@ -433,6 +451,13 @@ void uct_tcp_ep_destroy(uct_ep_h tl_ep)
         /* purge all outstanding operations (GET/PUT Zcopy, flush operations) */
         uct_tcp_ep_purge(ep);
         uct_tcp_cm_insert_ep(iface, ep);
+    } else if (ep->conn_state == UCT_TCP_EP_CONN_STATE_CONNECTED) {
+        uct_tcp_cm_change_conn_state(ep, UCT_TCP_EP_CONN_STATE_CLOSING);
+        uct_tcp_ep_pre_destroy(ep);
+        uct_tcp_iface_add_ep(ep);
+        ret = shutdown(ep->fd, SHUT_WR);
+        ucs_assertv_always(ret == 0, "ep %p fd %d: shutdown failed: %m",
+                           ep, ep->fd);
     } else {
         uct_tcp_ep_destroy_internal(tl_ep);
     }
@@ -1128,7 +1153,8 @@ ucs_status_t uct_tcp_ep_handle_io_err(uct_tcp_ep_t *ep, const char *op_str,
 
         return io_status;
     } else if ((io_status == UCS_ERR_NOT_CONNECTED) &&
-               (ep->conn_state == UCT_TCP_EP_CONN_STATE_CONNECTED)) {
+               ((ep->conn_state == UCT_TCP_EP_CONN_STATE_CONNECTED) ||
+                (ep->conn_state == UCT_TCP_EP_CONN_STATE_CLOSING))) {
         uct_tcp_ep_mod_events(ep, 0, ep->events);
         ucs_close_fd(&ep->fd);
         /* if this connection is needed for the local side, it will be

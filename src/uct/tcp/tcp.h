@@ -120,6 +120,10 @@ typedef enum uct_tcp_ep_conn_state {
     /* EP is unable to communicate with a peer's EP - connections establishment
      * was unsuccessful or detected hangup during communications. */
     UCT_TCP_EP_CONN_STATE_CLOSED,
+    /* EP is disconnecting from a peer's EP - TX queue of the socket is
+     * shutdowned and waiting fro all outstanding data being transmitted to a
+     * peer. */
+    UCT_TCP_EP_CONN_STATE_CLOSING,
     /* EP is connecting to a peer's EP, i.e. connect() was called on non-blocking
      * socket and returned this call returned that an operation is in progress.
      * After it is done, it sends `UCT_TCP_CM_CONN_REQ` to the peer.
