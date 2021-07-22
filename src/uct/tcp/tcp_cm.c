@@ -526,9 +526,10 @@ uct_tcp_cm_handle_conn_req(uct_tcp_ep_t **ep_p,
     ucs_assert(/* EP received the connection request after the TCP
                 * connection was accepted */
                (ep->conn_state == UCT_TCP_EP_CONN_STATE_ACCEPTING) ||
-               /* EP is already connected to this peer (conn_sn and address
-                * must be the same) */
-               ((ep->conn_state == UCT_TCP_EP_CONN_STATE_CONNECTED) &&
+               /* EP is already connected (or it is closing a connection) to
+                * this peer (conn_sn and address must be the same) */
+               (((ep->conn_state == UCT_TCP_EP_CONN_STATE_CONNECTED) ||
+                 (ep->conn_state == UCT_TCP_EP_CONN_STATE_CONNECTED)) &&
                 uct_tcp_cm_verify_req_connected_ep(ep, cm_req_pkt)));
 
     if (ep->conn_state == UCT_TCP_EP_CONN_STATE_ACCEPTING) {
