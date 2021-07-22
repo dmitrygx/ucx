@@ -100,8 +100,8 @@ static inline void uct_tcp_ep_ctx_rewind(uct_tcp_ep_ctx_t *ctx)
 
 static inline void uct_tcp_ep_ctx_init(uct_tcp_ep_ctx_t *ctx)
 {
-    ctx->put_sn = UINT32_MAX;
-    ctx->buf    = NULL;
+    ctx->sn  = UINT32_MAX;
+    ctx->buf = NULL;
     uct_tcp_ep_ctx_rewind(ctx);
 }
 
@@ -244,10 +244,11 @@ static UCS_CLASS_INIT_FUNC(uct_tcp_ep_t, uct_tcp_iface_t *iface,
     self->flags         = 0;
     self->conn_state    = UCT_TCP_EP_CONN_STATE_CLOSED;
     self->cm_id.conn_sn = UCT_TCP_CM_CONN_SN_MAX;
+    self->last_acked_sn = UINT32_MAX;
 
     ucs_list_head_init(&self->list);
     ucs_queue_head_init(&self->pending_q);
-    ucs_queue_head_init(&self->put_comp_q);
+    ucs_queue_head_init(&self->op_comp_q);
 
     if (self->fd != -1) /* EP is created during accepting a connection */ {
         self->conn_retries++;
@@ -356,7 +357,7 @@ uct_tcp_ep_zcopy_completed(uct_tcp_ep_t *ep, uct_completion_t *comp,
 
 static void uct_tcp_ep_purge(uct_tcp_ep_t *ep)
 {
-    uct_tcp_ep_put_completion_t *put_comp;
+    uct_tcp_ep_op_completion_t *op_comp;
     uct_tcp_ep_zcopy_tx_t *ctx;
 
     if (ep->flags & UCT_TCP_EP_FLAG_ZCOPY_TX) {
@@ -365,9 +366,9 @@ static void uct_tcp_ep_purge(uct_tcp_ep_t *ep)
         uct_tcp_ep_tx_completed(ep, ep->tx.length - ep->tx.offset);
     }
 
-    ucs_queue_for_each_extract(put_comp, &ep->put_comp_q, elem, 1) {
-        uct_invoke_completion(put_comp->comp, UCS_ERR_CANCELED);
-        ucs_mpool_put_inline(put_comp);
+    ucs_queue_for_each_extract(op_comp, &ep->op_comp_q, elem, 1) {
+        uct_invoke_completion(op_comp->comp, UCS_ERR_CANCELED);
+        ucs_mpool_put_inline(op_comp);
     }
 }
 
@@ -617,12 +618,12 @@ void uct_tcp_ep_replace_ep(uct_tcp_ep_t *to_ep, uct_tcp_ep_t *from_ep)
     uct_tcp_ep_ctx_move(&to_ep->rx, &from_ep->rx);
 
     ucs_queue_splice(&to_ep->pending_q, &from_ep->pending_q);
-    ucs_queue_splice(&to_ep->put_comp_q, &from_ep->put_comp_q);
+    ucs_queue_splice(&to_ep->op_comp_q, &from_ep->op_comp_q);
 
     to_ep->flags |= from_ep->flags & (UCT_TCP_EP_FLAG_ZCOPY_TX           |
                                       UCT_TCP_EP_FLAG_PUT_RX             |
-                                      UCT_TCP_EP_FLAG_PUT_TX_WAITING_ACK |
-                                      UCT_TCP_EP_FLAG_PUT_RX_SENDING_ACK);
+                                      UCT_TCP_EP_FLAG_TX_WAITING_ACK |
+                                      UCT_TCP_EP_FLAG_RX_SENDING_ACK);
 
     if (uct_tcp_ep_ctx_buf_need_progress(&to_ep->rx)) {
         /* If some data was already read, we have to process it */
@@ -891,27 +892,29 @@ void uct_tcp_ep_mod_events(uct_tcp_ep_t *ep, ucs_event_set_types_t add,
     }
 }
 
-static inline void uct_tcp_ep_handle_put_ack(uct_tcp_ep_t *ep,
-                                             uct_tcp_ep_put_ack_hdr_t *put_ack)
+static inline void uct_tcp_ep_handle_ack(uct_tcp_ep_t *ep,
+                                         uct_tcp_am_hdr_t *ack)
 {
     uct_tcp_iface_t *iface = ucs_derived_of(ep->super.super.iface,
                                             uct_tcp_iface_t);
-    uct_tcp_ep_put_completion_t *put_comp;
+    uct_tcp_ep_op_completion_t *op_comp;
 
-    if (put_ack->sn == ep->tx.put_sn) {
-        /* Since there are no other PUT operations in-flight, can remove flag
-         * and decrement iface outstanding operations counter */
-        ucs_assert(ep->flags & UCT_TCP_EP_FLAG_PUT_TX_WAITING_ACK);
-        ep->flags &= ~UCT_TCP_EP_FLAG_PUT_TX_WAITING_ACK;
+    if ((ack->sn == ep->tx.sn) &&
+        (ep->flags & UCT_TCP_EP_FLAG_TX_WAITING_ACK)) {
+        /* Since there are no other operations in-flight, can remove flag and
+         * decrement iface outstanding operations counter */
+        ep->flags &= ~UCT_TCP_EP_FLAG_TX_WAITING_ACK;
         uct_tcp_iface_outstanding_dec(iface);
     }
 
-    ucs_queue_for_each_extract(put_comp, &ep->put_comp_q, elem,
-                               (UCS_CIRCULAR_COMPARE32(put_comp->wait_put_sn,
-                                                       <=, put_ack->sn))) {
-        uct_invoke_completion(put_comp->comp, UCS_OK);
-        ucs_mpool_put_inline(put_comp);
+    ucs_queue_for_each_extract(op_comp, &ep->op_comp_q, elem,
+                               (UCS_CIRCULAR_COMPARE32(op_comp->wait_sn,
+                                                       <=, ack->sn))) {
+        uct_invoke_completion(op_comp->comp, UCS_OK);
+        ucs_mpool_put_inline(op_comp);
     }
+
+    ep->last_acked_sn = ack->sn;
 }
 
 void uct_tcp_ep_pending_queue_dispatch(uct_tcp_ep_t *ep)
@@ -937,7 +940,7 @@ static void uct_tcp_ep_handle_disconnected(uct_tcp_ep_t *ep, ucs_status_t status
     if (ep->flags & UCT_TCP_EP_FLAG_CTX_TYPE_TX) {
         if (ep->flags & UCT_TCP_EP_FLAG_CTX_TYPE_RX) {
             uct_tcp_ep_remove_ctx_cap(ep, UCT_TCP_EP_FLAG_CTX_TYPE_RX);
-            ep->flags &= ~UCT_TCP_EP_FLAG_PUT_RX_SENDING_ACK;
+            ep->flags &= ~UCT_TCP_EP_FLAG_RX_SENDING_ACK;
         }
 
         if (ep->flags & UCT_TCP_EP_FLAG_ZCOPY_TX) {
@@ -947,11 +950,11 @@ static void uct_tcp_ep_handle_disconnected(uct_tcp_ep_t *ep, ucs_status_t status
             uct_tcp_ep_zcopy_completed(ep, ctx->comp, status);
         }
 
-        if (ep->flags & UCT_TCP_EP_FLAG_PUT_TX_WAITING_ACK) {
-            /* if the EP is waiting for the acknowledgment of the started
-             * PUT operation, decrease iface::outstanding counter */
+        if (ep->flags & UCT_TCP_EP_FLAG_TX_WAITING_ACK) {
+            /* If the EP is waiting for the acknowledgment of the started
+             * operation, decrease iface::outstanding counter */
             uct_tcp_iface_outstanding_dec(iface);
-            ep->flags &= ~UCT_TCP_EP_FLAG_PUT_TX_WAITING_ACK;
+            ep->flags &= ~UCT_TCP_EP_FLAG_TX_WAITING_ACK;
         }
 
         uct_tcp_ep_tx_completed(ep, ep->tx.length - ep->tx.offset);
@@ -1205,7 +1208,7 @@ static inline void uct_tcp_ep_check_tx_completion(uct_tcp_ep_t *ep)
 
 /* Forward declaration - the function depends on AM send
  * functions implemented below */
-static void uct_tcp_ep_post_put_ack(uct_tcp_ep_t *ep);
+static void uct_tcp_ep_post_ack(uct_tcp_ep_t *ep);
 
 static unsigned uct_tcp_ep_progress_data_tx(void *arg)
 {
@@ -1230,8 +1233,8 @@ static unsigned uct_tcp_ep_progress_data_tx(void *arg)
         uct_tcp_ep_check_tx_completion(ep);
     }
 
-    if (ep->flags & UCT_TCP_EP_FLAG_PUT_RX_SENDING_ACK) {
-        uct_tcp_ep_post_put_ack(ep);
+    if (ep->flags & UCT_TCP_EP_FLAG_RX_SENDING_ACK) {
+        uct_tcp_ep_post_ack(ep);
     }
 
     if (!ucs_queue_is_empty(&ep->pending_q)) {
@@ -1262,13 +1265,13 @@ static inline ucs_status_t
 uct_tcp_ep_put_rx_advance(uct_tcp_ep_t *ep, uct_tcp_ep_put_req_hdr_t *put_req,
                           size_t recv_length)
 {
-    ucs_assert(!(ep->flags & UCT_TCP_EP_FLAG_PUT_RX_SENDING_ACK));
+    ucs_assert(!(ep->flags & UCT_TCP_EP_FLAG_RX_SENDING_ACK));
     ucs_assert(recv_length <= put_req->length);
     put_req->addr   += recv_length;
     put_req->length -= recv_length;
 
-    if (!put_req->length) {
-        uct_tcp_ep_post_put_ack(ep);
+    if (put_req->length == 0) {
+        uct_tcp_ep_post_ack(ep);
 
         /* EP's ctx_caps doesn't have UCT_TCP_EP_FLAG_PUT_RX flag
          * set in case of entire PUT payload was received through
@@ -1285,6 +1288,7 @@ uct_tcp_ep_put_rx_advance(uct_tcp_ep_t *ep, uct_tcp_ep_put_req_hdr_t *put_req,
 }
 
 static inline void uct_tcp_ep_handle_put_req(uct_tcp_ep_t *ep,
+                                             uct_tcp_am_hdr_t *hdr,
                                              uct_tcp_ep_put_req_hdr_t *put_req,
                                              size_t extra_recvd_length)
 {
@@ -1298,13 +1302,13 @@ static inline void uct_tcp_ep_handle_put_req(uct_tcp_ep_t *ep,
            UCS_PTR_BYTE_OFFSET(ep->rx.buf, ep->rx.offset),
            copied_length);
     ep->rx.offset += copied_length;
-    ep->rx.put_sn  = put_req->sn;
+    ep->rx.sn      = hdr->sn;
 
-    /* Remove the flag that indicates that EP is sending PUT RX ACK in order
-     * to not ack the uncompleted PUT RX operation for which PUT REQ is being
-     * handled here. ACK for both operations will be sent after the completion
-     * of the last received PUT operation */
-    ep->flags &= ~UCT_TCP_EP_FLAG_PUT_RX_SENDING_ACK;
+    /* Remove the flag that indicates that EP is sending RX ACK in order to not
+     * ack the uncompleted PUT RX operation for which PUT REQ is being handled
+     * here. ACK for both operations will be sent after the completion of the
+     * last received operation */
+    ep->flags &= ~UCT_TCP_EP_FLAG_RX_SENDING_ACK;
 
     status = uct_tcp_ep_put_rx_advance(ep, put_req, copied_length);
     if (status == UCS_OK) {
@@ -1393,7 +1397,8 @@ static unsigned uct_tcp_ep_progress_am_rx(uct_tcp_ep_t *ep)
             handled++;
         } else if (hdr->am_id == UCT_TCP_EP_PUT_REQ_AM_ID) {
             ucs_assert(hdr->length == sizeof(uct_tcp_ep_put_req_hdr_t));
-            uct_tcp_ep_handle_put_req(ep, (uct_tcp_ep_put_req_hdr_t*)(hdr + 1),
+            uct_tcp_ep_handle_put_req(ep, hdr,
+                                      (uct_tcp_ep_put_req_hdr_t*)(hdr + 1),
                                       ep->rx.length - ep->rx.offset);
             handled++;
             if (ep->flags & UCT_TCP_EP_FLAG_PUT_RX) {
@@ -1402,9 +1407,8 @@ static unsigned uct_tcp_ep_progress_am_rx(uct_tcp_ep_t *ep)
                  * release a EP RX buffer */
                 goto out;
             }
-        } else if (hdr->am_id == UCT_TCP_EP_PUT_ACK_AM_ID) {
-            ucs_assert(hdr->length == sizeof(uint32_t));
-            uct_tcp_ep_handle_put_ack(ep, (uct_tcp_ep_put_ack_hdr_t*)(hdr + 1));
+        } else if (hdr->am_id == UCT_TCP_EP_ACK_AM_ID) {
+            uct_tcp_ep_handle_ack(ep, hdr);
             handled++;
         } else if (hdr->am_id == UCT_TCP_EP_KEEPALIVE_AM_ID) {
             /* just ignore keepalive requests */
@@ -1451,6 +1455,7 @@ uct_tcp_ep_am_prepare(uct_tcp_iface_t *iface, uct_tcp_ep_t *ep,
 
     *hdr          = ep->tx.buf;
     (*hdr)->am_id = am_id;
+    (*hdr)->sn    = ++ep->tx.sn;
 
     return UCS_OK;
 
@@ -1658,40 +1663,37 @@ uct_tcp_ep_am_sendv(uct_tcp_ep_t *ep, int short_sendv, uct_tcp_am_hdr_t *hdr,
     return UCS_OK;
 }
 
-static void uct_tcp_ep_post_put_ack(uct_tcp_ep_t *ep)
+static void uct_tcp_ep_post_ack(uct_tcp_ep_t *ep)
 {
     uct_tcp_am_hdr_t *hdr  = NULL;
     uct_tcp_iface_t *iface = ucs_derived_of(ep->super.super.iface,
                                             uct_tcp_iface_t);
-    uct_tcp_ep_put_ack_hdr_t *put_ack;
     ucs_status_t status;
 
     /* Make sure that we are sending nothing through this EP at the moment.
      * This check is needed to avoid mixing AM/PUT data sent from this EP
-     * and this PUT ACK message */
-    status = uct_tcp_ep_am_prepare(iface, ep,
-                                   UCT_TCP_EP_PUT_ACK_AM_ID, &hdr);
+     * and this ACK message */
+    status = uct_tcp_ep_am_prepare(iface, ep, UCT_TCP_EP_ACK_AM_ID, &hdr);
     if (status != UCS_OK) {
         if (status == UCS_ERR_NO_RESOURCE) {
-            ep->flags |= UCT_TCP_EP_FLAG_PUT_RX_SENDING_ACK;
+            ep->flags |= UCT_TCP_EP_FLAG_RX_SENDING_ACK;
         } else {
             ucs_error("tcp_ep %p: failed to prepare AM data", ep);
         }
         return;
     }
 
-    /* Send PUT ACK to confirm completing PUT operations with
-     * the last received sequence number == ep::rx::put_sn */
+    /* Send ACK to confirm completing operations with the last received
+     * sequence number == ep::rx::sn */
     ucs_assertv(hdr != NULL, "ep=%p", ep);
-    hdr->length = sizeof(*put_ack);
-    put_ack     = (uct_tcp_ep_put_ack_hdr_t*)(hdr + 1);
-    put_ack->sn = ep->rx.put_sn;
+    hdr->length = 0;
+    hdr->sn     = ep->rx.sn;
 
     uct_tcp_ep_am_send(ep, hdr);
 
-    /* If sending PUT ACK was OK, always remove SENDING ACK flag
-     * as the function can be called from outstanding progress */
-    ep->flags &= ~UCT_TCP_EP_FLAG_PUT_RX_SENDING_ACK;
+    /* If sending ACK was OK, always remove SENDING ACK flag, since the
+     * function can be called from outstanding progress */
+    ep->flags &= ~UCT_TCP_EP_FLAG_RX_SENDING_ACK;
 }
 
 static inline ucs_status_t
@@ -1939,26 +1941,25 @@ ucs_status_t uct_tcp_ep_am_zcopy(uct_ep_h uct_ep, uint8_t am_id, const void *hea
 }
 
 static UCS_F_ALWAYS_INLINE ucs_status_t
-uct_tcp_ep_put_comp_add(uct_tcp_ep_t *ep, uct_completion_t *comp, int wait_sn)
+uct_tcp_ep_op_comp_add(uct_tcp_ep_t *ep, uct_completion_t *comp, int wait_sn)
 {
     uct_tcp_iface_t *iface = ucs_derived_of(ep->super.super.iface,
                                             uct_tcp_iface_t);
-    uct_tcp_ep_put_completion_t *put_comp;
+    uct_tcp_ep_op_completion_t *op_comp;
 
     if (comp == NULL) {
         return UCS_OK;
     }
 
-    put_comp = ucs_mpool_get_inline(&iface->tx_mpool);
-    if (ucs_unlikely(put_comp == NULL)) {
-        ucs_error("tcp_ep %p: unable to allocate PUT completion from mpool",
-                  ep);
+    op_comp = ucs_mpool_get_inline(&iface->tx_mpool);
+    if (ucs_unlikely(op_comp == NULL)) {
+        ucs_error("tcp_ep %p: unable to allocate completion from mpool", ep);
         return UCS_ERR_NO_MEMORY;
     }
 
-    put_comp->wait_put_sn = ep->tx.put_sn;
-    put_comp->comp        = comp;
-    ucs_queue_push(&ep->put_comp_q, &put_comp->elem);
+    op_comp->wait_sn = ep->tx.sn;
+    op_comp->comp    = comp;
+    ucs_queue_push(&ep->op_comp_q, &op_comp->elem);
 
     return UCS_OK;
 }
@@ -1992,7 +1993,6 @@ ucs_status_t uct_tcp_ep_put_zcopy(uct_ep_h uct_ep, const uct_iov_t *iov,
     ctx->super.length = sizeof(put_req);
     put_req.addr      = remote_addr;
     put_req.length    = ep->tx.length;
-    put_req.sn        = ep->tx.put_sn + 1;
 
     status = uct_tcp_ep_am_sendv(ep, 0, &ctx->super, UCT_TCP_EP_PUT_ZCOPY_MAX,
                                  &put_req, ctx->iov, ctx->iov_cnt);
@@ -2000,21 +2000,19 @@ ucs_status_t uct_tcp_ep_put_zcopy(uct_ep_h uct_ep, const uct_iov_t *iov,
         return status;
     }
 
-    ep->tx.put_sn++;
-
-    if (!(ep->flags & UCT_TCP_EP_FLAG_PUT_TX_WAITING_ACK)) {
-        /* Add UCT_TCP_EP_FLAG_PUT_TX_WAITING_ACK flag and increment iface
+    if (!(ep->flags & UCT_TCP_EP_FLAG_TX_WAITING_ACK)) {
+        /* Add UCT_TCP_EP_FLAG_TX_WAITING_ACK flag and increment iface
          * outstanding operations counter in order to ensure returning
          * UCS_INPROGRESS from flush functions and do progressing.
-         * UCT_TCP_EP_FLAG_PUT_TX_WAITING_ACK flag has to be removed upon PUT
-         * ACK message receiving if there are no other PUT operations in-flight */
-        ep->flags |= UCT_TCP_EP_FLAG_PUT_TX_WAITING_ACK;
+         * UCT_TCP_EP_FLAG_TX_WAITING_ACK flag has to be removed upon ACK
+         * ACK message receiving if there are no other operations in-flight */
+        ep->flags |= UCT_TCP_EP_FLAG_TX_WAITING_ACK;
         uct_tcp_iface_outstanding_inc(iface);
     }
 
     UCT_TL_EP_STAT_OP(&ep->super, PUT, ZCOPY, put_req.length);
 
-    status = uct_tcp_ep_put_comp_add(ep, comp, put_req.sn);
+    status = uct_tcp_ep_op_comp_add(ep, comp, ep->tx.sn);
     if (ucs_unlikely(status != UCS_OK)) {
         return status;
     }
@@ -2067,17 +2065,28 @@ ucs_status_t uct_tcp_ep_flush(uct_ep_h tl_ep, unsigned flags,
     }
 
     status = uct_tcp_ep_check_tx_res(ep);
-    if (status == UCS_ERR_NO_RESOURCE) {
-        UCT_TL_EP_STAT_FLUSH_WAIT(&ep->super);
-        return UCS_ERR_NO_RESOURCE;
+    if (ucs_unlikely(status != UCS_OK)) {
+        if (status == UCS_ERR_NO_RESOURCE) {
+            return UCS_ERR_NO_RESOURCE;
+        }
+        return UCS_OK;
     }
 
-    if (ep->flags & UCT_TCP_EP_FLAG_PUT_TX_WAITING_ACK) {
-        status = uct_tcp_ep_put_comp_add(ep, comp, ep->tx.put_sn);
+    if (UCS_CIRCULAR_COMPARE32(ep->last_acked_sn, <, ep->tx.sn)) {
+        /* Decrement the sequence number to not consider the flush operation
+         * for waiting ACK, the sequence number will be incremented in PUT
+         * Zcopy operation. PUT Zcopy sends PUT REQ message which triggers
+         * sending ACK message back. */
+        --ep->tx.sn;
+        status = uct_ep_put_zcopy(&ep->super.super, NULL, 0, 0, 0, NULL);
+        ucs_assert(status != UCS_ERR_NO_RESOURCE);
+
+        status = uct_tcp_ep_op_comp_add(ep, comp, ep->tx.sn);
         if (status != UCS_OK) {
             return status;
         }
 
+        UCT_TL_EP_STAT_FLUSH_WAIT(&ep->super);
         return UCS_INPROGRESS;
     }
 

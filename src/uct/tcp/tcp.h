@@ -96,11 +96,11 @@ enum {
     UCT_TCP_EP_FLAG_ZCOPY_TX           = UCS_BIT(2),
     /* PUT RX operation is in progress on a given EP. */
     UCT_TCP_EP_FLAG_PUT_RX             = UCS_BIT(3),
-    /* PUT TX operation is waiting for an ACK on a given EP. */
-    UCT_TCP_EP_FLAG_PUT_TX_WAITING_ACK = UCS_BIT(4),
-    /* PUT RX operation is waiting for resources to send an ACK
-     * for received PUT operations on a given EP. */
-    UCT_TCP_EP_FLAG_PUT_RX_SENDING_ACK = UCS_BIT(5),
+    /* TX operation is waiting for an ACK on a given EP. */
+    UCT_TCP_EP_FLAG_TX_WAITING_ACK     = UCS_BIT(4),
+    /* RX operation is waiting for resources to send an ACK for received
+     * operations on a given EP. */
+    UCT_TCP_EP_FLAG_RX_SENDING_ACK     = UCS_BIT(5),
     /* EP is on connection matching context. */
     UCT_TCP_EP_FLAG_ON_MATCH_CTX       = UCS_BIT(6),
     /* EP failed and a callback for handling error is scheduled. */
@@ -204,6 +204,9 @@ typedef struct uct_tcp_cm_conn_req_pkt {
 typedef struct uct_tcp_am_hdr {
     uint8_t                       am_id;      /* UCT AM ID of an AM operation */
     uint32_t                      length;     /* Length of data sent in an AM operation */
+    uint32_t                      sn;         /* Sequence number of:
+                                               * - the current operation
+                                               * - the last acked operation */
 } UCS_S_PACKED uct_tcp_am_hdr_t;
 
 
@@ -215,9 +218,9 @@ typedef enum uct_tcp_ep_am_id {
     UCT_TCP_EP_CM_AM_ID        = UCT_AM_ID_MAX,
     /* AM ID reserved for TCP internal PUT REQ message */
     UCT_TCP_EP_PUT_REQ_AM_ID   = UCT_AM_ID_MAX + 1,
-    /* AM ID reserved for TCP internal PUT ACK message */
-    UCT_TCP_EP_PUT_ACK_AM_ID   = UCT_AM_ID_MAX + 2,
-    /* AM ID reserved for TCP internal PUT ACK message */
+    /* AM ID reserved for TCP internal ACK message */
+    UCT_TCP_EP_ACK_AM_ID       = UCT_AM_ID_MAX + 2,
+    /* AM ID reserved for TCP internal keepalive message */
     UCT_TCP_EP_KEEPALIVE_AM_ID = UCT_AM_ID_MAX + 3
 } uct_tcp_ep_am_id_t;
 
@@ -228,38 +231,37 @@ typedef enum uct_tcp_ep_am_id {
 typedef struct uct_tcp_ep_put_req_hdr {
     uint64_t                      addr;        /* Address of a remote memory buffer */
     size_t                        length;      /* Length of a remote memory buffer */
-    uint32_t                      sn;          /* Sequence number of the current PUT operation */
 } UCS_S_PACKED uct_tcp_ep_put_req_hdr_t;
 
 
 /**
- * TCP PUT acknowledge header
+ * TCP acknowledge header
  */
-typedef struct uct_tcp_ep_put_ack_hdr {
-    uint32_t                      sn;          /* Sequence number of the last acked PUT operation */
-} UCS_S_PACKED uct_tcp_ep_put_ack_hdr_t;
+typedef struct uct_tcp_ep_ack_hdr {
+    uint32_t                      sn;          
+} UCS_S_PACKED uct_tcp_ep_ack_hdr_t;
 
 
 /**
  * TCP PUT completion
  */
-typedef struct uct_tcp_ep_put_completion {
+typedef struct uct_tcp_ep_op_completion {
     uct_completion_t              *comp;           /* User's completion passed to
                                                     * uct_ep_flush */
-    uint32_t                      wait_put_sn;     /* Sequence number of the last unacked
-                                                    * PUT operations that was in-progress
+    uint32_t                      wait_sn;         /* Sequence number of the last unacked
+                                                    * operations that were in-progress
                                                     * when uct_ep_flush was called */
     ucs_queue_elem_t              elem;            /* Element to insert completion into
-                                                    * TCP EP PUT operation pending queue */
-} uct_tcp_ep_put_completion_t;
+                                                    * TCP EP operation pending queue */
+} uct_tcp_ep_op_completion_t;
 
 
 /**
  * TCP endpoint communication context
  */
 typedef struct uct_tcp_ep_ctx {
-    uint32_t                      put_sn;         /* Sequence number of last sent
-                                                   * or received PUT operation */
+    uint32_t                      sn;             /* Sequence number of last sent
+                                                   * or received operation */
     void                          *buf;           /* Partial send/recv data */
     size_t                        length;         /* How much data in the buffer */
     size_t                        offset;         /* How much data was sent (TX) or was
@@ -337,12 +339,13 @@ struct uct_tcp_ep {
                                                      * closed as soon as the EP is connected
                                                      * using the new fd */
     uct_tcp_ep_cm_id_t            cm_id;            /* EP connection mananger ID */
+    uint32_t                      last_acked_sn;    /* Last acked operation sequence number */
     uct_tcp_ep_ctx_t              tx;               /* TX resources */
     uct_tcp_ep_ctx_t              rx;               /* RX resources */
     struct sockaddr_in            peer_addr;        /* Remote iface addr */
     ucs_queue_head_t              pending_q;        /* Pending operations */
-    ucs_queue_head_t              put_comp_q;       /* Flush completions waiting for
-                                                     * outstanding PUTs acknowledgment */
+    ucs_queue_head_t              op_comp_q;        /* Flush completions waiting for
+                                                     * outstanding operations acknowledgment */
     union {
         ucs_list_link_t           list;             /* List element to insert into TCP EP list */
         ucs_conn_match_elem_t     elem;             /* Connection matching element, used by EPs
