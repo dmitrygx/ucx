@@ -100,8 +100,8 @@ static inline void uct_tcp_ep_ctx_rewind(uct_tcp_ep_ctx_t *ctx)
 
 static inline void uct_tcp_ep_ctx_init(uct_tcp_ep_ctx_t *ctx)
 {
-    ctx->put_sn = UINT32_MAX;
-    ctx->buf    = NULL;
+    ctx->sn  = UINT32_MAX;
+    ctx->buf = NULL;
     uct_tcp_ep_ctx_rewind(ctx);
 }
 
@@ -244,6 +244,8 @@ static UCS_CLASS_INIT_FUNC(uct_tcp_ep_t, uct_tcp_iface_t *iface,
     self->flags         = 0;
     self->conn_state    = UCT_TCP_EP_CONN_STATE_CLOSED;
     self->cm_id.conn_sn = UCT_TCP_CM_CONN_SN_MAX;
+    self->last_acked_sn = UINT32_MAX;
+    self->put_cnt       = 0;
 
     ucs_list_head_init(&self->list);
     ucs_queue_head_init(&self->pending_q);
@@ -621,7 +623,6 @@ void uct_tcp_ep_replace_ep(uct_tcp_ep_t *to_ep, uct_tcp_ep_t *from_ep)
 
     to_ep->flags |= from_ep->flags & (UCT_TCP_EP_FLAG_ZCOPY_TX           |
                                       UCT_TCP_EP_FLAG_PUT_RX             |
-                                      UCT_TCP_EP_FLAG_PUT_TX_WAITING_ACK |
                                       UCT_TCP_EP_FLAG_PUT_RX_SENDING_ACK);
 
     if (uct_tcp_ep_ctx_buf_need_progress(&to_ep->rx)) {
@@ -898,11 +899,8 @@ static inline void uct_tcp_ep_handle_put_ack(uct_tcp_ep_t *ep,
                                             uct_tcp_iface_t);
     uct_tcp_ep_put_completion_t *put_comp;
 
-    if (put_ack->sn == ep->tx.put_sn) {
-        /* Since there are no other PUT operations in-flight, can remove flag
-         * and decrement iface outstanding operations counter */
-        ucs_assert(ep->flags & UCT_TCP_EP_FLAG_PUT_TX_WAITING_ACK);
-        ep->flags &= ~UCT_TCP_EP_FLAG_PUT_TX_WAITING_ACK;
+    ucs_assert(ep->put_cnt != 0);
+    if (--ep->put_cnt == 0) {
         uct_tcp_iface_outstanding_dec(iface);
     }
 
@@ -912,6 +910,8 @@ static inline void uct_tcp_ep_handle_put_ack(uct_tcp_ep_t *ep,
         uct_invoke_completion(put_comp->comp, UCS_OK);
         ucs_mpool_put_inline(put_comp);
     }
+
+    ep->last_acked_sn = put_ack->sn;
 }
 
 void uct_tcp_ep_pending_queue_dispatch(uct_tcp_ep_t *ep)
@@ -947,11 +947,11 @@ static void uct_tcp_ep_handle_disconnected(uct_tcp_ep_t *ep, ucs_status_t status
             uct_tcp_ep_zcopy_completed(ep, ctx->comp, status);
         }
 
-        if (ep->flags & UCT_TCP_EP_FLAG_PUT_TX_WAITING_ACK) {
-            /* if the EP is waiting for the acknowledgment of the started
+        if (ep->put_cnt > 0) {
+            /* If the EP is waiting for the acknowledgment of the started
              * PUT operation, decrease iface::outstanding counter */
             uct_tcp_iface_outstanding_dec(iface);
-            ep->flags &= ~UCT_TCP_EP_FLAG_PUT_TX_WAITING_ACK;
+            ep->put_cnt = 0;
         }
 
         uct_tcp_ep_tx_completed(ep, ep->tx.length - ep->tx.offset);
@@ -1298,7 +1298,7 @@ static inline void uct_tcp_ep_handle_put_req(uct_tcp_ep_t *ep,
            UCS_PTR_BYTE_OFFSET(ep->rx.buf, ep->rx.offset),
            copied_length);
     ep->rx.offset += copied_length;
-    ep->rx.put_sn  = put_req->sn;
+    ep->rx.sn      = put_req->sn;
 
     /* Remove the flag that indicates that EP is sending PUT RX ACK in order
      * to not ack the uncompleted PUT RX operation for which PUT REQ is being
@@ -1451,6 +1451,14 @@ uct_tcp_ep_am_prepare(uct_tcp_iface_t *iface, uct_tcp_ep_t *ep,
 
     *hdr          = ep->tx.buf;
     (*hdr)->am_id = am_id;
+
+    ++ep->tx.sn;
+    if (ep->tx.sn == ep->last_acked_sn) {
+        /* If the TX sequence number is now the same as the last acked sequence
+         * number, ensure that they are different to request ACK through PUT in
+         * TCP ep flush operation */
+        --ep->last_acked_sn;
+    }
 
     return UCS_OK;
 
@@ -1681,11 +1689,11 @@ static void uct_tcp_ep_post_put_ack(uct_tcp_ep_t *ep)
     }
 
     /* Send PUT ACK to confirm completing PUT operations with
-     * the last received sequence number == ep::rx::put_sn */
+     * the last received sequence number == ep::rx::sn */
     ucs_assertv(hdr != NULL, "ep=%p", ep);
     hdr->length = sizeof(*put_ack);
     put_ack     = (uct_tcp_ep_put_ack_hdr_t*)(hdr + 1);
-    put_ack->sn = ep->rx.put_sn;
+    put_ack->sn = ep->rx.sn;
 
     uct_tcp_ep_am_send(ep, hdr);
 
@@ -1956,7 +1964,7 @@ uct_tcp_ep_put_comp_add(uct_tcp_ep_t *ep, uct_completion_t *comp, int wait_sn)
         return UCS_ERR_NO_MEMORY;
     }
 
-    put_comp->wait_put_sn = ep->tx.put_sn;
+    put_comp->wait_put_sn = ep->tx.sn;
     put_comp->comp        = comp;
     ucs_queue_push(&ep->put_comp_q, &put_comp->elem);
 
@@ -1992,7 +2000,7 @@ ucs_status_t uct_tcp_ep_put_zcopy(uct_ep_h uct_ep, const uct_iov_t *iov,
     ctx->super.length = sizeof(put_req);
     put_req.addr      = remote_addr;
     put_req.length    = ep->tx.length;
-    put_req.sn        = ep->tx.put_sn + 1;
+    put_req.sn        = ep->tx.sn;
 
     status = uct_tcp_ep_am_sendv(ep, 0, &ctx->super, UCT_TCP_EP_PUT_ZCOPY_MAX,
                                  &put_req, ctx->iov, ctx->iov_cnt);
@@ -2000,15 +2008,13 @@ ucs_status_t uct_tcp_ep_put_zcopy(uct_ep_h uct_ep, const uct_iov_t *iov,
         return status;
     }
 
-    ep->tx.put_sn++;
-
-    if (!(ep->flags & UCT_TCP_EP_FLAG_PUT_TX_WAITING_ACK)) {
-        /* Add UCT_TCP_EP_FLAG_PUT_TX_WAITING_ACK flag and increment iface
-         * outstanding operations counter in order to ensure returning
-         * UCS_INPROGRESS from flush functions and do progressing.
-         * UCT_TCP_EP_FLAG_PUT_TX_WAITING_ACK flag has to be removed upon PUT
-         * ACK message receiving if there are no other PUT operations in-flight */
-        ep->flags |= UCT_TCP_EP_FLAG_PUT_TX_WAITING_ACK;
+    ucs_assert(ep->put_cnt != UINT32_MAX);
+    if (ep->put_cnt++ == 0) {
+        /* Increment iface outstanding operations counter in order to ensure
+         * returning UCS_INPROGRESS from flush functions and do progressing.
+         * Number of iface outstanding operations has to be removed upon PUT
+         * ACK message receiving if there are no other PUT operations in-flight
+         */
         uct_tcp_iface_outstanding_inc(iface);
     }
 
@@ -2067,17 +2073,28 @@ ucs_status_t uct_tcp_ep_flush(uct_ep_h tl_ep, unsigned flags,
     }
 
     status = uct_tcp_ep_check_tx_res(ep);
-    if (status == UCS_ERR_NO_RESOURCE) {
-        UCT_TL_EP_STAT_FLUSH_WAIT(&ep->super);
-        return UCS_ERR_NO_RESOURCE;
+    if (ucs_unlikely(status != UCS_OK)) {
+        if (status == UCS_ERR_NO_RESOURCE) {
+            return UCS_ERR_NO_RESOURCE;
+        }
+        return UCS_OK;
     }
 
-    if (ep->flags & UCT_TCP_EP_FLAG_PUT_TX_WAITING_ACK) {
-        status = uct_tcp_ep_put_comp_add(ep, comp, ep->tx.put_sn);
+    if (ep->last_acked_sn != ep->tx.sn) {
+        /* Decrement the sequence number to not consider the flush operation
+         * for waiting ACK, the sequence number will be incremented in PUT
+         * Zcopy operation. PUT Zcopy sends PUT REQ message which triggers
+         * sending ACK message back. */
+        --ep->tx.sn;
+        status = uct_ep_put_zcopy(&ep->super.super, NULL, 0, 0, 0, NULL);
+        ucs_assert(status != UCS_ERR_NO_RESOURCE);
+
+        status = uct_tcp_ep_put_comp_add(ep, comp, ep->tx.sn);
         if (status != UCS_OK) {
             return status;
         }
 
+        UCT_TL_EP_STAT_FLUSH_WAIT(&ep->super);
         return UCS_INPROGRESS;
     }
 
