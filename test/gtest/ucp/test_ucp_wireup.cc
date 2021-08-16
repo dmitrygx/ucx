@@ -26,11 +26,12 @@ public:
 
 protected:
     enum {
-        TEST_RMA     = UCS_BIT(0),
-        TEST_TAG     = UCS_BIT(1),
-        TEST_STREAM  = UCS_BIT(2),
-        UNIFIED_MODE = UCS_BIT(3),
-        TEST_AMO     = UCS_BIT(4)
+        TEST_RMA      = UCS_BIT(0),
+        TEST_TAG      = UCS_BIT(1),
+        TEST_STREAM   = UCS_BIT(2),
+        UNIFIED_MODE  = UCS_BIT(3),
+        TEST_AMO      = UCS_BIT(4),
+        NO_CONN_MATCH = UCS_BIT(5)
     };
 
     typedef uint64_t               elem_type;
@@ -104,12 +105,22 @@ void test_ucp_wireup::get_test_variants(std::vector<ucp_test_variant>& variants,
         add_variant_with_value(variants, UCP_FEATURE_RMA, TEST_RMA, "rma");
         add_variant_with_value(variants, UCP_FEATURE_RMA,
                                TEST_RMA | UNIFIED_MODE, "rma,unified");
+        add_variant_with_value(variants, UCP_FEATURE_RMA,
+                               TEST_RMA | NO_CONN_MATCH, "rma,no_conn_match");
+        add_variant_with_value(variants, UCP_FEATURE_RMA,
+                               TEST_RMA | UNIFIED_MODE | NO_CONN_MATCH,
+                               "rma,unified,no_conn_match");
     }
 
     if (features & UCP_FEATURE_TAG) {
         add_variant_with_value(variants, UCP_FEATURE_TAG, TEST_TAG, "tag");
         add_variant_with_value(variants, UCP_FEATURE_TAG,
                                TEST_TAG | UNIFIED_MODE, "tag,unified");
+        add_variant_with_value(variants, UCP_FEATURE_TAG,
+                               TEST_TAG | NO_CONN_MATCH, "tag,no_conn_match");
+        add_variant_with_value(variants, UCP_FEATURE_TAG,
+                               TEST_TAG | UNIFIED_MODE | NO_CONN_MATCH,
+                               "tag,unified,no_conn_match");
     }
 
     if (features & UCP_FEATURE_STREAM) {
@@ -121,6 +132,8 @@ void test_ucp_wireup::get_test_variants(std::vector<ucp_test_variant>& variants,
     if (features & (UCP_FEATURE_AMO32 | UCP_FEATURE_AMO64)) {
         add_variant_with_value(variants, UCP_FEATURE_AMO32 | UCP_FEATURE_AMO64,
                                TEST_AMO, "amo");
+        add_variant_with_value(variants, UCP_FEATURE_AMO32 | UCP_FEATURE_AMO64,
+                               TEST_AMO | NO_CONN_MATCH, "amo,no_conn_match");
     }
 
     if (test_all) {
@@ -143,6 +156,10 @@ void test_ucp_wireup::init()
 {
     if (get_variant_value() & UNIFIED_MODE) {
         modify_config("UNIFIED_MODE",  "y");
+    }
+
+    if (get_variant_value() & NO_CONN_MATCH) {
+        modify_config("INITIAL_CONN_SN", "inf");
     }
 
     ucp_test::init();
