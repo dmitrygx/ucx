@@ -445,13 +445,25 @@ static unsigned uct_ud_verbs_iface_progress(uct_iface_h tl_iface)
 
     uct_ud_enter(&iface->super);
 
+    iface->super.prog_count++;
     count  = uct_ud_iface_dispatch_async_comps(&iface->super, NULL);
+    if (count > 0 && iface->super.prog_count == 1) {
+        ucs_fatal("count = %u", count);
+    }
     count += uct_ud_iface_dispatch_pending_rx(&iface->super);
+    if (count > 0 && iface->super.prog_count == 1) {
+        ucs_fatal("count = %u", count);
+    }
 
     if (ucs_likely(count == 0)) {
         count = uct_ud_verbs_iface_poll_rx(iface, 0);
         if (count == 0) {
             count += uct_ud_verbs_iface_poll_tx(iface, 0);
+            if (count > 0 && iface->super.prog_count == 1) {
+                ucs_fatal("count = %u", count);
+            }
+        } else if (count > 0 && iface->super.prog_count == 1) {
+            ucs_fatal("count = %u", count);
         }
     }
 

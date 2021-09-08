@@ -156,6 +156,7 @@ KHASH_IMPL(uct_ud_iface_gid, union ibv_gid, char, 0,
 struct uct_ud_iface {
     uct_ib_iface_t           super;
     struct ibv_qp           *qp;
+    int prog_count;
     struct {
         ucs_mpool_t          mp;
         unsigned             available;
