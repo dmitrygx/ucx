@@ -441,7 +441,7 @@ static unsigned uct_ud_verbs_iface_async_progress(uct_ud_iface_t *ud_iface)
 static unsigned uct_ud_verbs_iface_progress(uct_iface_h tl_iface)
 {
     uct_ud_verbs_iface_t *iface = ucs_derived_of(tl_iface, uct_ud_verbs_iface_t);
-    unsigned count;
+    unsigned n, count;
 
     uct_ud_enter(&iface->super);
 
@@ -449,10 +449,11 @@ static unsigned uct_ud_verbs_iface_progress(uct_iface_h tl_iface)
     count += uct_ud_iface_dispatch_pending_rx(&iface->super);
 
     if (ucs_likely(count == 0)) {
-        count = uct_ud_verbs_iface_poll_rx(iface, 0);
-        if (count == 0) {
-            count += uct_ud_verbs_iface_poll_tx(iface, 0);
-        }
+        do {
+            n      = uct_ud_verbs_iface_poll_rx(iface, 0);
+            count += n;
+        } while ((n > 0) && (count < iface->super.super.config.rx_max_poll));
+        count += uct_ud_verbs_iface_poll_tx(iface, 0);
     }
 
     uct_ud_iface_progress_pending(&iface->super, 0);
