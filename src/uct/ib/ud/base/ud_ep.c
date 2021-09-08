@@ -745,7 +745,7 @@ static void uct_ud_ep_rx_creq(uct_ud_iface_t *iface, uct_ud_neth_t *neth)
                        ep->rx.ooo_pkts.head_sn, neth->psn, ep->flags,
                        ep->tx.pending.ops, ep->rx_creq_count);
     /* scedule connection reply op */
-    UCT_UD_EP_HOOK_CALL_RX(ep, neth, sizeof(*neth) + sizeof(*ctl));
+    UCT_UD_EP_HOOK_CALL_RX(ep, neth, sizeof(*neth) + sizeof(*ctl), return);
     if (uct_ud_ep_ctl_op_check(ep, UCT_UD_EP_OP_CREQ)) {
         uct_ud_ep_set_state(ep, UCT_UD_EP_FLAG_CREQ_NOTSENT);
     }
@@ -836,12 +836,13 @@ uct_ud_send_skb_t *uct_ud_ep_prepare_creq(uct_ud_ep_t *ep)
     return skb;
 }
 
-void uct_ud_ep_process_rx(uct_ud_iface_t *iface, uct_ud_neth_t *neth, unsigned byte_len,
-                          uct_ud_recv_skb_t *skb, int is_async)
+int uct_ud_ep_process_rx(uct_ud_iface_t *iface, uct_ud_neth_t *neth,
+                         unsigned byte_len, uct_ud_recv_skb_t *skb,
+                         int is_async)
 {
     uint32_t dest_id;
     uint32_t is_am, am_id;
-    uct_ud_ep_t *ep = 0; /* todo: check why gcc complaints about uninitialized var */
+    uct_ud_ep_t *ep;
     ucs_frag_list_ooo_type_t ooo_type;
 
     UCT_UD_IFACE_HOOK_CALL_RX(iface, neth, byte_len);
@@ -853,7 +854,7 @@ void uct_ud_ep_process_rx(uct_ud_iface_t *iface, uct_ud_neth_t *neth, unsigned b
     if (ucs_unlikely(dest_id == UCT_UD_EP_NULL_ID)) {
         /* must be connection request packet */
         uct_ud_ep_rx_creq(iface, neth);
-        goto out;
+        goto out_handled;
     } else if (ucs_unlikely(!ucs_ptr_array_lookup(&iface->eps, dest_id, ep) ||
                             (ep->ep_id != dest_id)))
     {
@@ -862,11 +863,11 @@ void uct_ud_ep_process_rx(uct_ud_iface_t *iface, uct_ud_neth_t *neth, unsigned b
          * is possible to get packet for the ep that has been destroyed
          */
         ucs_trace("RX: failed to find ep %d, dropping packet", dest_id);
-        goto out;
+        goto out_not_handled;
     }
 
     ucs_assert(ep->ep_id != UCT_UD_EP_NULL_ID);
-    UCT_UD_EP_HOOK_CALL_RX(ep, neth, byte_len);
+    UCT_UD_EP_HOOK_CALL_RX(ep, neth, byte_len, return 0);
 
     uct_ud_ep_process_ack(iface, ep, neth->ack_psn, is_async);
 
@@ -883,15 +884,16 @@ void uct_ud_ep_process_rx(uct_ud_iface_t *iface, uct_ud_neth_t *neth, unsigned b
     if (ucs_unlikely(!is_am)) {
         if (neth->packet_type & UCT_UD_PACKET_FLAG_NACK) {
             uct_ud_ep_set_state(ep, UCT_UD_EP_FLAG_TX_NACKED);
-            goto out;
+            goto out_handled;
         }
 
         if ((size_t)byte_len == sizeof(*neth)) {
-            goto out;
+            goto out_handled;
         }
+
         if (neth->packet_type & UCT_UD_PACKET_FLAG_CTL) {
             uct_ud_ep_rx_ctl(iface, ep, neth, skb);
-            goto out;
+            goto out_handled;
         }
     }
 
@@ -903,13 +905,13 @@ void uct_ud_ep_process_rx(uct_ud_iface_t *iface, uct_ud_neth_t *neth, unsigned b
         }
         ucs_trace_data("DUP/OOB - schedule ack, head_sn=%d sn=%d",
                        ep->rx.ooo_pkts.head_sn, neth->psn);
-        goto out;
+        goto out_handled;
     }
 
     if (ucs_unlikely(!is_am && (neth->packet_type & UCT_UD_PACKET_FLAG_PUT))) {
         /* TODO: remove once ucp implements put */
         uct_ud_ep_rx_put(neth, byte_len);
-        goto out;
+        goto out_handled;
     }
 
     if (ucs_unlikely(is_async &&
@@ -926,10 +928,15 @@ void uct_ud_ep_process_rx(uct_ud_iface_t *iface, uct_ud_neth_t *neth, unsigned b
         uct_ib_iface_invoke_am_desc(&iface->super, am_id, neth + 1,
                                     byte_len - sizeof(*neth), &skb->super);
     }
-    return;
+    return 1;
 
-out:
+out_not_handled:
     ucs_mpool_put(skb);
+    return 0;
+
+out_handled:
+    ucs_mpool_put(skb);
+    return 1;
 }
 
 ucs_status_t uct_ud_ep_flush_nolock(uct_ud_iface_t *iface, uct_ud_ep_t *ep,

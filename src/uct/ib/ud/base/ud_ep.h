@@ -49,34 +49,34 @@ typedef ucs_status_t (*uct_ud_ep_hook_t)(uct_ud_ep_t *ep, uct_ud_neth_t *neth);
 
 #define UCT_UD_EP_HOOK_DECLARE(name) uct_ud_ep_hook_t name;
 
-#define UCT_UD_EP_HOOK_CALL_RX(ep, neth, len) \
-    if ((ep)->rx.rx_hook(ep, neth) != UCS_OK) { \
+#define UCT_UD_EP_HOOK_CALL_RX(_ep, _neth, _len, _drop_action) \
+    if ((_ep)->rx.rx_hook(_ep, _neth) != UCS_OK) { \
         ucs_trace_data("RX: dropping packet"); \
-        return; \
+        _drop_action; \
     }
 
-#define UCT_UD_EP_HOOK_CALL_TX(ep, neth) (ep)->tx.tx_hook(ep, neth);
-#define UCT_UD_EP_HOOK_CALL_TIMER(ep)    (ep)->timer_hook(ep, NULL);
+#define UCT_UD_EP_HOOK_CALL_TX(_ep, _neth) (_ep)->tx.tx_hook(_ep, _neth);
+#define UCT_UD_EP_HOOK_CALL_TIMER(_ep)     (_ep)->timer_hook(_ep, NULL);
 
 static inline ucs_status_t uct_ud_ep_null_hook(uct_ud_ep_t *ep, uct_ud_neth_t *neth)
 {
     return UCS_OK;
 }
 
-#define UCT_UD_EP_HOOK_INIT(ep) \
+#define UCT_UD_EP_HOOK_INIT(_ep) \
 do { \
-   (ep)->tx.tx_hook = uct_ud_ep_null_hook; \
-   (ep)->rx.rx_hook = uct_ud_ep_null_hook; \
-   (ep)->timer_hook = uct_ud_ep_null_hook; \
+   (_ep)->tx.tx_hook = uct_ud_ep_null_hook; \
+   (_ep)->rx.rx_hook = uct_ud_ep_null_hook; \
+   (_ep)->timer_hook = uct_ud_ep_null_hook; \
 } while(0);
 
 #else
 
 #define UCT_UD_EP_HOOK_DECLARE(name)
-#define UCT_UD_EP_HOOK_CALL_RX(ep, neth, len)
-#define UCT_UD_EP_HOOK_CALL_TX(ep, neth)
-#define UCT_UD_EP_HOOK_CALL_TIMER(ep)
-#define UCT_UD_EP_HOOK_INIT(ep)
+#define UCT_UD_EP_HOOK_CALL_RX(_ep, _neth, _len, _drop_action)
+#define UCT_UD_EP_HOOK_CALL_TX(_ep, _neth)
+#define UCT_UD_EP_HOOK_CALL_TIMER(_ep)
+#define UCT_UD_EP_HOOK_INIT(_ep)
 
 #endif
 
@@ -346,9 +346,9 @@ uct_ud_neth_set_type_put(uct_ud_ep_t *ep, uct_ud_neth_t *neth)
     neth->packet_type = ep->dest_ep_id | UCT_UD_PACKET_FLAG_PUT;
 }
 
-void uct_ud_ep_process_rx(uct_ud_iface_t *iface,
-                          uct_ud_neth_t *neth, unsigned byte_len,
-                          uct_ud_recv_skb_t *skb, int is_async);
+int uct_ud_ep_process_rx(uct_ud_iface_t *iface, uct_ud_neth_t *neth,
+                         unsigned byte_len, uct_ud_recv_skb_t *skb,
+                         int is_async);
 
 
 static UCS_F_ALWAYS_INLINE void

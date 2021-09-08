@@ -389,6 +389,7 @@ static UCS_F_ALWAYS_INLINE unsigned
 uct_ud_verbs_iface_poll_rx(uct_ud_verbs_iface_t *iface, int is_async)
 {
     unsigned num_wcs = iface->super.super.config.rx_max_poll;
+    unsigned count   = 0;
     struct ibv_wc wc[num_wcs];
     ucs_status_t status;
     void *packet;
@@ -408,17 +409,21 @@ uct_ud_verbs_iface_poll_rx(uct_ud_verbs_iface_t *iface, int is_async)
         }
         uct_ib_log_recv_completion(&iface->super.super, &wc[i], packet,
                                    wc[i].byte_len, uct_ud_dump_packet);
-        uct_ud_ep_process_rx(&iface->super,
-                             (uct_ud_neth_t *)UCS_PTR_BYTE_OFFSET(packet, UCT_IB_GRH_LEN),
-                             wc[i].byte_len - UCT_IB_GRH_LEN,
-                             (uct_ud_recv_skb_t *)wc[i].wr_id,
-                             is_async);
+        if (ucs_likely(uct_ud_ep_process_rx(
+                &iface->super,
+                (uct_ud_neth_t*)UCS_PTR_BYTE_OFFSET(packet, UCT_IB_GRH_LEN),
+                wc[i].byte_len - UCT_IB_GRH_LEN,
+                (uct_ud_recv_skb_t*)wc[i].wr_id, is_async))) {
+            count++;
+        }
 
     }
+
     iface->super.rx.available += num_wcs;
+
 out:
     uct_ud_verbs_iface_post_recv(iface);
-    return num_wcs;
+    return count;
 }
 
 static unsigned uct_ud_verbs_iface_async_progress(uct_ud_iface_t *ud_iface)

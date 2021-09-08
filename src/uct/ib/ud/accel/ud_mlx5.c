@@ -494,25 +494,32 @@ uct_ud_mlx5_iface_poll_rx(uct_ud_mlx5_iface_t *iface, int is_async)
 
     iface->super.rx.available++;
     iface->rx.wq.cq_wqe_counter++;
-    count = 1;
-    len   = ntohl(cqe->byte_cnt);
+
+    len = ntohl(cqe->byte_cnt);
     VALGRIND_MAKE_MEM_DEFINED(packet, len);
 
     if (!uct_ud_iface_check_grh(&iface->super, packet,
                                 uct_ib_mlx5_cqe_is_grh_present(cqe),
                                 cqe->flags_rqpn & 0xFF)) {
         ucs_mpool_put_inline(desc);
+        count = 0;
         goto out;
     }
 
     uct_ib_mlx5_log_rx(&iface->super.super, cqe, packet, uct_ud_dump_packet);
+
     /* coverity[tainted_data] */
-    uct_ud_ep_process_rx(&iface->super,
-                         (uct_ud_neth_t *)UCS_PTR_BYTE_OFFSET(packet, UCT_IB_GRH_LEN),
-                         len - UCT_IB_GRH_LEN,
-                         (uct_ud_recv_skb_t *)ucs_unaligned_ptr(desc), is_async);
-    uct_ib_mlx5_update_db_cq_ci(&iface->cq[UCT_IB_DIR_RX]);
+    if (ucs_likely(uct_ud_ep_process_rx(&iface->super,
+                   (uct_ud_neth_t*)UCS_PTR_BYTE_OFFSET(packet, UCT_IB_GRH_LEN),
+                   len - UCT_IB_GRH_LEN,
+                   (uct_ud_recv_skb_t*)ucs_unaligned_ptr(desc), is_async))) {
+        count = 1;
+    } else {
+        count = 0;
+    }
+
 out:
+    uct_ib_mlx5_update_db_cq_ci(&iface->cq[UCT_IB_DIR_RX]);
     if (iface->super.rx.available >= iface->super.super.config.rx_max_batch) {
         /* we need to try to post buffers always. Otherwise it is possible
          * to run out of rx wqes if receiver is slow and there are always

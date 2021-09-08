@@ -75,7 +75,7 @@ typedef ucs_status_t (*uct_ud_iface_hook_t)(uct_ud_iface_t *iface, uct_ud_neth_t
 #define UCT_UD_IFACE_HOOK_CALL_RX(_iface, _neth, _len) \
     if ((_iface)->rx.hook(_iface, _neth) != UCS_OK) { \
         ucs_trace_data("RX: dropping packet"); \
-        return; \
+        return 0; \
     }
 
 
