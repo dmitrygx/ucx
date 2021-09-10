@@ -561,9 +561,9 @@ private:
 
     void invalidate_cache() {
         size_t size = 30 * 1024 * 1024;
-        void *ptr = malloc(size);
+        void *ptr = ::operator new(size);
         memset(ptr, 0xbb, size);
-        free(ptr);
+        ::operator delete(ptr);
     }
 
     stl_pgtable_t m_stl_pgt;

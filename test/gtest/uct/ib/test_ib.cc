@@ -55,7 +55,8 @@ void test_uct_ib::send_recv_short() {
 
     check_caps_skip(UCT_IFACE_FLAG_AM_SHORT);
 
-    recv_buffer = (recv_desc_t *) malloc(sizeof(*recv_buffer) + sizeof(uint64_t));
+    recv_buffer         = reinterpret_cast<recv_desc_t*>(
+            ::operator new(sizeof(*recv_buffer) + sizeof(uint64_t)));
     recv_buffer->length = 0; /* Initialize length to 0 */
 
     /* set a callback for the uct to invoke for receiving the data */
@@ -73,7 +74,7 @@ void test_uct_ib::send_recv_short() {
     ASSERT_EQ(sizeof(send_data), recv_buffer->length);
     EXPECT_EQ(send_data, *(uint64_t*)(recv_buffer+1));
 
-    free(recv_buffer);
+    ::operator delete(recv_buffer);
 }
 
 size_t test_uct_ib::m_ib_am_handler_counter = 0;
@@ -103,7 +104,8 @@ public:
         pack_params.gid_index = std::numeric_limits<uint8_t>::max();
         pack_params.pkey      = iface->pkey;
         address_size          = uct_ib_address_size(&pack_params);
-        ib_addr               = (uct_ib_address_t*)malloc(address_size);
+        ib_addr               = reinterpret_cast<uct_ib_address_t*>(
+                ::operator new(address_size));
         uct_ib_address_pack(&pack_params, ib_addr);
 
         uct_ib_address_pack_params_t unpack_params;
@@ -145,7 +147,7 @@ public:
         EXPECT_TRUE((unpack_params.flags & UCT_IB_ADDRESS_PACK_FLAG_PKEY) != 0);
         EXPECT_EQ(iface->pkey, unpack_params.pkey);
 
-        free(ib_addr);
+        ::operator delete(ib_addr);
     }
 
     void test_fill_ah_attr(uint64_t subnet_prefix) {

@@ -232,14 +232,14 @@ UCS_TEST_F(test_memtrack, mmap) {
 UCS_TEST_F(test_memtrack, custom) {
     void *ptr, *initial_ptr;
 
-    initial_ptr = ptr = malloc(ALLOC_SIZE);
+    initial_ptr = ptr = ::operator new(ALLOC_SIZE);
     ucs_memtrack_allocated(ptr, ALLOC_SIZE, ALLOC_NAME);
 
     memset(ptr, 0, ALLOC_SIZE);
 
     ucs_memtrack_releasing(ptr);
     ASSERT_EQ(initial_ptr, ptr);
-    free(ptr);
+    ::operator delete(ptr);
 
     test_total(1, ALLOC_SIZE);
 }

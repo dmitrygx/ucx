@@ -1238,9 +1238,8 @@ UCS_TEST_P(test_tag_mp_xrq, desc_release)
         test_common(sfuncs[i].first, 3, 3, sfuncs[i].second);
     }
 
-    for (ucs::ptr_vector<void>::const_iterator iter = m_uct_descs.begin();
-         iter != m_uct_descs.end(); ++iter)
-    {
+    for (std::vector<void*>::const_iterator iter = m_uct_descs.begin();
+         iter != m_uct_descs.end(); ++iter) {
         uct_iface_release_desc(*iter);
     }
 }

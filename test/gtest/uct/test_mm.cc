@@ -198,8 +198,8 @@ UCS_TEST_SKIP_COND_P(test_uct_mm, open_for_posix,
     uint64_t test_mm_hdr = 0xbeef;
     recv_desc_t *recv_buffer;
 
-    recv_buffer = (recv_desc_t *)malloc(sizeof(*recv_buffer) +
-                                        sizeof(uint64_t));
+    recv_buffer         = (recv_desc_t*)::operator new(sizeof(*recv_buffer) +
+                                                       sizeof(uint64_t));
     recv_buffer->length = 0; /* Initialize length to 0 */
 
     /* set a callback for the uct to invoke for receiving the data */
@@ -215,7 +215,7 @@ UCS_TEST_SKIP_COND_P(test_uct_mm, open_for_posix,
     ASSERT_EQ(sizeof(send_data), recv_buffer->length);
     EXPECT_EQ(send_data, *(uint64_t*)(recv_buffer+1));
 
-    free(recv_buffer);
+    ::operator delete(recv_buffer);
 }
 
 UCS_TEST_SKIP_COND_P(test_uct_mm, alloc,

@@ -170,8 +170,10 @@ private:
         uct_iface_addr_t *iface_addr;
         ucs_status_t status;
 
-        dev_addr   = (uct_device_addr_t*)malloc(to.iface_attr().device_addr_len);
-        iface_addr = (uct_iface_addr_t*)malloc(to.iface_attr().iface_addr_len);
+        dev_addr   = reinterpret_cast<uct_device_addr_t*>(
+                ::operator new(to.iface_attr().device_addr_len));
+        iface_addr = reinterpret_cast<uct_iface_addr_t*>(
+                ::operator new(to.iface_attr().iface_addr_len));
 
         status = uct_iface_get_device_address(to.iface(), dev_addr);
         ASSERT_UCS_OK(status);
@@ -192,8 +194,8 @@ private:
         status = ucs_sys_fcntl_modfl(fd, O_NONBLOCK, 0);
         ASSERT_UCS_OK(status);
 
-        free(iface_addr);
-        free(dev_addr);
+        ::operator delete(iface_addr);
+        ::operator delete(dev_addr);
 
         return fd;
     }

@@ -72,7 +72,7 @@ void test_ucp_tag::request_init(void *request)
 void test_ucp_tag::request_free(request *req)
 {
     if (req->external) {
-        free(req->req_mem);
+        ::operator delete(req->req_mem);
     } else {
         req->completed = false;
         ucp_request_free(req);
@@ -81,7 +81,7 @@ void test_ucp_tag::request_free(request *req)
 
 test_ucp_tag::request* test_ucp_tag::request_alloc()
 {
-    void *mem = malloc(ctx_attr.request_size + sizeof(request));
+    void *mem = ::operator new(ctx_attr.request_size + sizeof(request));
     request *req = (request*)((char*)mem + ctx_attr.request_size);
     request_init(req);
     req->external = true;

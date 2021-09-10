@@ -47,11 +47,13 @@ void* test_md::alloc_thread(void *arg)
 
     while (!*stop_flag) {
         int count = ucs::rand() % 100;
-        std::vector<void*> buffers;
+        ucs::ptr_vector<void> buffers;
         for (int i = 0; i < count; ++i) {
+            // allocate via malloc(), because ptr_vector<void>::release()
+            // method specialization uses free() to release the memory obtained
+            // for the element
             buffers.push_back(malloc(ucs::rand() % (256 * UCS_KBYTE)));
         }
-        std::for_each(buffers.begin(), buffers.end(), free);
     }
     return NULL;
 }
@@ -193,11 +195,12 @@ UCS_TEST_SKIP_COND_P(test_md, rkey_ptr,
     rva    = (unsigned *)mem.address;
 
     // pack
-    rkey_buffer = malloc(md_attr().rkey_packed_size);
-    if (rkey_buffer == NULL) {
+    try {
+        rkey_buffer = ::operator new(md_attr().rkey_packed_size);
+    } catch (std::bad_alloc &e) {
         // make coverity happy
         uct_mem_free(&mem);
-        GTEST_FAIL();
+        throw;
     }
 
     status = uct_md_mkey_pack(md(), mem.memh, rkey_buffer);
@@ -518,13 +521,12 @@ UCS_TEST_SKIP_COND_P(test_md, reg_perf,
 UCS_TEST_SKIP_COND_P(test_md, reg_advise,
                      !check_caps(UCT_MD_FLAG_REG |
                                  UCT_MD_FLAG_ADVISE)) {
-    size_t size;
+    const size_t size = 128 * UCS_MBYTE;
     ucs_status_t status;
     void *address;
     uct_mem_h memh;
 
-    size = 128 * UCS_MBYTE;
-    address = malloc(size);
+    address = ::operator new(size);
     ASSERT_TRUE(address != NULL);
 
     status = uct_md_mem_reg(md(), address, size,
@@ -539,7 +541,7 @@ UCS_TEST_SKIP_COND_P(test_md, reg_advise,
 
     status = uct_md_mem_dereg(md(), memh);
     EXPECT_UCS_OK(status);
-    free(address);
+    ::operator delete(address);
 }
 
 UCS_TEST_SKIP_COND_P(test_md, alloc_advise,
@@ -599,8 +601,7 @@ UCS_TEST_SKIP_COND_P(test_md, reg_multi_thread,
     while (ucs_get_time() - start_time < ucs_time_from_sec(0.5)) {
         const size_t size = (ucs::rand() % 65536) + 1;
 
-        void *buffer = malloc(size);
-        ASSERT_TRUE(buffer != NULL);
+        void *buffer = ::operator new(size);
 
         uct_mem_h memh;
         status = uct_md_mem_reg(md(), buffer, size,
@@ -614,7 +615,7 @@ UCS_TEST_SKIP_COND_P(test_md, reg_multi_thread,
 
         status = uct_md_mem_dereg(md(), memh);
         EXPECT_UCS_OK(status);
-        free(buffer);
+        ::operator delete(buffer);
     }
 
     stop_flag = 1;
@@ -666,7 +667,7 @@ UCS_TEST_SKIP_COND_P(test_md, invalidate, !check_caps(UCT_MD_FLAG_INVALIDATE))
     comp().comp.status = UCS_OK;
     comp().self        = this;
     params.comp        = &comp().comp;
-    ptr                = malloc(size);
+    ptr                = ::operator new(size);
     for (mem_reg_count = 1; mem_reg_count < 100; mem_reg_count++) {
         comp().comp.count = (mem_reg_count + 1) / 2;
         m_comp_count = 0;
@@ -697,7 +698,7 @@ UCS_TEST_SKIP_COND_P(test_md, invalidate, !check_caps(UCT_MD_FLAG_INVALIDATE))
         EXPECT_EQ(1, m_comp_count);
     }
 
-    free(ptr);
+    ::operator delete(ptr);
 }
 
 UCS_TEST_SKIP_COND_P(test_md, dereg_bad_arg,
@@ -709,7 +710,7 @@ UCS_TEST_SKIP_COND_P(test_md, dereg_bad_arg,
     ucs_status_t status;
     uct_md_mem_dereg_params_t params;
 
-    ptr    = malloc(size);
+    ptr    = ::operator new(size);
     status = uct_md_mem_reg(md(), ptr, size, UCT_MD_MEM_ACCESS_ALL, &memh);
     ASSERT_UCS_OK(status);
 
@@ -752,7 +753,7 @@ UCS_TEST_SKIP_COND_P(test_md, dereg_bad_arg,
     }
 
     EXPECT_UCS_OK(status);
-    free(ptr);
+    ::operator delete(ptr);
 }
 
 UCT_MD_INSTANTIATE_TEST_CASE(test_md)

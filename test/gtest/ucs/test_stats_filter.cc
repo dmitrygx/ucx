@@ -22,8 +22,11 @@ public:
 
     stats_filter_test() {
         size_t size = sizeof(ucs_stats_class_t) +
-                      NUM_COUNTERS * sizeof(m_data_stats_class->counter_names[0]);
-        m_data_stats_class                   = (ucs_stats_class_t*)malloc(size);
+                      NUM_COUNTERS *
+                      sizeof(m_data_stats_class->counter_names[0]);
+
+        m_data_stats_class                   =
+                (ucs_stats_class_t*)::operator new(size);
         m_data_stats_class->name             = "data";
         m_data_stats_class->num_counters     = NUM_COUNTERS;
         m_data_stats_class->counter_names[0] = "counter0";
@@ -37,7 +40,7 @@ public:
     }
 
     ~stats_filter_test() {
-        free(m_data_stats_class);
+        ::operator delete(m_data_stats_class);
     }
 
     virtual void init() {

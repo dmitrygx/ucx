@@ -679,7 +679,7 @@ UCS_TEST_F(test_datatype, ptr_array_random) {
 
     /* Insert phase */
     for (unsigned i = 0; i < count; ++i) {
-        void *ptr = malloc(0);
+        void *ptr = ::operator new(0);
         unsigned index = ucs_ptr_array_insert(&pa, ptr);
 
         EXPECT_TRUE(map.end() == map.find(index));
@@ -700,7 +700,7 @@ UCS_TEST_F(test_datatype, ptr_array_random) {
             void *ptr = NULL;
             EXPECT_TRUE(ucs_ptr_array_lookup(&pa, index, ptr));
             EXPECT_EQ(ptr, map[index]);
-            free(ptr);
+            ::operator delete(ptr);
 
             ucs_ptr_array_remove(&pa, index);
             EXPECT_FALSE(ucs_ptr_array_lookup(&pa, index, ptr));
@@ -711,7 +711,7 @@ UCS_TEST_F(test_datatype, ptr_array_random) {
         int insert_count = ucs::rand() % 10;
         expeced_count += insert_count;
         for (int j = 0; j < insert_count; ++j) {
-            void *ptr = malloc(0);
+            void *ptr = ::operator new(0);
             unsigned index = ucs_ptr_array_insert(&pa, ptr);
 
             EXPECT_TRUE(map.end() == map.find(index));
@@ -726,7 +726,7 @@ UCS_TEST_F(test_datatype, ptr_array_random) {
     ucs_ptr_array_for_each(ptr, index, &pa) {
         EXPECT_EQ(ptr, map[index]);
         ucs_ptr_array_remove(&pa, index);
-        free(ptr);
+        ::operator delete(ptr);
         count_elements++;
     }
 
@@ -890,7 +890,7 @@ UCS_TEST_F(test_datatype, ptr_array_locked_random) {
 
     /* Insert phase */
     for (unsigned i = 0; i < count; ++i) {
-        void *ptr = malloc(0);
+        void *ptr = ::operator new(0);
         unsigned index = ucs_ptr_array_locked_insert(&pa, ptr);
 
         EXPECT_TRUE(map.end() == map.find(index));
@@ -909,7 +909,7 @@ UCS_TEST_F(test_datatype, ptr_array_locked_random) {
             void *ptr = NULL;
             EXPECT_TRUE(ucs_ptr_array_locked_lookup(&pa, index, &ptr));
             EXPECT_EQ(ptr, map[index]);
-            free(ptr);
+            ::operator delete(ptr);
 
             ucs_ptr_array_locked_remove(&pa, index);
 
@@ -920,7 +920,7 @@ UCS_TEST_F(test_datatype, ptr_array_locked_random) {
 
         int insert_count = ucs::rand() % 10;
         for (int j = 0; j < insert_count; ++j) {
-            void *ptr = malloc(0);
+            void *ptr = ::operator new(0);
             unsigned index = ucs_ptr_array_locked_insert(&pa, ptr);
 
             EXPECT_TRUE(map.end() == map.find(index));
@@ -934,7 +934,7 @@ UCS_TEST_F(test_datatype, ptr_array_locked_random) {
     ucs_ptr_array_locked_for_each(ptr, index, &pa) {
         EXPECT_EQ(ptr, map[index]);
         ucs_ptr_array_locked_remove(&pa, index);
-        free(ptr);
+        ::operator delete(ptr);
     }
 
     ucs_ptr_array_locked_cleanup(&pa, 1);

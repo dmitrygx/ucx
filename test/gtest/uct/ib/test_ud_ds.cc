@@ -30,8 +30,12 @@ public:
         uct_iface_get_address(m_e1->iface(), (uct_iface_addr_t*)(void *)&if_adr1);
         uct_iface_get_address(m_e2->iface(), (uct_iface_addr_t*)(void *)&if_adr2);
 
-        ib_adr1 = (uct_ib_address_t*)malloc(ucs_derived_of(m_e1->iface(), uct_ib_iface_t)->addr_size);
-        ib_adr2 = (uct_ib_address_t*)malloc(ucs_derived_of(m_e2->iface(), uct_ib_iface_t)->addr_size);
+        ib_adr1 = reinterpret_cast<uct_ib_address_t*>(
+                ::operator new(ucs_derived_of(m_e1->iface(),
+                                             uct_ib_iface_t)->addr_size));
+        ib_adr2 = reinterpret_cast<uct_ib_address_t*>(
+                ::operator new(ucs_derived_of(m_e2->iface(),
+                                              uct_ib_iface_t)->addr_size));
 
         uct_iface_get_device_address(m_e1->iface(), (uct_device_addr_t*)ib_adr1);
         uct_iface_get_device_address(m_e2->iface(), (uct_device_addr_t*)ib_adr2);
@@ -46,8 +50,8 @@ public:
     }
 
     void cleanup() {
-        free(ib_adr2);
-        free(ib_adr1);
+        ::operator delete(ib_adr2);
+        ::operator delete(ib_adr1);
         uct_test::cleanup();
     }
 

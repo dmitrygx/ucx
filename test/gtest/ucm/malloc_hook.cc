@@ -250,6 +250,7 @@ protected:
 
         for (;;) {
             void *ptr = malloc(small_alloc_size);
+            ASSERT_TRUE(ptr != NULL);
             if (m_got_event) {
                 /* If the heap grew, the minimal size is the previous one */
                 free(ptr);
@@ -363,10 +364,13 @@ void test_thread::test() {
 
     /* Allocate some pointers with old heap manager */
     for (unsigned i = 0; i < 10; ++i) {
-        old_ptrs.push_back(malloc(small_alloc_size));
+        void *ptr = malloc(small_alloc_size);
+        ASSERT_TRUE(ptr != NULL);
+        old_ptrs.push_back(ptr);
     }
 
     ptr_r = malloc(small_alloc_size);
+    ASSERT_TRUE(ptr_r != NULL);
 
     m_map_ranges.reserve  ((m_test->small_alloc_count * 8 + 10) * m_num_threads);
     m_unmap_ranges.reserve((m_test->small_alloc_count * 8 + 10) * m_num_threads);
@@ -381,7 +385,9 @@ void test_thread::test() {
 
     /* Allocate small pointers with new heap manager */
     for (int i = 0; i < m_test->small_alloc_count; ++i) {
-        new_ptrs.push_back(malloc(small_alloc_size));
+        void *ptr = malloc(small_alloc_size);
+        ASSERT_TRUE(ptr != NULL);
+        new_ptrs.push_back(ptr);
     }
     small_map_size = m_map_size;
 
@@ -407,6 +413,7 @@ void test_thread::test() {
 
     /* Allocate large chunk */
     void *ptr = malloc(large_alloc_size);
+    ASSERT_TRUE(ptr != NULL);
     EXPECT_GE(m_map_size, large_alloc_size + small_map_size) << m_name;
     EXPECT_TRUE(is_ptr_in_range(ptr, large_alloc_size, m_map_ranges)) << m_name;
     EXPECT_GE(malloc_usable_size(ptr), large_alloc_size);
@@ -625,6 +632,10 @@ protected:
         ucs_time_t start_time = ucs_get_time();
         for (unsigned i = 0; i < iters; ++i) {
             void *ptr = malloc(size);
+            if (ptr == NULL) {
+                UCS_TEST_ABORT("failed to allocate " << size << " bytes");
+            }
+
             /* prevent the compiler from optimizing-out the memory allocation */
             *(volatile char*)ptr = '5';
             free(ptr);
@@ -940,7 +951,6 @@ UCS_TEST_SKIP_COND_F(malloc_hook_cplusplus, mallopt,
     UCS_TEST_MESSAGE << "trim_thresh=" << trim_thresh << " mmap_thresh=" << mmap_thresh <<
                         " allocating=" << size;
     p = new char [size];
-    ASSERT_TRUE(p != NULL);
     delete [] p;
 
     EXPECT_EQ(m_unmapped_size, size_t(0));

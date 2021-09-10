@@ -243,11 +243,13 @@ void test_ucp_tag_xfer::test_run_xfer(bool send_contig, bool recv_contig,
 
     if (send_contig) {
         /* the sender has a contig datatype for the data buffer */
-        sendbuf = (uint8_t*) malloc(count * sizeof(*sendbuf));
+        sendbuf = reinterpret_cast<uint8_t*>(
+                ::operator new(count * sizeof(*sendbuf)));
     }
     if (recv_contig) {
         /* the recv has a contig datatype for the data buffer */
-        recvbuf = (uint8_t*) malloc(count * sizeof(*recvbuf));
+        recvbuf = reinterpret_cast<uint8_t*>(
+                ::operator new(count * sizeof(*recvbuf)));
     }
 
     test_xfer_prepare_bufs(sendbuf, recvbuf, count, send_contig, recv_contig,
@@ -262,13 +264,13 @@ void test_ucp_tag_xfer::test_run_xfer(bool send_contig, bool recv_contig,
     }
 
     if (send_contig) {
-        free(sendbuf);
+        ::operator delete(sendbuf);
     } else {
         ucp_dt_destroy(send_dt);
     }
 
     if (recv_contig) {
-        free(recvbuf);
+        ::operator delete(recvbuf);
     } else {
         ucp_dt_destroy(recv_dt);
     }
@@ -291,8 +293,10 @@ void test_ucp_tag_xfer::test_xfer_probe(bool send_contig, bool recv_contig,
     ucp::dt_gen_start_count  = 0;
     ucp::dt_gen_finish_count = 0;
 
-    sendbuf = (uint8_t*) malloc(count * sizeof(*sendbuf));
-    recvbuf = (uint8_t*) malloc(count * sizeof(*recvbuf));
+    sendbuf = reinterpret_cast<uint8_t*>(
+            ::operator new(count * sizeof(*sendbuf)));
+    recvbuf = reinterpret_cast<uint8_t*>(
+            ::operator new(count * sizeof(*recvbuf)));
 
     test_xfer_prepare_bufs(sendbuf, recvbuf, count, send_contig, recv_contig,
                            &send_dt, &recv_dt);
@@ -331,8 +335,8 @@ void test_ucp_tag_xfer::test_xfer_probe(bool send_contig, bool recv_contig,
     }
     request_free(rreq);
 
-    free(sendbuf);
-    free(recvbuf);
+    ::operator delete(sendbuf);
+    ::operator delete(recvbuf);
     if (!send_contig) {
         ucp_dt_destroy(send_dt);
     }

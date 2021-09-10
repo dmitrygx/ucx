@@ -125,8 +125,8 @@ void test_uct_event::test_recv_am(unsigned arm_flags, unsigned send_flags)
     recv_desc_t *recv_buffer;
     unsigned spurious_count = 0;
 
-    recv_buffer = (recv_desc_t *)malloc(sizeof(*recv_buffer) +
-                                        sizeof(m_send_data));
+    recv_buffer         = (recv_desc_t *)::operator new(sizeof(*recv_buffer) +
+                                                        sizeof(m_send_data));
     recv_buffer->length = 0; /* Initialize length to 0 */
 
     /* set a callback for the uct to invoke for receiving the data */

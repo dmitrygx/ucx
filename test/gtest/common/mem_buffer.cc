@@ -131,7 +131,9 @@ void mem_buffer::set_device_context()
 
 void *mem_buffer::allocate(size_t size, ucs_memory_type_t mem_type)
 {
+#if HAVE_CUDA || HAVE_ROCM
     void *ptr;
+#endif
 
     if (size == 0) {
         return NULL;
@@ -139,11 +141,7 @@ void *mem_buffer::allocate(size_t size, ucs_memory_type_t mem_type)
 
     switch (mem_type) {
     case UCS_MEMORY_TYPE_HOST:
-        ptr = malloc(size);
-        if (ptr == NULL) {
-            UCS_TEST_ABORT("malloc(size=" << size << ") failed");
-        }
-        return ptr;
+        return ::operator new(size);
 #if HAVE_CUDA
     case UCS_MEMORY_TYPE_CUDA:
         CUDA_CALL(cudaMalloc(&ptr, size), ": size=" << size);
@@ -170,7 +168,7 @@ void mem_buffer::release(void *ptr, ucs_memory_type_t mem_type)
 {
     switch (mem_type) {
     case UCS_MEMORY_TYPE_HOST:
-        free(ptr);
+        ::operator delete(ptr);
         break;
 #if HAVE_CUDA
     case UCS_MEMORY_TYPE_CUDA:
@@ -389,7 +387,7 @@ bool mem_buffer::compare(const void *expected, const void *buffer,
     if (UCP_MEM_IS_ACCESSIBLE_FROM_CPU(mem_type_expected)) {
         expected_host = expected;
     } else {
-        expected_copy.reset(malloc(length), free);
+        expected_copy.reset(::operator new(length), ::operator delete);
         copy_from(expected_copy.get(), expected, length, mem_type_expected);
         expected_host = expected_copy.get();
     }
@@ -397,7 +395,7 @@ bool mem_buffer::compare(const void *expected, const void *buffer,
     if (UCP_MEM_IS_ACCESSIBLE_FROM_CPU(mem_type_buffer)) {
         buffer_host = buffer;
     } else {
-        buffer_copy.reset(malloc(length), free);
+        buffer_copy.reset(::operator new(length), ::operator delete);
         copy_from(buffer_copy.get(), buffer, length, mem_type_buffer);
         buffer_host = buffer_copy.get();
     }

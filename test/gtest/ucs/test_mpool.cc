@@ -16,12 +16,12 @@ extern "C" {
 class test_mpool : public ucs::test {
 protected:
     static ucs_status_t test_alloc(ucs_mpool_t *mp, size_t *size_p, void **chunk_p) {
-        *chunk_p = malloc(*size_p);
+        *chunk_p = ::operator new(*size_p);
         return (*chunk_p == NULL) ? UCS_ERR_NO_MEMORY : UCS_OK;
     }
 
     static void test_free(ucs_mpool_t *mp, void *chunk) {
-        free(chunk);
+        ::operator delete(chunk);
     }
 
     static void obj_str(ucs_mpool_t *mp, void *obj, ucs_string_buffer_t *strb)

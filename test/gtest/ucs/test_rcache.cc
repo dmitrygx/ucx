@@ -143,7 +143,7 @@ protected:
     void* shared_malloc(size_t size)
     {
         if (barrier()) {
-            m_ptr = malloc(size);
+            m_ptr = ::operator new(size);
         }
         barrier();
         return m_ptr;
@@ -152,7 +152,7 @@ protected:
     void shared_free(void *ptr)
     {
         if (barrier()) {
-            free(ptr);
+            ::operator delete(ptr);
         }
     }
 
@@ -253,10 +253,10 @@ out:
 
 UCS_MT_TEST_F(test_rcache, basic, 10) {
     static const size_t size = 1 * 1024 * 1024;
-    void *ptr = malloc(size);
+    void *ptr      = ::operator new(size);
     region *region = get(ptr, size);
     put(region);
-    free(ptr);
+    ::operator delete(ptr);
 }
 
 UCS_MT_TEST_F(test_rcache, get_unmapped, 6) {
@@ -270,17 +270,17 @@ UCS_MT_TEST_F(test_rcache, get_unmapped, 6) {
     uint32_t id;
     void *ptr;
 
-    ptr = malloc(size);
+    ptr    = ::operator new(size);
     region = get(ptr, size);
-    id = region->id;
-    pa = virt_to_phys(region->super.super.start);
+    id     = region->id;
+    pa     = virt_to_phys(region->super.super.start);
     put(region);
 
     region = get(ptr, size);
     put(region);
-    free(ptr);
+    ::operator delete(ptr);
 
-    ptr = malloc(size);
+    ptr = ::operator new(size);
     region = get(ptr, size);
     ucs_debug("got region id %d", region->id);
     new_pa = virt_to_phys(region->super.super.start);
@@ -293,7 +293,7 @@ UCS_MT_TEST_F(test_rcache, get_unmapped, 6) {
         ucs_debug("physical address not changed (0x%lx)", pa);
     }
     put(region);
-    free(ptr);
+    ::operator delete(ptr);
 }
 
 /* This test gets region N times and later puts it N times and invalidates N/2
@@ -308,7 +308,7 @@ UCS_MT_TEST_F(test_rcache, put_and_invalidate, 1)
     size_t iter;
     size_t comp_count;
 
-    ptr = malloc(size);
+    ptr = ::operator new(size);
     for (region_get_count = 1; region_get_count < 100; region_get_count++) {
         comp_count   = (region_get_count + 1) / 2;
         m_comp_count = 0;
@@ -337,7 +337,7 @@ UCS_MT_TEST_F(test_rcache, put_and_invalidate, 1)
         EXPECT_EQ(comp_count, m_comp_count);
     }
 
-    free(ptr);
+    ::operator delete(ptr);
 }
 
 UCS_MT_TEST_F(test_rcache, merge, 6) {
@@ -425,14 +425,14 @@ UCS_MT_TEST_F(test_rcache, merge_inv, 6) {
 UCS_MT_TEST_F(test_rcache, release_inuse, 6) {
     static const size_t size = 1 * 1024 * 1024;
 
-    void *ptr1 = malloc(size);
+    void *ptr1      = ::operator new(size);
     region *region1 = get(ptr1, size);
-    free(ptr1);
+    ::operator delete(ptr1);
 
-    void *ptr2 = malloc(size);
+    void *ptr2      = ::operator new(size);
     region *region2 = get(ptr2, size);
     put(region2);
-    free(ptr2);
+    ::operator delete(ptr2);
 
     /* key should still be valid */
     EXPECT_EQ(uint32_t(MAGIC), region1->magic);
@@ -637,8 +637,8 @@ protected:
 };
 
 UCS_MT_TEST_F(test_rcache_no_register, register_failure, 10) {
-    static const size_t size = 1 * 1024 * 1024;
-    void *ptr = malloc(size);
+    static const size_t size = 1 * UCS_MBYTE;
+    void *ptr                = ::operator new(size);
 
     ucs_status_t status;
     ucs_rcache_region_t *r;
@@ -646,7 +646,7 @@ UCS_MT_TEST_F(test_rcache_no_register, register_failure, 10) {
     EXPECT_EQ(UCS_ERR_IO_ERROR, status);
     EXPECT_EQ(0u, m_reg_count);
 
-    free(ptr);
+    ::operator delete(ptr);
 }
 
 /* The region overlaps an old region with different
@@ -721,17 +721,17 @@ UCS_TEST_F(test_rcache_with_limit, by_count) {
     static const size_t size = 32;
 
     /* First region will be added */
-    void *ptr1          = malloc(size);
+    void *ptr1          = ::operator new(size);
     uint32_t region1_id = get_put(ptr1, size);
     EXPECT_EQ(1, m_rcache.get()->num_regions);
 
     /* Second region will be added as well */
-    void *ptr2          = malloc(size);
+    void *ptr2          = ::operator new(size);
     uint32_t region2_id = get_put(ptr2, size);
     EXPECT_EQ(2, m_rcache.get()->num_regions);
 
     /* This time, something must be removed */
-    void *ptr3          = malloc(size);
+    void *ptr3          = ::operator new(size);
     uint32_t region3_id = get_put(ptr3, size);
     EXPECT_EQ(2, m_rcache.get()->num_regions);
 
@@ -750,46 +750,46 @@ UCS_TEST_F(test_rcache_with_limit, by_count) {
     EXPECT_NE(region1_new_id, region1_id);
     EXPECT_EQ(2, m_rcache.get()->num_regions);
 
-    free(ptr3);
-    free(ptr2);
-    free(ptr1);
+    ::operator delete(ptr3);
+    ::operator delete(ptr2);
+    ::operator delete(ptr1);
 }
 
 UCS_TEST_F(test_rcache_with_limit, by_size) {
     static const size_t size = 600;
 
     /* First region will be added */
-    void *ptr1 = malloc(size);
+    void *ptr1 = ::operator new(size);
     get_put(ptr1, size);
     EXPECT_EQ(1, m_rcache.get()->num_regions);
 
     /* Second region will cause removing of first region */
-    void *ptr2 = malloc(size);
+    void *ptr2 = ::operator new(size);
     get_put(ptr2, size);
     EXPECT_EQ(1, m_rcache.get()->num_regions);
 
-    free(ptr2);
-    free(ptr1);
+    ::operator delete(ptr2);
+    ::operator delete(ptr1);
 }
 
 UCS_TEST_F(test_rcache_with_limit, by_size_inuse) {
     static const size_t size = 600;
 
     /* First region will be added */
-    void *ptr1      = malloc(size);
+    void *ptr1      = ::operator new(size);
     region *region1 = get(ptr1, size);
     EXPECT_EQ(1, m_rcache.get()->num_regions);
 
     /* Second region will NOT cause removing of first region since it's still in
      * use */
-    void *ptr2 = malloc(size);
+    void *ptr2 = ::operator new(size);
     get_put(ptr2, size);
     EXPECT_EQ(2, m_rcache.get()->num_regions);
 
     put(region1);
 
-    free(ptr2);
-    free(ptr1);
+    ::operator delete(ptr2);
+    ::operator delete(ptr1);
 }
 
 #ifdef ENABLE_STATS
@@ -835,8 +835,8 @@ protected:
 };
 
 UCS_TEST_F(test_rcache_stats, basic) {
-    static const size_t size = 4096;
-    void *ptr = malloc(size);
+    static const size_t size = 4 * UCS_KBYTE;
+    void *ptr                = ::operator new(size);
     region *r1, *r2;
 
     r1 = get(ptr, size);
@@ -857,7 +857,7 @@ UCS_TEST_F(test_rcache_stats, basic) {
     EXPECT_EQ(2, get_counter(UCS_RCACHE_GETS));
     EXPECT_EQ(2, get_counter(UCS_RCACHE_PUTS));
 
-    free(ptr);
+    ::operator delete(ptr);
     EXPECT_EQ(2, get_counter(UCS_RCACHE_GETS));
     EXPECT_EQ(2, get_counter(UCS_RCACHE_PUTS));
     EXPECT_EQ(0, get_counter(UCS_RCACHE_DEREGS));

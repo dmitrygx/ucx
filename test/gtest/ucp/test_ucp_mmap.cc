@@ -392,7 +392,7 @@ UCS_TEST_P(test_ucp_mmap, reg) {
     for (int i = 0; i < 1000 / ucs::test_time_multiplier(); ++i) {
         size_t size = ucs::rand() % (UCS_MBYTE);
 
-        void *ptr = malloc(size);
+        void *ptr = ::operator new(size);
         ucs::fill_random(ptr, size);
 
         ucp_mem_h memh;
@@ -414,7 +414,7 @@ UCS_TEST_P(test_ucp_mmap, reg) {
         status = ucp_mem_unmap(sender().ucph(), memh);
         ASSERT_UCS_OK(status);
 
-        free(ptr);
+        ::operator delete(ptr);
     }
 }
 
@@ -556,7 +556,7 @@ UCS_TEST_P(test_ucp_mmap, reg_advise) {
 
     size_t size = 128 * UCS_MBYTE;
 
-    void *ptr = malloc(size);
+    void *ptr = ::operator new(size);
     ucs::fill_random(ptr, size);
 
     ucp_mem_h               memh;
@@ -592,7 +592,7 @@ UCS_TEST_P(test_ucp_mmap, reg_advise) {
     status = ucp_mem_unmap(sender().ucph(), memh);
     ASSERT_UCS_OK(status);
 
-    free(ptr);
+    ::operator delete(ptr);
 }
 
 UCS_TEST_P(test_ucp_mmap, fixed) {
