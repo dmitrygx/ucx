@@ -115,6 +115,7 @@ private:
                             ucs_memory_type_t send_mem_type,
                             ucs_memory_type_t target_mem_type,
                             unsigned mem_map_flags) {
+        const size_t iter_multiplier = RUNNING_ON_VALGRIND ? 16 : 4;
         ucs::detail::message_stream ms("INFO");
 
         ms << ucs_memory_type_names[send_mem_type] << "->" <<
@@ -125,7 +126,7 @@ private:
 
         /* Test different random sizes */
         for (size_t current_max_size = 128; current_max_size < max_size;
-             current_max_size *= 4) {
+             current_max_size *= iter_multiplier) {
 
             size_t size        = ucs::rand() % current_max_size;
             unsigned num_iters = ucs_min(100, max_size / (size + 1));
