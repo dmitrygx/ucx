@@ -1107,6 +1107,25 @@ protected:
         return result;
     }
 
+    virtual bool wait_some(entity &e, uint32_t wait_ep_flags)
+    {
+        UCS_ASYNC_BLOCK(&e.worker()->async);
+        bool result = e.ep()->flags & wait_ep_flags;
+        UCS_ASYNC_UNBLOCK(&e.worker()->async);
+
+        return result;
+    }
+
+    void check_p2p_lanes(entity &e, uint32_t wait_ep_flags)
+    {
+        if (!ucp_ep_config(e.ep())->p2p_lanes &&
+            (wait_ep_flags & UCP_EP_FLAG_SERVER_NOTIFY_CB)) {
+            /* Since no p2p transports selected on the endpoint, it sends
+             * WIREUP_MSG/REPLY with empty addresses from the server */
+            UCS_TEST_SKIP_R("don't have p2p lanes to do address pack for");
+        }
+    }
+
     void connect_and_fail_wireup(entity &e, fail_wireup_t fail_wireup_type,
                                  uint32_t wait_ep_flags,
                                  bool wait_cm_failure = false)
@@ -1140,12 +1159,7 @@ protected:
         }
 
         if (fail_wireup_type == FAIL_WIREUP_MSG_ADDR_PACK) {
-            if (!ucp_ep_config(e.ep())->p2p_lanes &&
-                (wait_ep_flags & UCP_EP_FLAG_SERVER_NOTIFY_CB)) {
-                /* Since no p2p transports selected on the endpoint, it sends
-                 * WIREUP_MSG/REPLY with empty addresses from the server */
-                UCS_TEST_SKIP_R("don't have p2p lanes to do address pack for");
-            }
+            check_p2p_lanes(e, wait_ep_flags);
 
             /* Emulate failure of preparation of WIREUP MSG sending by setting
              * the device address getter to the function that always returns
@@ -1160,7 +1174,15 @@ protected:
                                 ucs_empty_function_return_ep_timeout);
             }
             UCS_ASYNC_UNBLOCK(&worker->async);
-         } else if (fail_wireup_type == FAIL_WIREUP_SET_EP_FAILED) {
+
+            while (!wait_some(e, UCP_EP_FLAG_CONNECT_ACK_SENT |
+                                 UCP_EP_FLAG_CONNECT_REP_SENT) &&
+                   (m_err_count == 0)) {
+                progress();
+            }
+
+            check_p2p_lanes(e, wait_ep_flags);
+        } else if (fail_wireup_type == FAIL_WIREUP_SET_EP_FAILED) {
             /* Emulate failure of the endpoint by invoking error handling
              * procedure */
             UCS_ASYNC_BLOCK(&worker->async);
