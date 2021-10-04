@@ -707,10 +707,10 @@ static uct_ud_ep_t *uct_ud_ep_create_passive(uct_ud_iface_t *iface, uct_ud_ctl_h
 
     return ep;
 
-err_ep_destroy:
-    uct_ep_destroy(&ep->super.super);
 err_ep_disconnect:
     uct_ud_ep_disconnect_from_iface(ep);
+err_ep_destroy:
+    uct_ep_destroy(&ep->super.super);
     return NULL;
 }
 
