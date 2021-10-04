@@ -1119,8 +1119,13 @@ protected:
             UCS_TEST_SKIP_R("cannot connect to server");
         }
 
+        while (!wait(e, wait_ep_flags) && (sender().get_err_num() == 0)) {
+            progress();
+        }
+
         ucp_worker_h worker = e.worker();
-        if (fail_wireup_type == FAIL_WIREUP_MSG_SEND) {
+        switch (fail_wireup_type) {
+        case FAIL_WIREUP_MSG_SEND:
             /* Emulate failure of WIREUP MSG sending by setting the AM Bcopy
              * function which always return EP_TIMEOUT error */
             UCS_ASYNC_BLOCK(&worker->async);
@@ -1133,13 +1138,8 @@ protected:
                                 ucs_empty_function_return_bc_ep_timeout);
             }
             UCS_ASYNC_UNBLOCK(&worker->async);
-        }
-
-        while (!wait(e, wait_ep_flags) && (sender().get_err_num() == 0)) {
-            progress();
-        }
-
-        if (fail_wireup_type == FAIL_WIREUP_MSG_ADDR_PACK) {
+            break;
+        case FAIL_WIREUP_MSG_ADDR_PACK:
             if (!ucp_ep_config(e.ep())->p2p_lanes &&
                 (wait_ep_flags & UCP_EP_FLAG_SERVER_NOTIFY_CB)) {
                 /* Since no p2p transports selected on the endpoint, it sends
@@ -1160,12 +1160,14 @@ protected:
                                 ucs_empty_function_return_ep_timeout);
             }
             UCS_ASYNC_UNBLOCK(&worker->async);
-         } else if (fail_wireup_type == FAIL_WIREUP_SET_EP_FAILED) {
+            break;
+        case FAIL_WIREUP_SET_EP_FAILED:
             /* Emulate failure of the endpoint by invoking error handling
              * procedure */
             UCS_ASYNC_BLOCK(&worker->async);
             ucp_ep_set_failed(e.ep(), UCP_NULL_LANE, UCS_ERR_ENDPOINT_TIMEOUT);
             UCS_ASYNC_UNBLOCK(&worker->async);
+            break;
         }
 
         wait_for_flag(&m_err_count);

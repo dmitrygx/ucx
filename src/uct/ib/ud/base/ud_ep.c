@@ -560,7 +560,7 @@ ucs_status_t uct_ud_ep_create_connected_common(const uct_ep_params_t *ep_params,
 
     status = uct_ud_ep_connect_to_iface(ep, ib_addr, if_addr);
     if (status != UCS_OK) {
-        goto err_ep_destroy;
+        goto err_ep_disconnect;
     }
 
     status = uct_ud_iface_cep_insert_ep(iface, ib_addr, if_addr, path_index,
@@ -597,8 +597,6 @@ out:
 
 err_ep_disconnect:
     uct_ud_ep_disconnect_from_iface(ep);
-err_ep_destroy:
-    uct_ep_destroy(&ep->super.super);
     goto out;
 }
 
@@ -689,7 +687,7 @@ static uct_ud_ep_t *uct_ud_ep_create_passive(uct_ud_iface_t *iface, uct_ud_ctl_h
     status = uct_ep_connect_to_ep(ep_h, (void*)uct_ud_creq_ib_addr(ctl),
                                   (void*)&ctl->conn_req.ep_addr);
     if (status != UCS_OK) {
-        goto err_ep_destroy;
+        goto err_ep_disconnect;
     }
 
     ep->path_index = ctl->conn_req.path_index;
@@ -709,8 +707,6 @@ static uct_ud_ep_t *uct_ud_ep_create_passive(uct_ud_iface_t *iface, uct_ud_ctl_h
 
 err_ep_disconnect:
     uct_ud_ep_disconnect_from_iface(ep);
-err_ep_destroy:
-    uct_ep_destroy(&ep->super.super);
     return NULL;
 }
 
