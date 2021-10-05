@@ -427,7 +427,7 @@ static inline void ucs_rcache_region_put_internal(ucs_rcache_t *rcache,
     if (flags & UCS_RCACHE_REGION_PUT_FLAG_ADD_TO_GC) {
         /* Put the region on garbage collection list */
         ucs_spin_lock(&rcache->lock);
-        ucs_rcache_region_trace(rcache, region, "put on GC list", flags);
+        ucs_rcache_region_trace(rcache, region, "put on GC list, flags 0x%x", flags);
         rcache->unreleased_size += (region->super.end - region->super.start);
         ucs_list_add_tail(&rcache->gc_list, &region->tmp_list);
         ucs_spin_unlock(&rcache->lock);
