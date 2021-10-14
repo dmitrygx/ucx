@@ -1606,7 +1606,6 @@ static size_t ucp_ep_config_calc_rndv_thresh(ucp_worker_t *worker,
                                              int recv_reg_cost)
 {
     ucp_context_h context = worker->context;
-    double diff_percent   = 1.0 - context->config.ext.rndv_perf_diff / 100.0;
     ucp_ep_thresh_params_t eager_zcopy;
     ucp_ep_thresh_params_t rndv;
     double numerator, denumerator;
@@ -1628,20 +1627,19 @@ static size_t ucp_ep_config_calc_rndv_thresh(ucp_worker_t *worker,
     eager_iface_attr = ucp_worker_iface_get_attr(worker, eager_rsc_index);
 
     /* RTS/RTR latency is used from lanes[0] */
-    rts_latency      = ucp_tl_iface_latency(context, &eager_iface_attr->latency);
+    rts_latency = ucp_tl_iface_latency(context, &eager_iface_attr->latency);
 
-    numerator = diff_percent * (rndv.reg_overhead * (1 + recv_reg_cost) +
-                                (2 * rts_latency) + (2 * rndv.latency) +
-                                (2 * eager_zcopy.overhead) + rndv.overhead) -
-                eager_zcopy.reg_overhead - eager_zcopy.overhead;
+    numerator   = eager_zcopy.reg_overhead + eager_zcopy.overhead -
+                  (1 + recv_reg_cost) * rndv.reg_overhead -
+                  (2 * rts_latency + 2 * eager_zcopy.overhead);
+    denumerator = -eager_zcopy.reg_growth -
+                  1.0 / eager_zcopy.bw -
+                  1.0 / context->config.ext.bcopy_bw + 
+                  (1 + recv_reg_cost) * rndv.reg_growth +
+                  1.0 / rndv.bw;
 
-    denumerator = eager_zcopy.reg_growth +
-                  1.0 / ucs_min(eager_zcopy.bw, context->config.ext.bcopy_bw) -
-                  diff_percent *
-                  (rndv.reg_growth * (1 + recv_reg_cost) + 1.0 / rndv.bw);
-
-    if ((numerator > 0) && (denumerator > 0)) {
-        return ucs_max(numerator / denumerator, eager_iface_attr->cap.am.max_bcopy);
+    if ((numerator) * (denumerator) > 0) {
+        return numerator / denumerator;
     }
 
 fallback:
@@ -2742,7 +2740,7 @@ size_t ucp_ep_config_get_zcopy_auto_thresh(size_t iovcnt,
     double bcopy_bw = context->config.ext.bcopy_bw;
 
     zcopy_thresh = (iovcnt * reg_cost->c) /
-                   ((1.0 / bcopy_bw) - (1.0 / bandwidth) - (iovcnt * reg_cost->m));
+                   ((1.0 / bcopy_bw) - (iovcnt * reg_cost->m));
 
     if (zcopy_thresh < 0.0) {
         return SIZE_MAX;
