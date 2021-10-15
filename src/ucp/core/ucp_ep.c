@@ -1970,9 +1970,7 @@ ucp_ep_config_init_attrs(ucp_worker_t *worker, ucp_rsc_index_t rsc_index,
         mem_type_zcopy_thresh     = 1;
         for (it = 0; it < UCP_MAX_IOV; ++it) {
             zcopy_thresh = ucp_ep_config_get_zcopy_auto_thresh(
-                               it + 1, &md_attr->reg_cost, context,
-                               ucp_tl_iface_bandwidth(context,
-                                                      &iface_attr->bandwidth));
+                               it + 1, &md_attr->reg_cost, context);
             zcopy_thresh = ucs_min(zcopy_thresh, adjust_min_val);
             config->sync_zcopy_thresh[it] = zcopy_thresh;
             config->zcopy_thresh[it]      = zcopy_thresh;
@@ -2735,14 +2733,13 @@ void ucp_worker_mem_type_eps_print_info(ucp_worker_h worker, FILE *stream)
 
 size_t ucp_ep_config_get_zcopy_auto_thresh(size_t iovcnt,
                                            const ucs_linear_func_t *reg_cost,
-                                           const ucp_context_h context,
-                                           double bandwidth)
+                                           const ucp_context_h context)
 {
     double zcopy_thresh;
     double bcopy_bw = context->config.ext.bcopy_bw;
 
     zcopy_thresh = (iovcnt * reg_cost->c) /
-                   ((1.0 / bcopy_bw) - (1.0 / bandwidth) - (iovcnt * reg_cost->m));
+                   ((1.0 / bcopy_bw) - (iovcnt * reg_cost->m));
 
     if (zcopy_thresh < 0.0) {
         return SIZE_MAX;

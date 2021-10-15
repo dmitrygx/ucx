@@ -616,8 +616,7 @@ int ucp_ep_config_get_multi_lane_prio(const ucp_lane_index_t *lanes,
 
 size_t ucp_ep_config_get_zcopy_auto_thresh(size_t iovcnt,
                                            const ucs_linear_func_t *reg_cost,
-                                           const ucp_context_h context,
-                                           double bandwidth);
+                                           const ucp_context_h context);
 
 ucs_status_t ucp_worker_mem_type_eps_create(ucp_worker_h worker);
 

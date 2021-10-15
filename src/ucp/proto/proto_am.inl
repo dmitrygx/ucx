@@ -484,9 +484,8 @@ ucp_proto_get_zcopy_threshold(const ucp_request_t *req,
                               const ucp_ep_msg_config_t *msg_config,
                               size_t count, size_t max_zcopy)
 {
-    ucp_worker_h worker;
+    ucp_context_h context;
     ucp_lane_index_t lane;
-    ucp_rsc_index_t rsc_index;
     size_t zcopy_thresh;
 
     if (ucs_unlikely(msg_config->max_zcopy == 0)) {
@@ -508,12 +507,10 @@ ucp_proto_get_zcopy_threshold(const ucp_request_t *req,
         } else {
             /* Calculate threshold */
             lane         = req->send.lane;
-            rsc_index    = ucp_ep_config(req->send.ep)->key.lanes[lane].rsc_index;
-            worker       = req->send.ep->worker;
+            context      = req->send.ep->worker->context;
             zcopy_thresh = ucp_ep_config_get_zcopy_auto_thresh(count,
                               &ucp_ep_md_attr(req->send.ep, lane)->reg_cost,
-                              worker->context,
-                              ucp_worker_iface_bandwidth(worker, rsc_index));
+                              context);
         }
         return ucs_min(max_zcopy, zcopy_thresh);
     } else if (UCP_DT_IS_GENERIC(req->send.datatype)) {
