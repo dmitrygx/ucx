@@ -354,6 +354,26 @@ struct uct_tcp_ep {
 
 
 /**
+ * TCP memory domain configuration
+ */
+typedef struct uct_tcp_md_config {
+    uct_md_config_t super;
+    int             lo_enable; /* Enable loopback interface support */
+} uct_tcp_md_config_t;
+
+
+/**
+ * TCP memory domain
+ */
+typedef struct uct_tcp_md {
+    struct uct_md super;
+    struct {
+        int       lo_enable;
+    } config;
+} uct_tcp_md_t;
+
+
+/**
  * TCP interface
  */
 typedef struct uct_tcp_iface {
