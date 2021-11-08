@@ -20,6 +20,7 @@
 #include <common/mem_buffer.h>
 #include <common/test.h>
 #include <vector>
+#include <unordered_map>
 
 
 
@@ -427,7 +428,7 @@ std::ostream& operator<<(std::ostream& os, const resource* resource);
 
 class test_uct_iface_attrs : public uct_test {
 public:
-    typedef std::map<std::string, size_t> attr_map_t;
+    typedef std::unordered_map<std::string, size_t> attr_map_t;
 
     void init();
     virtual attr_map_t get_num_iov() = 0;

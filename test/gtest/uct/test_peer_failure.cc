@@ -146,7 +146,7 @@ ucs_status_t test_uct_peer_failure::send_am(int index)
         progress();
 
         /* If the endpoint has failed, return error and avoid calling send */
-        std::map<uct_ep_h, ucs_status_t>::iterator it =
+        std::unordered_map<uct_ep_h, ucs_status_t>::iterator it =
                 m_failed_eps.find(m_sender->ep(index));
         if (it != m_failed_eps.end()) {
             return it->second;

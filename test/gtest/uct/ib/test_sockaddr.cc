@@ -17,6 +17,7 @@ extern "C" {
 }
 
 #include <queue>
+#include <unordered_map>
 
 
 class test_uct_sockaddr : public uct_test {
@@ -24,7 +25,8 @@ class test_uct_sockaddr : public uct_test {
 protected:
 
     class client_user_data;
-    typedef std::map<uct_ep_h, client_user_data*> ep_client_data_map_t;
+    typedef std::unordered_map<uct_ep_h,
+                              client_user_data*> ep_client_data_map_t;
 
     enum {
         TEST_STATE_CONNECT_REQUESTED             = UCS_BIT(0),
@@ -720,18 +722,22 @@ protected:
 
     void release_user_data() {
         ucs::scoped_mutex_lock lock(m_ep_client_data_lock);
-        while (!m_ep_client_data.empty()) {
-            del_user_data_no_lock(m_ep_client_data.begin()->first);
+        for (auto it = m_ep_client_data.begin();
+             it != m_ep_client_data.end(); /* not increment*/ ) {
+            it = del_user_data_no_lock(it);
         }
     }
 
 private:
-    void del_user_data_no_lock(uct_ep_h ep) {
-        ep_client_data_map_t::iterator it = m_ep_client_data.find(ep);
-
-        EXPECT_NE(m_ep_client_data.end(), it) << "ep: " << ep;
+    ep_client_data_map_t::iterator
+    del_user_data_no_lock(ep_client_data_map_t::iterator it) {
+        EXPECT_NE(m_ep_client_data.end(), it) << "ep: " << it->first;
         delete it->second;
-        m_ep_client_data.erase(it);
+        return m_ep_client_data.erase(it);
+    }
+
+    ep_client_data_map_t::iterator del_user_data_no_lock(uct_ep_h ep) {
+        return del_user_data_no_lock(m_ep_client_data.find(ep));
     }
 
 protected:

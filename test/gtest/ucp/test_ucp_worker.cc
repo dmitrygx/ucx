@@ -16,6 +16,8 @@ extern "C" {
 #include <uct/base/uct_iface.h>
 }
 
+#include <unordered_map>
+
 
 class test_ucp_worker_discard : public ucp_test {
 public:
@@ -32,7 +34,7 @@ protected:
         ep_test_info_t() : flush_count(0), pending_add_count(0) {
         }
     };
-    typedef std::map<uct_ep_h, ep_test_info_t> ep_test_info_map_t;
+    typedef std::unordered_map<uct_ep_h, ep_test_info_t> ep_test_info_map_t;
 
     void init() {
         ucp_test::init();

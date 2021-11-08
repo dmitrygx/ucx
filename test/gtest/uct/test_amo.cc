@@ -82,7 +82,7 @@ void uct_amo_test::validate_replies(const std::vector<uint64_t>& exp_replies) {
      * Count a histogram of actual replies.
      */
     unsigned count = 0;
-    std::map<uint64_t, int> h;
+    std::unordered_map<uint64_t, int> h;
 
     while (count < exp_replies.size()) {
         while (m_replies.empty()) {

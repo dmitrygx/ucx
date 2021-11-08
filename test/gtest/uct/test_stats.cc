@@ -191,7 +191,8 @@ public:
 protected:
     mapped_buffer *lbuf, *rbuf;
     uct_completion_t m_comp;
-    std::map< std::string, std::map< std::string, uint64_t > > cntr_init;
+    std::unordered_map< std::string, 
+            std::unordered_map< std::string, uint64_t > > cntr_init;
 };
 
 
