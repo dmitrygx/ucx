@@ -5,10 +5,10 @@
  */
 
 #include "ucx_wrapper.h"
+#include "io_demo.h"
 
 #include <netinet/in.h>
 #include <arpa/inet.h>
-#include <sys/time.h>
 #include <unistd.h>
 #include <string.h>
 #include <assert.h>
@@ -59,19 +59,9 @@ UcxLog::UcxLog(const char* prefix, bool enable, std::ostream *os, bool abort) :
         return;
     }
 
-    struct timeval tv;
-    gettimeofday(&tv, NULL);
-
-    struct tm tm;
-    char str[32];
-    if (use_human_time) {
-        strftime(str, sizeof(str), "[%a %b %d %T] ", localtime_r(&tv.tv_sec, &tm));
-    } else {
-        snprintf(str, sizeof(str), "[%lu.%06lu] ", tv.tv_sec, tv.tv_usec);
-    }
-
+    std::string str;
     _ss = new std::stringstream();
-    (*_ss) << str << prefix << " ";
+    (*_ss) << Utils::get_time_str(str) << prefix << " ";
 }
 
 UcxLog::~UcxLog()

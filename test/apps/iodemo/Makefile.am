@@ -8,6 +8,7 @@ bin_PROGRAMS = io_demo
 
 noinst_HEADERS = \
 	ucx_wrapper.h
+	io_demo.h
 
 io_demo_LDFLAGS  = -ldl
 

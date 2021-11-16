@@ -5,6 +5,7 @@
  */
 
 #include "ucx_wrapper.h"
+#include "io_demo.h"
 
 #include <netinet/in.h>
 #include <arpa/inet.h>
@@ -600,6 +601,8 @@ protected:
             if (validate) {
                 fill_data(sn, conn_id, _memory_type);
             }
+
+            Utils::get_time(_init_time);
         }
 
         void init(size_t data_size, void *ext_buf)
@@ -663,6 +666,11 @@ protected:
             return _npos;
         }
 
+        inline const char* get_init_time_str(std::string &str) const
+        {
+            return Utils::get_time_str(_init_time, str);
+        }
+
         inline size_t npos() const {
             return _npos;
         }
@@ -691,6 +699,7 @@ protected:
         std::vector<Buffer*>   _iov;
         MemoryPool<BufferIov>& _pool;
         void                   *_extra_buf;
+        struct timeval         _init_time;
     };
 
     /* Asynchronous IO message */
@@ -908,8 +917,11 @@ protected:
 
         size_t err_pos = iov.validate(seed, conn_id, err_str);
         if (err_pos != iov.npos()) {
+            std::string iov_time_str;
             std::stringstream err_log_str;
-            err_log_str << "iov data corruption (" << err_str.str() << ") at "
+            err_log_str << "iov (initialized at "
+                        << iov.get_init_time_str(iov_time_str)
+                        << ") data corruption (" << err_str.str() << ") at "
                         << err_pos << " position";
             validate_failure(conn, err_log_str, iov.data_size(),
                              iov.mem_type(), op);
