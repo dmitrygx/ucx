@@ -501,14 +501,12 @@ ucs_status_t uct_rc_ep_flush(uct_rc_ep_t *ep, int16_t max_available,
     uct_rc_iface_t *iface = ucs_derived_of(ep->super.super.iface,
                                            uct_rc_iface_t);
 
-    if (!uct_rc_iface_has_tx_resources(iface) ||
-        (uct_rc_txqp_available(&ep->txqp) <= 0)) {
-        return UCS_ERR_NO_RESOURCE;
-    }
-
-    /* Ignore FC limitations when performing flush(CANCEL) */
-    if (!uct_rc_fc_has_resources(iface, &ep->fc) &&
-        !(flags & UCT_FLUSH_FLAG_CANCEL)) {
+    /* Ignore no resources for FLUSH_CANCEL, since it shouldn't be scheduled on
+     * the pending queue */
+    if ((!uct_rc_iface_has_tx_resources(iface) ||
+         (uct_rc_txqp_available(&ep->txqp) <= 0) ||
+         !uct_rc_fc_has_resources(iface, &ep->fc)) &&
+        ucs_likely(!(flags & UCT_FLUSH_FLAG_CANCEL))) {
         return UCS_ERR_NO_RESOURCE;
     }
 

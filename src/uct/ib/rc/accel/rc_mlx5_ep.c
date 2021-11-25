@@ -561,6 +561,13 @@ void uct_rc_mlx5_ep_vfs_populate(uct_rc_ep_t *rc_ep)
     uct_rc_txqp_vfs_populate(&ep->super.txqp, ep);
 }
 
+/**
+ * 1. Don't return NO_RESOURCES from uct_ep_flush(CANCEL). Don't post NOP
+ * 2. Add warning in uct_ep_flush(CANCEL if there are pending requests on arbiter
+ * 3. Add assert in uct_ep_pending_add if it is called when EP failed on under FLUSH_CANCEL
+ * 4. Always assert for FAILED state when posting operation (even if NOP)
+ */
+
 ucs_status_t uct_rc_mlx5_ep_flush(uct_ep_h tl_ep, unsigned flags,
                                   uct_completion_t *comp)
 {
@@ -578,20 +585,23 @@ ucs_status_t uct_rc_mlx5_ep_flush(uct_ep_h tl_ep, unsigned flags,
 
     if (uct_rc_txqp_unsignaled(&ep->super.txqp) != 0) {
         sn = ep->tx.wq.sw_pi;
-        UCT_RC_CHECK_RES(&iface->super, &ep->super);
-        uct_rc_mlx5_txqp_inline_post(iface, IBV_QPT_RC,
-                                     &ep->super.txqp, &ep->tx.wq,
-                                     MLX5_OPCODE_NOP, NULL, 0,
-                                     0, 0, 0,
-                                     0, 0,
-                                     NULL, NULL, 0, 0,
-                                     INT_MAX);
+        if (ucs_likely(!(flags & UCT_FLUSH_FLAG_CANCEL))) {
+            UCT_RC_CHECK_RES(&iface->super, &ep->super);
+            uct_rc_mlx5_txqp_inline_post(iface, IBV_QPT_RC,
+                                         &ep->super.txqp, &ep->tx.wq,
+                                         MLX5_OPCODE_NOP, NULL, 0,
+                                         0, 0, 0,
+                                         0, 0,
+                                         NULL, NULL, 0, 0,
+                                         INT_MAX);
+        }
     } else {
         sn = ep->tx.wq.sig_pi;
     }
 
     if (ucs_unlikely((flags & UCT_FLUSH_FLAG_CANCEL) && !already_canceled)) {
-        status = uct_ib_mlx5_modify_qp_state(md, &ep->tx.wq.super, IBV_QPS_ERR);
+        status = uct_ib_mlx5_modify_qp_state(md, &ep->tx.wq.super,
+                                             IBV_QPS_ERR);
         if (status != UCS_OK) {
             return status;
         }

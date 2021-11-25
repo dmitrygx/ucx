@@ -450,16 +450,16 @@ ucs_status_t uct_rc_verbs_ep_flush(uct_ep_h tl_ep, unsigned flags,
         return status;
     }
 
-    if (uct_rc_txqp_unsignaled(&ep->super.txqp) != 0) {
+    if (ucs_unlikely(flags & UCT_FLUSH_FLAG_CANCEL)) {
+        if (!already_canceled) {
+            status = uct_ib_modify_qp(ep->qp, IBV_QPS_ERR);
+            if (status != UCS_OK) {
+                return status;
+            }
+        }
+    } else if (uct_rc_txqp_unsignaled(&ep->super.txqp) != 0) {
         UCT_RC_CHECK_RES(&iface->super, &ep->super);
         uct_rc_verbs_ep_post_flush(ep, IBV_SEND_SIGNALED);
-    }
-
-    if (ucs_unlikely((flags & UCT_FLUSH_FLAG_CANCEL) && !already_canceled)) {
-        status = uct_ib_modify_qp(ep->qp, IBV_QPS_ERR);
-        if (status != UCS_OK) {
-            return status;
-        }
     }
 
     return uct_rc_txqp_add_flush_comp(&iface->super, &ep->super.super,

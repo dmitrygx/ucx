@@ -600,7 +600,8 @@ ucs_status_t uct_dc_mlx5_ep_flush(uct_ep_h tl_ep, unsigned flags,
     uint16_t            sn;
     UCT_DC_MLX5_TXQP_DECL(txqp, txwq);
 
-    if (ep->dci == UCT_DC_MLX5_EP_NO_DCI) {
+    if ((ep->dci == UCT_DC_MLX5_EP_NO_DCI) &&
+        ucs_likely(!(flags & UCT_FLUSH_FLAG_CANCEL))) {
         if (uct_dc_mlx5_iface_dci_can_alloc(iface, pool_index)) {
             UCT_TL_EP_STAT_FLUSH(&ep->super); /* no sends */
             return UCS_OK;
@@ -609,12 +610,10 @@ ucs_status_t uct_dc_mlx5_ep_flush(uct_ep_h tl_ep, unsigned flags,
         return UCS_ERR_NO_RESOURCE; /* waiting for dci */
     }
 
-    if (!uct_dc_mlx5_iface_has_tx_resources(iface)) {
+    if ((!uct_dc_mlx5_iface_has_tx_resources(iface) ||
+         !uct_dc_mlx5_iface_dci_ep_can_send(ep)) &&
+        ucs_likely(!(flags & UCT_FLUSH_FLAG_CANCEL))) {
         return UCS_ERR_NO_RESOURCE;
-    }
-
-    if (!uct_dc_mlx5_iface_dci_ep_can_send(ep)) {
-        return UCS_ERR_NO_RESOURCE; /* cannot send */
     }
 
     status = uct_dc_mlx5_iface_flush_dci(iface, ep->dci);
@@ -647,16 +646,6 @@ ucs_status_t uct_dc_mlx5_ep_flush(uct_ep_h tl_ep, unsigned flags,
 
         ep->flags |= UCT_DC_MLX5_EP_FLAG_FLUSH_CANCEL;
         sn         = txwq->sw_pi;
-        /* post NOP operation which will complete with error, to trigger DCI
-         * reset. Otherwise, DCI could be returned to poll in error state */
-        uct_rc_mlx5_txqp_inline_post(&iface->super, UCT_IB_QPT_DCI,
-                                     txqp, txwq,
-                                     MLX5_OPCODE_NOP, NULL, 0,
-                                     0, 0, 0,
-                                     0, 0,
-                                     &ep->av, uct_dc_mlx5_ep_get_grh(ep),
-                                     uct_ib_mlx5_wqe_av_size(&ep->av),
-                                     0, INT_MAX);
     }
 
 out:

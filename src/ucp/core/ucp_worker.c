@@ -2414,6 +2414,8 @@ ucp_worker_discard_uct_ep_pending_cb(uct_pending_req_t *self)
     ucs_assert(req->send.state.uct_comp.count == 0);
 
     if (status == UCS_ERR_NO_RESOURCE) {
+        ucs_assert(req->send.discard_uct_ep.ep_flush_flags &
+                  UCT_FLUSH_FLAG_LOCAL);
         return UCS_ERR_NO_RESOURCE;
     }
 
