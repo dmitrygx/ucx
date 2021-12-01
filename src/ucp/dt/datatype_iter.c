@@ -85,14 +85,16 @@ UCS_PROFILE_FUNC(ucs_status_t, ucp_datatype_iter_mem_reg_internal,
     }
 
     ucs_assert(address != NULL);
+    reg_address = address;
+    reg_length  = length;
+
     if (ucs_unlikely(context->config.ext.reg_whole_alloc_bitmap &
                      UCS_BIT(mem_type))) {
         ucp_memory_detect_internal(context, address, length, &mem_info);
-        reg_address = mem_info.base_address;
-        reg_length  = mem_info.alloc_length;
-    } else {
-        reg_address = address;
-        reg_length  = length;
+        if (mem_info.type == mem_type) {
+            reg_address = mem_info.base_address;
+            reg_length  = mem_info.alloc_length;
+        }
     }
 
     memh_index_old = 0;
