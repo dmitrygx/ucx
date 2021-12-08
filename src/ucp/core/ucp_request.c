@@ -490,7 +490,7 @@ void ucp_request_handle_send_error(ucp_request_t *req, ucs_status_t status)
         }
     } else {
         if (req->flags & UCP_REQUEST_FLAG_SEND_RNDV) {
-            ucp_rndv_complete_send(req, UCS_ERR_CANCELED, "rndv_flush");
+            ucp_rndv_req_add_to_cancel_list(req, status);
        } else {
             ucp_request_complete_send(req, status);
         }

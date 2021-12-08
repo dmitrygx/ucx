@@ -202,8 +202,12 @@ size_t ucp_tag_rndv_rts_pack(void *dest, void *arg)
     return sizeof(*rndv_rts_hdr) + packed_rkey_size;
 }
 
-static void ucp_rndv_req_cancel(ucp_request_t *sreq, ucs_status_t status)
+void ucp_rndv_req_add_to_cancel_list(ucp_request_t *sreq, ucs_status_t status)
 {
+    if (sreq->flags & UCP_REQUEST_FLAG_CANCELED) {
+        return; /* already cancelled */
+    }
+
     sreq->status = status;
     sreq->flags |= UCP_REQUEST_FLAG_CANCELED;
     ucs_list_add_tail(&sreq->send.ep->worker->rndv_reqs_list,
@@ -243,7 +247,7 @@ UCS_PROFILE_FUNC(ucs_status_t, ucp_proto_progress_rndv_rts, (self),
         return UCS_ERR_NO_RESOURCE;
     } else {
         ucs_assert(UCS_STATUS_IS_ERR(status));
-        ucp_rndv_req_cancel(sreq, status);
+        ucp_rndv_complete_send(sreq, status, "rts_cancel");
         return UCS_OK;
     }
 }
@@ -273,12 +277,12 @@ UCS_PROFILE_FUNC(ucs_status_t, ucp_proto_progress_rndv_cancel, (self),
                                  UCP_AM_ID_RNDV_RTS, ucp_memcpy_pack, &ctx, 0);
     if (packed_len == UCS_ERR_NO_RESOURCE) {
         return UCS_ERR_NO_RESOURCE;
-    } else {
-        status = (packed_len >= 0) ? UCS_ERR_CANCELED :
-                                     (ucs_status_t)packed_len;
-        ucp_rndv_req_cancel(sreq, status);
-        return UCS_OK;
     }
+
+    status = (packed_len >= 0) ? UCS_ERR_CANCELED : (ucs_status_t)packed_len;
+    ucp_rndv_req_add_to_cancel_list(sreq, status);
+
+    return UCS_OK;
 }
 
 static size_t ucp_tag_rndv_rtr_pack(void *dest, void *arg)
@@ -409,15 +413,8 @@ ucs_status_t ucp_tag_send_start_rndv(ucp_request_t *sreq)
 
 void ucp_tag_rndv_cancel(ucp_request_t *sreq)
 {
-    if (!(sreq->send.ep->flags & UCP_EP_FLAG_REMOTE_CONNECTED)) {
-        if (sreq->flags & UCP_REQUEST_FLAG_RNDV_RTS_SENT) {
-            ucp_rndv_req_cancel(sreq, UCS_ERR_CANCELED);
-        }
-    } else {
-        sreq->send.uct.func = ucp_proto_progress_rndv_cancel;
-        if (sreq->flags & UCP_REQUEST_FLAG_RNDV_RTS_SENT) {
-            ucp_request_send(sreq, 0);
-        }
+    if (sreq->flags & UCP_REQUEST_FLAG_RNDV_RTS_SENT) {
+        ucp_rndv_req_add_to_cancel_list(sreq, UCS_ERR_CANCELED);
     }
 }
 
