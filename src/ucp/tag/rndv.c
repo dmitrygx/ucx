@@ -44,10 +44,13 @@ void ucp_rndv_complete_send(ucp_request_t *sreq, ucs_status_t status,
     ucp_worker_h worker;
     khiter_t iter;
 
+    ucs_assertv(!(sreq->flags & UCP_REQUEST_FLAG_COMPLETED), "req %p", sreq);
+
     ucp_request_send_generic_dt_finish(sreq);
     ucp_request_send_buffer_dereg(sreq);
     if (sreq->flags & UCP_REQUEST_FLAG_CANCELED) {
         ucs_list_del(&sreq->send.list);
+        sreq->flags &= ~UCP_REQUEST_FLAG_CANCELED;
     }
 
     /* remove from rndv sreqs hash */
@@ -205,6 +208,8 @@ size_t ucp_tag_rndv_rts_pack(void *dest, void *arg)
 void ucp_rndv_req_add_to_cancelled_list(ucp_request_t *sreq,
                                         ucs_status_t status)
 {
+    ucs_assert(!(sreq->flags & UCP_REQUEST_FLAG_COMPLETED));
+
     if (sreq->flags & UCP_REQUEST_FLAG_CANCELED) {
         return; /* already cancelled */
     }
@@ -414,10 +419,12 @@ ucs_status_t ucp_tag_send_start_rndv(ucp_request_t *sreq)
 
 void ucp_tag_rndv_cancel(ucp_request_t *sreq)
 {
-    if (sreq->flags & UCP_REQUEST_FLAG_RNDV_RTS_SENT) {
+    if (!(sreq->send.ep->flags & UCP_EP_FLAG_REMOTE_CONNECTED) ||
+        (sreq->flags & UCP_REQUEST_FLAG_RNDV_RTS_SENT)) {
         sreq->send.uct.func = ucp_proto_progress_rndv_cancel;
         ucp_request_send(sreq, 0);
     } else {
+        fprintf(stderr, "completed %p\n", sreq);
         ucp_rndv_complete_send(sreq, UCS_ERR_CANCELED, "rndv_cancel");
     }
 }
