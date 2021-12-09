@@ -202,6 +202,20 @@ size_t ucp_tag_rndv_rts_pack(void *dest, void *arg)
     return sizeof(*rndv_rts_hdr) + packed_rkey_size;
 }
 
+void ucp_rndv_req_add_to_cancelled_list(ucp_request_t *sreq,
+                                        ucs_status_t status)
+{
+    if (sreq->flags & UCP_REQUEST_FLAG_CANCELED) {
+        return; /* already cancelled */
+    }
+
+    sreq->status = status;
+    sreq->flags |= UCP_REQUEST_FLAG_CANCELED;
+    ucs_list_add_tail(&sreq->send.ep->worker->rndv_reqs_list,
+                      &sreq->send.list);
+    ucs_trace_req("ep %p: %p was canceled", sreq->send.ep, sreq);
+}
+
 UCS_PROFILE_FUNC(ucs_status_t, ucp_proto_progress_rndv_rts, (self),
                  uct_pending_req_t *self)
 {
@@ -266,18 +280,8 @@ UCS_PROFILE_FUNC(ucs_status_t, ucp_proto_progress_rndv_cancel, (self),
         return UCS_ERR_NO_RESOURCE;
     }
 
-    if (sreq->flags & UCP_REQUEST_FLAG_CANCELED) {
-        return UCS_OK; /* already cancelled */
-    }
-
-    status       = (packed_len >= 0) ? UCS_ERR_CANCELED :
-                                      (ucs_status_t)packed_len;
-    sreq->status = status;
-    sreq->flags |= UCP_REQUEST_FLAG_CANCELED;
-    ucs_list_add_tail(&sreq->send.ep->worker->rndv_reqs_list,
-                      &sreq->send.list);
-    ucs_trace_req("ep %p: %p was canceled (%s)", sreq->send.ep, sreq,
-                  ucs_status_string(status));
+    status = (packed_len >= 0) ? UCS_ERR_CANCELED : (ucs_status_t)packed_len;
+    ucp_rndv_req_add_to_cancelled_list(sreq, status);
 
     return UCS_OK;
 }
