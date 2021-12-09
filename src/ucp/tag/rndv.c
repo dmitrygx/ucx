@@ -419,13 +419,15 @@ ucs_status_t ucp_tag_send_start_rndv(ucp_request_t *sreq)
 
 void ucp_tag_rndv_cancel(ucp_request_t *sreq)
 {
-    if (!(sreq->send.ep->flags & UCP_EP_FLAG_REMOTE_CONNECTED) ||
-        (sreq->flags & UCP_REQUEST_FLAG_RNDV_RTS_SENT)) {
-        sreq->send.uct.func = ucp_proto_progress_rndv_cancel;
-        ucp_request_send(sreq, 0);
+    if (!(sreq->send.ep->flags & UCP_EP_FLAG_REMOTE_CONNECTED)) {
+        if (sreq->flags & UCP_REQUEST_FLAG_RNDV_RTS_SENT) {
+            ucp_rndv_complete_send(sreq, UCS_ERR_CANCELED, "rndv_cancel");
+        }
     } else {
-        fprintf(stderr, "completed %p\n", sreq);
-        ucp_rndv_complete_send(sreq, UCS_ERR_CANCELED, "rndv_cancel");
+        sreq->send.uct.func = ucp_proto_progress_rndv_cancel;
+        if (sreq->flags & UCP_REQUEST_FLAG_RNDV_RTS_SENT) {
+            ucp_request_send(sreq, 0);
+        }
     }
 }
 
