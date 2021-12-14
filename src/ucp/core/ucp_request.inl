@@ -222,11 +222,35 @@ ucp_request_put(ucp_request_t *req)
 static UCS_F_ALWAYS_INLINE void
 ucp_request_complete_send(ucp_request_t *req, ucs_status_t status)
 {
+    unsigned md_index;
+    ucp_context_h context;
+
     ucs_trace_req("completing send request %p (%p) " UCP_REQUEST_FLAGS_FMT
                   " %s",
                   req, req + 1, UCP_REQUEST_FLAGS_ARG(req->flags),
                   ucs_status_string(status));
     UCS_PROFILE_REQUEST_EVENT(req, "complete_send", status);
+
+
+    if (req->send.ep != NULL) {
+        context = req->send.ep->worker->context;
+    } else {
+        context = req->send.invalidate.worker->context;
+    }
+
+    ucs_for_each_bit(md_index, req->send.state.dt.dt.contig.md_map) {
+        uct_md_h md = context->tl_mds[md_index].md;
+        status      = uct_md_mem_lookup(md, req->send.buffer,
+                                         req->send.length, 0, NULL);
+        if (status == UCS_ERR_NO_ELEM) {
+            ucs_diag("no buffer reg for req=%p, buf=%p, len=%zu", req,
+                     req->send.buffer, req->send.length);
+        } else if (req->send.ep == NULL) {
+            ucs_fatal("buffer reg still exists for req=%p, buf=%p, len=%zu",
+                      req, req->send.buffer, req->send.length);
+        }
+    }
+
     /* Coverity wrongly resolves completion callback function to
      * 'ucp_cm_client_connect_progress'/'ucp_cm_server_conn_request_progress'
      */
@@ -584,6 +608,7 @@ static UCS_F_ALWAYS_INLINE void ucp_request_send_buffer_dereg(ucp_request_t *req
 {
     ucp_request_memory_dereg(req->send.ep->worker->context, req->send.datatype,
                              &req->send.state.dt, req);
+    req->send.state.dt.dt.contig.md_map = 0;
 }
 
 static UCS_F_ALWAYS_INLINE void ucp_request_recv_buffer_dereg(ucp_request_t *req)

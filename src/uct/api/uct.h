@@ -2374,6 +2374,9 @@ typedef struct {
 ucs_status_t uct_md_mem_advise(uct_md_h md, uct_mem_h memh, void *addr,
                                size_t length, uct_mem_advice_t advice);
 
+                               
+ucs_status_t uct_md_mem_lookup(uct_md_h md, void *address, size_t length,
+                            unsigned flags, uct_mem_h *memh_p);
 
 /**
  * @ingroup UCT_MD

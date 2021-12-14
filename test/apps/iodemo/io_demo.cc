@@ -42,7 +42,8 @@ typedef enum {
     IO_OP_MAX,
     IO_COMP_MIN  = IO_OP_MAX,
     IO_READ_COMP = IO_COMP_MIN,
-    IO_WRITE_COMP
+    IO_WRITE_COMP,
+    IO_TIMEOUT
 } io_op_t;
 
 static const char *io_op_names[] = {
@@ -900,7 +901,6 @@ protected:
             << ucs_status_string(conn->ucx_status()) << ") for operation"
             << " (length=" << length << " mem_type=" << mem_type << " op=\""
             << io_op_names[op] << "\")";
-        abort();
     }
 
     static void validate(const UcxConnection *conn, const BufferIov& iov,
@@ -1300,6 +1300,10 @@ public:
             handle_io_read_request(conn, msg);
         } else if (msg->op == IO_WRITE) {
             handle_io_write_request(conn, msg);
+        } else if (msg->op == IO_TIMEOUT) {
+            LOG << "timeout waiting for replies detected on "
+                << conn->get_log_prefix();
+            abort();
         } else {
             LOG << "Invalid opcode: " << msg->op;
         }
@@ -1325,6 +1329,10 @@ public:
             handle_io_am_read_request(conn, msg);
         } else if (msg->op == IO_WRITE) {
             handle_io_am_write_request(conn, msg, data_desc);
+        } else if (msg->op == IO_TIMEOUT) {
+            LOG << "timeout waiting for replies detected on "
+                << conn->get_log_prefix();
+            abort();
         } else {
             LOG << "Invalid opcode: " << msg->op;
         }
@@ -1761,7 +1769,11 @@ public:
             UcxLog log(LOG_PREFIX);
             log << "timeout waiting for " << num_uncompleted << " replies on ";
             dump_server_info(_server_info[server_index], log);
+
+            send_io_message(_server_info[server_index].conn, IO_TIMEOUT, 0, 0,
+                            false);
         }
+        abort();
     }
 
     void disconnect_uncompleted_servers(const char *reason) {

@@ -1485,6 +1485,7 @@ unsigned ucp_ep_local_disconnect_progress(void *arg)
 
     /* Complete send request from here, to avoid releasing the request while
      * slow-path element is still pending */
+    req->send.state.dt.dt.contig.md_map = 0;
     ucp_request_complete_send(req, req->status);
 
     return 0;

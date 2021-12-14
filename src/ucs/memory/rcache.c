@@ -968,6 +968,41 @@ void ucs_rcache_region_hold(ucs_rcache_t *rcache, ucs_rcache_region_t *region)
     ucs_rcache_region_trace(rcache, region, "hold");
 }
 
+ucs_status_t ucs_rcache_lookup(ucs_rcache_t *rcache, void *address, size_t length,
+                            int prot, void *arg, ucs_rcache_region_t **region_p)
+{
+     ucs_pgt_addr_t start = (uintptr_t)address;
+    ucs_pgt_region_t *pgt_region;
+    ucs_rcache_region_t *region;
+
+    ucs_trace_func("rcache=%s, address=%p, length=%zu", rcache->name, address,
+                   length);
+
+    pthread_rwlock_rdlock(&rcache->pgt_lock);
+    UCS_STATS_UPDATE_COUNTER(rcache->stats, UCS_RCACHE_GETS, 1);
+    if (ucs_queue_is_empty(&rcache->inv_q)) {
+        pgt_region = UCS_PROFILE_CALL(ucs_pgtable_lookup, &rcache->pgtable,
+                                      start);
+        if (ucs_likely(pgt_region != NULL)) {
+            region = ucs_derived_of(pgt_region, ucs_rcache_region_t);
+            if (((start + length) <= region->super.end) &&
+                ucs_rcache_region_test(region, prot))
+            {
+                ucs_rcache_region_hold(rcache, region);
+                ucs_rcache_region_validate_pfn(rcache, region);
+                ucs_rcache_region_lru_get(rcache, region);
+                *region_p = region;
+                UCS_STATS_UPDATE_COUNTER(rcache->stats, UCS_RCACHE_HITS_FAST, 1);
+                pthread_rwlock_unlock(&rcache->pgt_lock);
+                return UCS_OK;
+            }
+        }
+    }
+    pthread_rwlock_unlock(&rcache->pgt_lock);
+
+    return UCS_ERR_NO_ELEM;
+}
+
 ucs_status_t ucs_rcache_get(ucs_rcache_t *rcache, void *address, size_t length,
                             int prot, void *arg, ucs_rcache_region_t **region_p)
 {

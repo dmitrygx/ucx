@@ -985,6 +985,17 @@ static inline uct_ib_rcache_region_t* uct_ib_rcache_region_from_memh(uct_mem_h m
     return ucs_container_of(memh, uct_ib_rcache_region_t, memh);
 }
 
+static ucs_status_t uct_ib_mem_rcache_lookup(uct_md_h uct_md, void *address,
+                                          size_t length, unsigned flags,
+                                          uct_mem_h *memh_p)
+{
+    uct_ib_md_t *md = ucs_derived_of(uct_md, uct_ib_md_t);
+    ucs_rcache_region_t *rregion;
+
+    return ucs_rcache_lookup(md->rcache, address, length, PROT_READ|PROT_WRITE,
+                             &flags, &rregion);
+}
+
 static ucs_status_t uct_ib_mem_rcache_reg(uct_md_h uct_md, void *address,
                                           size_t length, unsigned flags,
                                           uct_mem_h *memh_p)
@@ -1050,6 +1061,7 @@ static uct_md_ops_t uct_ib_md_rcache_ops = {
     .mkey_pack              = uct_ib_mkey_pack,
     .is_sockaddr_accessible = ucs_empty_function_return_zero_int,
     .detect_memory_type     = ucs_empty_function_return_unsupported,
+    .mem_lookup             = uct_ib_mem_rcache_lookup
 };
 
 static ucs_status_t uct_ib_rcache_mem_reg_cb(void *context, ucs_rcache_t *rcache,

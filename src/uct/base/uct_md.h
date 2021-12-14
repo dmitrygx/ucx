@@ -118,6 +118,7 @@ typedef ucs_status_t (*uct_md_detect_memory_type_func_t)(uct_md_h md,
                                                          ucs_memory_type_t *mem_type_p);
 
 
+
 /**
  * Memory domain operations
  */
@@ -133,6 +134,7 @@ struct uct_md_ops {
     uct_md_mkey_pack_func_t              mkey_pack;
     uct_md_is_sockaddr_accessible_func_t is_sockaddr_accessible;
     uct_md_detect_memory_type_func_t     detect_memory_type;
+    uct_md_mem_reg_func_t                mem_lookup;
 };
 
 

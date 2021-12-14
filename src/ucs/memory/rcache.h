@@ -180,6 +180,10 @@ ucs_status_t ucs_rcache_create(const ucs_rcache_params_t *params, const char *na
 void ucs_rcache_destroy(ucs_rcache_t *rcache);
 
 
+ucs_status_t ucs_rcache_lookup(ucs_rcache_t *rcache, void *address, size_t length,
+                            int prot, void *arg, ucs_rcache_region_t **region_p);
+
+
 /**
  * Resolve buffer in the registration cache, or register it if not found.
  * TODO register after N usages.
