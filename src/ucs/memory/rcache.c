@@ -375,6 +375,10 @@ static void ucs_mem_region_destroy_internal(ucs_rcache_t *rcache,
                                             ucs_rcache_region_t *region)
 {
     ucs_rcache_comp_entry_t *comp;
+    size_t length;
+    ucs_status_t status;
+    ucs_rcache_region_t *new_region;
+    unsigned flags;
 
     ucs_rcache_region_trace(rcache, region, "destroy");
 
@@ -401,8 +405,23 @@ static void ucs_mem_region_destroy_internal(ucs_rcache_t *rcache,
     ucs_rcache_region_lru_remove(rcache, region);
     ucs_spin_unlock(&rcache->lru.lock);
 
+    length              = region->super.end - region->super.start;
     --rcache->num_regions;
-    rcache->total_size -= region->super.end - region->super.start;
+    rcache->total_size -= length;
+
+    if (!ucs_list_is_empty(&region->comp_list)) {
+        pthread_rwlock_unlock(&rcache->pgt_lock);
+
+        flags  = region->flags;
+        status = ucs_rcache_get(rcache, (void*)region->super.start, length,
+                                PROT_READ | PROT_WRITE, &flags, &new_region);
+        ucs_assertv_always(status == UCS_OK, "rcache get failed: %s",
+                           ucs_status_string(status));
+        ucs_assert(new_region->refcount > 0);
+        ucs_rcache_region_put(rcache, new_region);
+
+        pthread_rwlock_wrlock(&rcache->pgt_lock);
+    }
 
     while (!ucs_list_is_empty(&region->comp_list)) {
         comp = ucs_list_extract_head(&region->comp_list,

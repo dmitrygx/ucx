@@ -15,6 +15,9 @@
 #include <common/test.h>
 #include <uct/test_md.h>
 
+#include <unordered_map>
+
+
 class test_ib_md : public test_md
 {
 protected:
@@ -164,5 +167,39 @@ UCS_TEST_P(test_ib_md, umr_noninline_klm, "MAX_INLINE_KLM_LIST=1") {
     ib_md_umr_check(&rkey_buffer[0], has_ksm(), UCT_IB_MD_MAX_MR_SIZE + 0x1000);
 }
 #endif
+
+UCS_TEST_P(test_ib_md, ib_md_check_same_rkey_direct, "REG_METHODS=direct") {
+    constexpr uint32_t num_iters = 1024;
+    constexpr size_t size        = 512 * UCS_KBYTE;
+    void *buffer                 = NULL;
+    size_t alloc_size            = size;
+    ucs_status_t status;
+
+    status = ucs_mmap_alloc(&alloc_size, &buffer, 0, "mmaped_buffer");
+    ASSERT_UCS_OK(status);
+
+    std::map<uint32_t, uint32_t> rkey_map;
+    for (uint32_t i = 0; i < num_iters; ++i) {
+        uct_mem_h memh;
+
+        status = uct_md_mem_reg(md(), buffer, size, UCT_MD_MEM_ACCESS_RMA,
+                                &memh);
+        ASSERT_UCS_OK(status, << " buffer=" << buffer << " size=" << size);
+        ASSERT_TRUE(memh != UCT_MEM_HANDLE_NULL);
+
+        uct_ib_mem_t *ib_memh = (uct_ib_mem_t *)memh;
+        auto it               = rkey_map.find(ib_memh->rkey);
+        if (it != rkey_map.end()) {
+            std::cout << i << ": found existing rkey["
+                      << it->second << "]=" << it->first << std::endl;
+        }
+        rkey_map.emplace(ib_memh->rkey, i);
+
+        status = uct_md_mem_dereg(md(), memh);
+        EXPECT_UCS_OK(status);
+    }
+
+    ucs_mmap_free(buffer, alloc_size);
+}
 
 _UCT_MD_INSTANTIATE_TEST_CASE(test_ib_md, ib)
