@@ -58,11 +58,6 @@ public:
         SEND_DIRECTION_BIDI = SEND_DIRECTION_C2S | SEND_DIRECTION_S2C /* bidirectional send */
     };
 
-    typedef enum {
-        SEND_RECV_TAG,
-        SEND_RECV_STREAM,
-        SEND_RECV_AM
-    } send_recv_type_t;
 
     ucs::sock_addr_storage m_test_addr;
 
@@ -261,297 +256,6 @@ public:
     {
         scoped_log_handler wrap_err(wrap_errors_logger);
         return ucp_listener_create(receiver().worker(), &params, &listener);
-    }
-
-    static void complete_err_handling_status_verify(ucs_status_t status)
-    {
-        EXPECT_TRUE(/* was successful */
-                    (status == UCS_OK)                   ||
-                    /* completed from error handling for EP */
-                    (status == UCS_ERR_ENDPOINT_TIMEOUT) ||
-                    (status == UCS_ERR_CONNECTION_RESET) ||
-                    (status == UCS_ERR_CANCELED));
-    }
-
-    static void scomplete_cb(void *req, ucs_status_t status)
-    {
-        if ((status == UCS_OK) ||
-            (status == UCS_ERR_UNREACHABLE) ||
-            (status == UCS_ERR_REJECTED) ||
-            (status == UCS_ERR_CANCELED) ||
-            (status == UCS_ERR_CONNECTION_RESET)) {
-            return;
-        }
-        UCS_TEST_ABORT("Error: " << ucs_status_string(status));
-    }
-
-    static void scomplete_cbx(void *req, ucs_status_t status, void *user_data)
-    {
-        ASSERT_EQ(NULL, user_data);
-        scomplete_cb(req, status);
-    }
-
-    static void scomplete_always_ok_cbx(void *req, ucs_status_t status, void *user_data)
-    {
-        ASSERT_EQ(NULL, user_data);
-        EXPECT_UCS_OK(status);
-    }
-
-    static void scomplete_reset_data_cbx(void *req, ucs_status_t status,
-                                         void *user_data)
-    {
-        mem_buffer *send_buffer = reinterpret_cast<mem_buffer*>(user_data);
-        send_buffer->pattern_fill(0, send_buffer->size());
-    }
-
-    static void scomplete_err_handling_cb(void *req, ucs_status_t status)
-    {
-        complete_err_handling_status_verify(status);
-    }
-
-    static void rtag_complete_cb(void *req, ucs_status_t status,
-                                 ucp_tag_recv_info_t *info)
-    {
-        EXPECT_TRUE((status == UCS_OK) || (status == UCS_ERR_CANCELED) ||
-                    (status == UCS_ERR_CONNECTION_RESET));
-    }
-
-    static void rtag_complete_cbx(void *req, ucs_status_t status,
-                                  const ucp_tag_recv_info_t *info,
-                                  void *user_data)
-    {
-        ASSERT_EQ(NULL, user_data);
-        rtag_complete_cb(req, status, const_cast<ucp_tag_recv_info_t*>(info));
-    }
-
-    static void rtag_complete_always_ok_cbx(void *req, ucs_status_t status,
-                                            const ucp_tag_recv_info_t *info,
-                                            void *user_data)
-    {
-        ASSERT_EQ(NULL, user_data);
-        EXPECT_UCS_OK(status);
-    }
-
-    static void rtag_complete_check_data_cbx(void *req, ucs_status_t status,
-                                             const ucp_tag_recv_info_t *tag_info,
-                                             void *user_data)
-    {
-        mem_buffer UCS_V_UNUSED *recv_buffer =
-                reinterpret_cast<mem_buffer*>(user_data);
-
-        if (status == UCS_OK) {
-            recv_buffer->pattern_check(1, recv_buffer->size());
-        }
-    }
-
-    static void rtag_complete_err_handling_cb(void *req, ucs_status_t status,
-                                              ucp_tag_recv_info_t *info)
-    {
-        complete_err_handling_status_verify(status);
-    }
-
-    static void rstream_complete_cb(void *req, ucs_status_t status,
-                                    size_t length)
-    {
-        EXPECT_TRUE((status == UCS_OK) || (status == UCS_ERR_CANCELED));
-    }
-
-    static void rstream_complete_cbx(void *req, ucs_status_t status,
-                                     size_t length, void *user_data)
-    {
-        ASSERT_EQ(NULL, user_data);
-        rstream_complete_cb(req, status, length);
-    }
-
-    bool check_send_status(ucs_status_t send_status, entity &receiver,
-                           void* recv_req,
-                           ucp_test_base::entity::listen_cb_type_t cb_type)
-    {
-        if (send_status == UCS_ERR_UNREACHABLE) {
-            request_cancel(receiver, recv_req);
-            /* Check if the error was completed due to the error handling flow.
-             * If so, skip the test since a valid error occurred - the one expected
-             * from the error handling flow - cases of failure to handle long worker
-             * address or transport doesn't support the error handling requirement */
-            UCS_TEST_SKIP_R("Skipping due to an unreachable destination"
-                            " (unsupported feature or too long worker address or"
-                            " no supported transport to send partial worker"
-                            " address)");
-        } else if ((send_status == UCS_ERR_REJECTED) &&
-                   (cb_type == ucp_test_base::entity::LISTEN_CB_REJECT)) {
-            request_cancel(receiver, recv_req);
-            return false;
-        } else {
-            EXPECT_UCS_OK(send_status);
-        }
-
-        return true;
-    }
-
-    void* send(entity& from, const void *contig_buffer, size_t length,
-               send_recv_type_t send_type, ucp_send_nbx_callback_t cb,
-               void *user_data, size_t ep_index = 0)
-    {
-        ucp_request_param_t params;
-
-        params.op_attr_mask = UCP_OP_ATTR_FIELD_CALLBACK |
-                              UCP_OP_ATTR_FIELD_USER_DATA;
-        params.cb.send      = cb;
-        params.user_data    = user_data;
-
-        ucp_ep_h ep = from.ep(0, ep_index);
-        if (send_type == SEND_RECV_TAG) {
-            return ucp_tag_send_nbx(ep, contig_buffer, length, 1, &params);
-        } else if (send_type == SEND_RECV_STREAM) {
-            return ucp_stream_send_nbx(ep, contig_buffer, length, &params);
-        } else if (send_type == SEND_RECV_AM) {
-            return ucp_am_send_nbx(ep, 0, NULL, 0, contig_buffer,
-                                   length, &params);
-        }
-
-        UCS_TEST_ABORT("unsupported communication type " << send_type);
-    }
-
-    void* recv(entity& to, void *contig_buffer, size_t length,
-               ucp_tag_recv_nbx_callback_t cb, void *user_data)
-    {
-        ucp_request_param_t params = {};
-
-        params.op_attr_mask = UCP_OP_ATTR_FIELD_CALLBACK |
-                              UCP_OP_ATTR_FIELD_USER_DATA;
-        params.user_data    = user_data;
-        params.cb.recv      = cb;
-        return ucp_tag_recv_nbx(to.worker(), contig_buffer, length, 1, 0,
-                                &params);
-    }
-
-    void* recv(entity& to, void *contig_buffer, size_t length,
-               ucp_tag_message_h message, ucp_tag_recv_nbx_callback_t cb,
-               void *user_data)
-    {
-        ucp_request_param_t params = {};
-
-        params.op_attr_mask = UCP_OP_ATTR_FIELD_CALLBACK |
-                              UCP_OP_ATTR_FIELD_USER_DATA;
-        params.user_data    = user_data;
-        params.cb.recv      = cb;
-        return ucp_tag_msg_recv_nbx(to.worker(), contig_buffer, length,
-                                    message, &params);
-    }
-
-    void* recv(entity& to, void *contig_buffer, size_t length,
-               ucp_stream_recv_nbx_callback_t cb, void *user_data)
-    {
-        ucp_request_param_t params;
-
-        params.op_attr_mask   = UCP_OP_ATTR_FIELD_CALLBACK |
-                                UCP_OP_ATTR_FIELD_USER_DATA |
-                                UCP_OP_ATTR_FIELD_FLAGS;
-        params.flags          = UCP_STREAM_RECV_FLAG_WAITALL;
-        params.user_data      = user_data;
-        params.cb.recv_stream = cb;
-
-        ucs_time_t deadline = ucs::get_deadline();
-        ucp_stream_poll_ep_t poll_eps;
-        ssize_t ep_count;
-        do {
-            progress();
-            ep_count = ucp_stream_worker_poll(to.worker(), &poll_eps, 1, 0);
-        } while ((ep_count == 0) && (ucs_get_time() < deadline));
-        EXPECT_EQ(1, ep_count);
-        EXPECT_EQ(to.ep(), poll_eps.ep);
-        EXPECT_EQ(&to, poll_eps.user_data);
-
-        size_t recv_length;
-        return ucp_stream_recv_nbx(to.ep(), contig_buffer, length,
-                                   &recv_length, &params);
-    }
-
-    struct rx_am_msg_arg {
-        bool received;
-        void *hdr;
-        void *buf;
-
-        rx_am_msg_arg(void *_hdr, void *_buf) :
-                received(false), hdr(_hdr), buf(_buf) { }
-    };
-
-    static ucs_status_t rx_am_msg_cb(void *arg, const void *header,
-                                     size_t header_length, void *data,
-                                     size_t length,
-                                     const ucp_am_recv_param_t *param)
-    {
-        volatile rx_am_msg_arg *rx_arg =
-                reinterpret_cast<volatile rx_am_msg_arg*>(arg);
-        EXPECT_FALSE(rx_arg->received);
-
-        memcpy(rx_arg->hdr, header, header_length);
-        memcpy(rx_arg->buf, data, length);
-
-        rx_arg->received = true;
-        return UCS_OK;
-    }
-
-    void set_am_data_handler(entity &e, uint16_t am_id,
-                             ucp_am_recv_callback_t cb, void *arg)
-    {
-        ucp_am_handler_param_t param;
-
-        /* Initialize Active Message data handler */
-        param.field_mask = UCP_AM_HANDLER_PARAM_FIELD_ID |
-                           UCP_AM_HANDLER_PARAM_FIELD_CB |
-                           UCP_AM_HANDLER_PARAM_FIELD_ARG;
-        param.id         = am_id;
-        param.cb         = cb;
-        param.arg        = arg;
-        ASSERT_UCS_OK(ucp_worker_set_am_recv_handler(e.worker(), &param));
-    }
-
-    void send_recv(entity& from, entity& to, send_recv_type_t send_recv_type,
-                   bool wakeup,
-                   ucp_test_base::entity::listen_cb_type_t cb_type,
-                   size_t ep_index = 0)
-    {
-        const uint64_t send_data = ucs_generate_uuid(0);
-        uint64_t recv_data       = 0;
-        rx_am_msg_arg am_rx_arg(NULL, &recv_data);
-        ucs_status_t send_status;
-
-        if (send_recv_type == SEND_RECV_AM) {
-            set_am_data_handler(to, 0, rx_am_msg_cb, &am_rx_arg);
-        }
-
-        void *send_req = send(from, &send_data, sizeof(send_data),
-                              send_recv_type, scomplete_cbx, NULL, ep_index);
-
-        void *recv_req = NULL; // to suppress compiler warning
-        if (send_recv_type == SEND_RECV_TAG) {
-            recv_req = recv(to, &recv_data, sizeof(recv_data),
-                            rtag_complete_cbx, NULL);
-        } else if (send_recv_type == SEND_RECV_STREAM) {
-            recv_req = recv(to, &recv_data, sizeof(recv_data),
-                            rstream_complete_cbx, NULL);
-        } else if (send_recv_type != SEND_RECV_AM) {
-            UCS_TEST_ABORT("unsupported communication type " +
-                           std::to_string(send_recv_type));
-        }
-
-        {
-            // Suppress possible reject/unreachable errors
-            scoped_log_handler slh(wrap_errors_logger);
-            send_status = request_wait(send_req, 0, wakeup);
-            if (!check_send_status(send_status, to, recv_req, cb_type)) {
-                return;
-            }
-        }
-
-        if (send_recv_type == SEND_RECV_AM) {
-            wait_for_flag(&am_rx_arg.received);
-            set_am_data_handler(to, 0, NULL, NULL);
-        } else {
-            request_wait(recv_req, 0, wakeup);
-        }
-        EXPECT_EQ(send_data, recv_data);
     }
 
     bool wait_for_server_ep(bool wakeup)
@@ -2821,15 +2525,6 @@ protected:
                                                "rcache,odp,direct"));
     }
 
-    void entity_disconnect(entity &e)
-    {
-        void *close_req = e.disconnect_nb(0, 0, UCP_EP_CLOSE_MODE_FORCE);
-        if (UCS_PTR_IS_PTR(close_req)) {
-            ucs_status_t status = request_progress(close_req, { &e });
-            ASSERT_EQ(UCS_ERR_CANCELED, status);
-        }
-    }
-
     /* This test is quite tricky: it checks for incorrect behavior on RNDV send
      * on CONNECT_TO_IFACE transports with memory invalidation support: in case
      * if sender EP was killed right after sent RTS then receiver may get
@@ -2862,20 +2557,9 @@ protected:
                       sender_idx);
 
             for (size_t i = 0; i < num_sends; ++i) {
-                void *sreq = send(sender(), send_buf.ptr(), size,
-                                  SEND_RECV_TAG, send_cb, NULL, sender_idx);
-                ASSERT_TRUE(UCS_PTR_IS_PTR(sreq));
-                ASSERT_EQ(UCS_INPROGRESS, ucp_request_check_status(sreq));
-                reqs.push_back(sreq);
-
-                /* Allow receiver to get RTS notification, but do not receive message
-                 * body */
-                ucp_tag_recv_info_t info;
-                ucp_tag_message_h message = message_wait(receiver(), 0, 0, &info);
-                ASSERT_NE((void*)NULL, message);
-                ASSERT_EQ(UCS_INPROGRESS, ucp_request_check_status(sreq));
-
-                messages.emplace_back(message);
+                send_tag_rndv_message_wait(sender(), receiver(),
+                                           send_buf.ptr(), size, send_cb,
+                                           messages, reqs, sender_idx);
             }
         }
 
@@ -2884,7 +2568,7 @@ protected:
 
         /* Close the first sender's EP to force send operation to be completed
          * with CANCEL status */
-        entity_disconnect(sender());
+        entity_disconnect(sender(), 0);
 
         mem_buffer extra_recv_buf(size, UCS_MEMORY_TYPE_HOST);
         extra_recv_buf.pattern_fill(2, size);

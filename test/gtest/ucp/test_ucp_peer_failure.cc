@@ -544,3 +544,105 @@ UCS_TEST_P(test_ucp_peer_failure_keepalive, kill_receiver,
 }
 
 UCP_INSTANTIATE_TEST_CASE(test_ucp_peer_failure_keepalive)
+
+
+class test_ucp_peer_failure_err_sender : public test_ucp_peer_failure
+{
+public:
+    void init() {
+        test_ucp_peer_failure::init();
+        //disable_keepalive();
+    }
+
+    test_ucp_peer_failure_err_sender() {
+        set_tl_small_timeouts();
+        m_env.push_back(new ucs::scoped_setenv("UCX_IB_REG_METHODS",
+                                               "rcache,odp,direct"));
+    }
+
+    static void get_test_variants(std::vector<ucp_test_variant>& variants) {
+        add_variant_with_value(variants, UCP_FEATURE_TAG, 0, "tag");
+    }
+
+protected:
+    void do_tag_rndv_killed_all_senders_test(size_t num_senders,
+                                             size_t num_closed_senders,
+                                             size_t size = 64 * UCS_KBYTE,
+                                             size_t num_sends = 1)
+    {
+        std::vector<ucp_tag_message_h> messages;
+        std::vector<void*> failed_reqs;
+        std::vector<void*> success_reqs;
+
+        mem_buffer send_buf(size, UCS_MEMORY_TYPE_HOST);
+
+        for (size_t sender_idx = 0; sender_idx < num_senders; ++sender_idx) {
+            sender().connect(&receiver(), get_ep_params(), sender_idx);
+            /* Warmup */
+            send_recv(sender(), receiver(), SEND_RECV_TAG, false,
+                      ucp_test_base::entity::LISTEN_CB_NONE, sender_idx);
+        }
+
+        // Ignore all errors - it is expected
+        scoped_log_handler slh(hide_errors_logger);
+
+        for (size_t sender_idx = 0; sender_idx < num_closed_senders;
+             ++sender_idx) {
+            send_buf.pattern_fill(1, size);
+
+            for (size_t i = 0; i < num_sends; ++i) {
+                send_tag_rndv_message_wait(sender(), receiver(),
+                                           send_buf.ptr(), size, scomplete_cbx,
+                                           messages, failed_reqs, sender_idx);
+            }
+
+            entity_disconnect(sender(), sender_idx);
+            ucs_status_t status = request_progress(failed_reqs[sender_idx],
+                                                   { &sender() });
+            ASSERT_EQ(UCS_ERR_CANCELED, status);
+        }
+
+        for (size_t sender_idx = num_closed_senders; sender_idx < num_senders;
+             ++sender_idx) {
+            send_buf.pattern_fill(3, size);
+
+            for (size_t i = 0; i < num_sends; ++i) {
+                send_tag_rndv_message_wait(sender(), receiver(),
+                                           send_buf.ptr(), size, scomplete_cbx,
+                                           messages, success_reqs, sender_idx);
+            }
+        }
+
+        mem_buffer recv_buf(size, UCS_MEMORY_TYPE_HOST);
+        recv_buf.pattern_fill(2, size);
+        const size_t num_failed_sends = num_sends * num_closed_senders;
+        for (size_t i = 0; i < num_failed_sends; ++i) {
+            void *rreq = recv(receiver(), recv_buf.ptr(), size,
+                              messages[i], rtag_complete_check_data_cbx,
+                              reinterpret_cast<void*>(&recv_buf));
+            failed_reqs.push_back(rreq);
+        }
+
+        for (size_t i = num_failed_sends; i < messages.size(); ++i) {
+            void *rreq = recv(receiver(), recv_buf.ptr(), size,
+                              messages[i], rtag_complete_always_ok_cbx, NULL);
+            success_reqs.push_back(rreq);
+        }
+
+        ucs_status_t status;
+        status = requests_wait(success_reqs);
+        EXPECT_UCS_OK(status);
+
+        status = requests_wait(failed_reqs);
+        EXPECT_TRUE(UCS_STATUS_IS_ERR(status));
+    }
+};
+
+
+UCS_TEST_P(test_ucp_peer_failure_err_sender, tag_rndv_killed_1000_senders,
+           "RNDV_THRESH=0", "RNDV_SCHEME=get_zcopy")
+{
+    do_tag_rndv_killed_all_senders_test(10, 5);
+}
+
+UCP_INSTANTIATE_TEST_CASE(test_ucp_peer_failure_err_sender)

@@ -71,6 +71,7 @@ public:
 
     public:
         typedef enum {
+            LISTEN_CB_NONE,     /* Connect to sockaddr method isn't used */
             LISTEN_CB_EP,       /* User's callback accepts ucp_ep_h */
             LISTEN_CB_CONN,     /* User's callback accepts ucp_conn_request_h */
             LISTEN_CB_REJECT,   /* User's callback rejects ucp_conn_request_h */
@@ -245,8 +246,75 @@ protected:
     void flush_worker(const entity &e, int worker_index = 0);
     void flush_workers();
     void disconnect(entity& entity);
+    void entity_disconnect(entity &e, size_t sender_idx);
     void check_events(const std::vector<entity*> &entities, bool wakeup,
                       int worker_index = 0);
+
+    typedef enum {
+        SEND_RECV_TAG,
+        SEND_RECV_STREAM,
+        SEND_RECV_AM
+    } send_recv_type_t;
+
+    struct rx_am_msg_arg {
+        bool received;
+        void *hdr;
+        void *buf;
+
+        rx_am_msg_arg(void *_hdr, void *_buf) :
+                received(false), hdr(_hdr), buf(_buf) { }
+    };
+
+    static void complete_err_handling_status_verify(ucs_status_t status);
+    static void scomplete_cb(void *req, ucs_status_t status);
+    static void scomplete_cbx(void *req, ucs_status_t status, void *user_data);
+    static void scomplete_always_ok_cbx(void *req, ucs_status_t status,
+                                        void *user_data);
+    static void scomplete_reset_data_cbx(void *req, ucs_status_t status,
+                                         void *user_data);
+    static void scomplete_err_handling_cb(void *req, ucs_status_t status);
+    static void rtag_complete_cb(void *req, ucs_status_t status,
+                                 ucp_tag_recv_info_t *info);
+    static void rtag_complete_cbx(void *req, ucs_status_t status,
+                                  const ucp_tag_recv_info_t *info,
+                                  void *user_data);
+    static void rtag_complete_always_ok_cbx(void *req, ucs_status_t status,
+                                            const ucp_tag_recv_info_t *info,
+                                            void *user_data);
+    static void
+    rtag_complete_check_data_cbx(void *req, ucs_status_t status,
+                                 const ucp_tag_recv_info_t *tag_info,
+                                 void *user_data);
+    static void rtag_complete_err_handling_cb(void *req, ucs_status_t status,
+                                              ucp_tag_recv_info_t *info);
+    static void rstream_complete_cb(void *req, ucs_status_t status,
+                                    size_t length);
+    static void rstream_complete_cbx(void *req, ucs_status_t status,
+                                     size_t length, void *user_data);
+    bool check_send_status(ucs_status_t send_status, entity &receiver,
+                           void* recv_req,
+                           ucp_test_base::entity::listen_cb_type_t cb_type);
+    void* send(entity& from, const void *contig_buffer, size_t length,
+               send_recv_type_t send_type, ucp_send_nbx_callback_t cb,
+               void *user_data, size_t ep_index = 0);
+    void* recv(entity& to, void *contig_buffer, size_t length,
+               ucp_tag_recv_nbx_callback_t cb, void *user_data);
+    void* recv(entity& to, void *contig_buffer, size_t length,
+               ucp_tag_message_h message, ucp_tag_recv_nbx_callback_t cb,
+               void *user_data);
+    void* recv(entity& to, void *contig_buffer, size_t length,
+               ucp_stream_recv_nbx_callback_t cb, void *user_data);
+    static ucs_status_t rx_am_msg_cb(void *arg, const void *header,
+                                     size_t header_length, void *data,
+                                     size_t length,
+                                     const ucp_am_recv_param_t *param);
+    void set_am_data_handler(entity &e, uint16_t am_id,
+                             ucp_am_recv_callback_t cb, void *arg);
+    void send_recv(entity& from, entity& to, send_recv_type_t send_recv_type,
+                   bool wakeup,
+                   ucp_test_base::entity::listen_cb_type_t cb_type =
+                           ucp_test_base::entity::LISTEN_CB_NONE,
+                   size_t ep_index = 0);
     ucs_status_t
     request_progress(void *req, const std::vector<entity*> &entities,
                      double timeout = 10.0, int worker_index = 0);
@@ -257,6 +325,12 @@ protected:
     ucp_tag_message_h message_wait(entity& e, ucp_tag_t tag, ucp_tag_t tag_mask,
                                    ucp_tag_recv_info_t *info, int remove = 1,
                                    int worker_index = 0);
+    void send_tag_rndv_message_wait(entity &sender, entity &receiver,
+                                    const void *buf, size_t length,
+                                    ucp_send_nbx_callback_t send_cb,
+                                    std::vector<ucp_tag_message_h> &messages,
+                                    std::vector<void*> &reqs,
+                                    size_t sender_idx = 0);
     void request_release(void *req);
     void request_cancel(entity &e, void *req);
     void wait_for_wakeup(const std::vector<entity*> &entities,
