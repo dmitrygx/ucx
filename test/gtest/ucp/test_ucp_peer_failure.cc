@@ -633,6 +633,12 @@ protected:
         status = requests_wait(success_reqs);
         EXPECT_UCS_OK(status);
 
+        for (size_t sender_idx = num_closed_senders; sender_idx < num_senders;
+             ++sender_idx) {
+            ucp_ep_set_failed_schedule(sender().ep(sender_idx), UCP_NULL_LANE,
+                                       UCS_ERR_CONNECTION_RESET);
+        }
+
         status = requests_wait(failed_reqs);
         EXPECT_TRUE(UCS_STATUS_IS_ERR(status));
     }
