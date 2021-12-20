@@ -34,12 +34,11 @@ ucs_status_t uct_ib_mlx5dv_init_obj(uct_ib_mlx5dv_t *obj, uint64_t type)
 #endif
 
 #if HAVE_DEVX
-ucs_status_t uct_ib_mlx5_devx_create_qp(uct_ib_iface_t *iface,
+ucs_status_t uct_ib_mlx5_devx_create_qp(uct_ib_mlx5_md_t *md,
                                         uct_ib_mlx5_qp_t *qp,
                                         uct_ib_mlx5_txwq_t *tx,
                                         uct_ib_mlx5_qp_attr_t *attr)
 {
-    uct_ib_mlx5_md_t *md   = ucs_derived_of(iface->super.md, uct_ib_mlx5_md_t);
     uct_ib_device_t *dev   = &md->super.dev;
     struct mlx5dv_pd dvpd  = {};
     struct mlx5dv_cq dvscq = {};
@@ -49,33 +48,12 @@ ucs_status_t uct_ib_mlx5_devx_create_qp(uct_ib_iface_t *iface,
     char out[UCT_IB_MLX5DV_ST_SZ_BYTES(create_qp_out)]         = {};
     char in_2init[UCT_IB_MLX5DV_ST_SZ_BYTES(rst2init_qp_in)]   = {};
     char out_2init[UCT_IB_MLX5DV_ST_SZ_BYTES(rst2init_qp_out)] = {};
-    uct_ib_mlx5_mmio_mode_t mmio_mode;
     int max_tx, max_rx, len_tx, len;
-    uct_ib_mlx5_devx_uar_t *uar;
     ucs_status_t status;
     int wqe_size;
     int dvflags;
     void *qpc;
     int ret;
-
-    uct_ib_iface_fill_attr(iface, &attr->super);
-
-    status = uct_ib_mlx5_get_mmio_mode(iface->super.worker, attr->mmio_mode,
-                                       UCT_IB_MLX5_BF_REG_SIZE, &mmio_mode);
-    if (status != UCS_OK) {
-        goto err;
-    }
-
-    uar = uct_worker_tl_data_get(iface->super.worker,
-                                 UCT_IB_MLX5_DEVX_UAR_KEY,
-                                 uct_ib_mlx5_devx_uar_t,
-                                 uct_ib_mlx5_devx_uar_cmp,
-                                 uct_ib_mlx5_devx_uar_init,
-                                 md, mmio_mode);
-    if (UCS_PTR_IS_ERR(uar)) {
-        status = UCS_PTR_STATUS(uar);
-        goto err;
-    }
 
     wqe_size = sizeof(struct mlx5_wqe_ctrl_seg) +
                sizeof(struct mlx5_wqe_umr_ctrl_seg) +
@@ -89,14 +67,10 @@ ucs_status_t uct_ib_mlx5_devx_create_qp(uct_ib_iface_t *iface,
     max_rx = ucs_roundup_pow2_or0(attr->super.cap.max_recv_wr);
     len    = len_tx + max_rx * UCT_IB_MLX5_MAX_BB * UCT_IB_MLX5_WQE_SEG_SIZE;
 
-    if (tx != NULL) {
-        status = uct_ib_mlx5_md_buf_alloc(md, len, 0, &qp->devx.wq_buf,
-                                          &qp->devx.mem, "qp umem");
-        if (status != UCS_OK) {
-            goto err_uar;
-        }
-    } else {
-        qp->devx.wq_buf = NULL;
+    status = uct_ib_mlx5_md_buf_alloc(md, len, 0, &qp->devx.wq_buf,
+                                      &qp->devx.mem, "qp umem");
+    if (status != UCS_OK) {
+        goto err;
     }
 
     qp->devx.dbrec = uct_ib_mlx5_get_dbrec(md);
@@ -129,7 +103,7 @@ ucs_status_t uct_ib_mlx5_devx_create_qp(uct_ib_iface_t *iface,
     }
     UCT_IB_MLX5DV_SET(qpc, qpc, pm_state, UCT_IB_MLX5_QPC_PM_STATE_MIGRATED);
     UCT_IB_MLX5DV_SET(qpc, qpc, pd, dvpd.pdn);
-    UCT_IB_MLX5DV_SET(qpc, qpc, uar_page, uar->uar->page_id);
+    UCT_IB_MLX5DV_SET(qpc, qpc, uar_page, attr->uar->uar->page_id);
     ucs_assert((attr->super.srq == NULL) || (attr->super.srq_num != 0));
     UCT_IB_MLX5DV_SET(qpc, qpc, rq_type, !!attr->super.srq_num);
     UCT_IB_MLX5DV_SET(qpc, qpc, srqn_rmpn_xrqn, attr->super.srq_num);
@@ -171,9 +145,9 @@ ucs_status_t uct_ib_mlx5_devx_create_qp(uct_ib_iface_t *iface,
         UCT_IB_MLX5DV_SET(rst2init_qp_in, in_2init, qpn, qp->qp_num);
         UCT_IB_MLX5DV_SET(qpc, qpc, pm_state, UCT_IB_MLX5_QPC_PM_STATE_MIGRATED);
         UCT_IB_MLX5DV_SET(qpc, qpc, primary_address_path.vhca_port_num, attr->super.port);
-        if (!uct_ib_iface_is_roce(iface)) {
+        if (!attr->is_roce_dev) {
             UCT_IB_MLX5DV_SET(qpc, qpc, primary_address_path.pkey_index,
-                              iface->pkey_index);
+                              attr->pkey_index);
         }
         UCT_IB_MLX5DV_SET(qpc, qpc, rwe, true);
 
@@ -192,19 +166,14 @@ ucs_status_t uct_ib_mlx5_devx_create_qp(uct_ib_iface_t *iface,
     attr->super.cap.max_send_wr = max_tx;
     attr->super.cap.max_recv_wr = max_rx;
 
-    if (tx != NULL) {
-        ucs_assert(qp->devx.wq_buf != NULL);
-        tx->reg    = &uar->super;
-        tx->qstart = qp->devx.wq_buf;
-        tx->qend   = UCS_PTR_BYTE_OFFSET(qp->devx.wq_buf, len_tx);
-        tx->dbrec  = &qp->devx.dbrec->db[MLX5_SND_DBR];
-        tx->bb_max = max_tx - 2 * UCT_IB_MLX5_MAX_BB;
-        ucs_assert(*tx->dbrec == 0);
-        uct_ib_mlx5_txwq_reset(tx);
-    } else {
-        ucs_assert(qp->devx.wq_buf == NULL);
-        uct_worker_tl_data_put(uar, uct_ib_mlx5_devx_uar_cleanup);
-    }
+    ucs_assert(tx != NULL);
+    tx->reg    = &attr->uar->super;
+    tx->qstart = qp->devx.wq_buf;
+    tx->qend   = UCS_PTR_BYTE_OFFSET(qp->devx.wq_buf, len_tx);
+    tx->dbrec  = &qp->devx.dbrec->db[MLX5_SND_DBR];
+    tx->bb_max = max_tx - 2 * UCT_IB_MLX5_MAX_BB;
+    ucs_assert(*tx->dbrec == 0);
+    uct_ib_mlx5_txwq_reset(tx);
 
     return UCS_OK;
 
@@ -214,8 +183,6 @@ err_free_db:
     uct_ib_mlx5_put_dbrec(qp->devx.dbrec);
 err_free_mem:
     uct_ib_mlx5_md_buf_free(md, qp->devx.wq_buf, &qp->devx.mem);
-err_uar:
-    uct_worker_tl_data_put(uar, uct_ib_mlx5_devx_uar_cleanup);
 err:
     return status;
 }

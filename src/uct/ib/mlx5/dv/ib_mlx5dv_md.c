@@ -610,6 +610,55 @@ close_ctx:
 
 static uct_ib_md_ops_t uct_ib_mlx5_devx_md_ops;
 
+static ucs_status_t uct_ib_mlx5_devx_md_umr_qp_create(uct_ib_mlx5_md_t *md)
+{
+#if HAVE_DEVX
+    uct_ib_mlx5_qp_attr_t attr = {};
+    uct_ib_device_t *dev       = &md->super.dev;
+    ucs_status_t status;
+
+    attr.super.qp_type                    = IBV_QPT_RC;
+    attr.super.ibv.send_cq                = md->umr.cq;
+    attr.super.ibv.recv_cq                = md->umr.cq;
+    attr.super.cap.max_inline_data        = 0;
+    attr.super.cap.max_send_wr            = 1;
+    attr.super.cap.max_send_sge           = 1;
+    attr.super.srq                        = NULL;
+    attr.super.srq_num                    = 0;
+    attr.super.cap.max_recv_wr            = 16;
+    attr.super.cap.max_send_wr            = 16;
+    attr.super.ibv.pd                     = md->super.pd;
+    attr.super.port                       = dev->first_port;
+    attr.mmio_mode                        = UCT_IB_MLX5_MMIO_MODE_BF_POST;
+    attr.is_roce_dev                      =
+            uct_ib_device_is_port_roce(dev, dev->first_port);
+    attr.pkey_index                       = 0;
+    attr.uidx                             = 0xffffffff;
+    attr.super.max_inl_cqe[UCT_IB_DIR_TX] = 0;
+    attr.super.max_inl_cqe[UCT_IB_DIR_RX] = 0;
+
+
+    attr.uar = md->umr.uar = ucs_malloc(sizeof(*md->umr.uar), "umr_qp_uar");
+    if (md->umr.uar == NULL) {
+        return UCS_ERR_NO_MEMORY;
+    }
+
+    status = uct_ib_mlx5_devx_uar_init(md->umr.uar, md, attr.mmio_mode);
+    if (status != UCS_OK) {
+        return status;
+    }
+
+    status = uct_ib_mlx5_devx_create_qp(md, &md->umr.txwq.super,
+                                        &md->umr.txwq, &attr);
+    if (status != UCS_OK) {
+        return status;
+    }
+
+    return UCS_OK;
+#endif
+    return UCS_ERR_UNSUPPORTED;
+}
+
 static ucs_status_t uct_ib_mlx5_devx_md_open(struct ibv_device *ibv_device,
                                              const uct_ib_md_config_t *md_config,
                                              uct_ib_md_t **p_md)
@@ -819,6 +868,11 @@ static ucs_status_t uct_ib_mlx5_devx_md_open(struct ibv_device *ibv_device,
         goto err_release_dbrec;
     }
 
+    status = uct_ib_mlx5_devx_md_umr_qp_create(md);
+    if ((status != UCS_OK) && (status != UCS_ERR_UNSUPPORTED)) {
+        goto err_free;
+    }
+
     dev->flags |= UCT_IB_DEVICE_FLAG_MLX5_PRM;
     md->flags  |= UCT_IB_MLX5_MD_FLAG_DEVX;
     md->flags  |= UCT_IB_MLX5_MD_FLAGS_DEVX_OBJS(md_config->devx_objs);
@@ -839,6 +893,7 @@ static void uct_ib_mlx5_devx_md_cleanup(uct_ib_md_t *ibmd)
 {
     uct_ib_mlx5_md_t *md = ucs_derived_of(ibmd, uct_ib_mlx5_md_t);
 
+    uct_ib_mlx5_devx_destroy_qp(md, &md->umr.txwq.super);
     uct_ib_mlx5_md_buf_free(md, md->zero_buf, &md->zero_mem);
     ucs_mpool_cleanup(&md->dbrec_pool, 1);
     ucs_recursive_spinlock_destroy(&md->dbrec_lock);

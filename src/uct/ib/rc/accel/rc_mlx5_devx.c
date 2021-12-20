@@ -324,6 +324,57 @@ void uct_rc_mlx5_devx_cleanup_srq(uct_ib_mlx5_md_t *md, uct_ib_mlx5_srq_t *srq)
 }
 
 ucs_status_t
+uct_rc_mlx5_iface_common_devx_create_qp(uct_rc_mlx5_iface_common_t *iface,
+                                        uct_ib_mlx5_qp_t *qp,
+                                        uct_ib_mlx5_txwq_t *tx,
+                                        uct_ib_mlx5_qp_attr_t *attr)
+{
+    uct_ib_iface_t *ib_iface = &iface->super.super;
+    uct_ib_mlx5_md_t *md     = ucs_derived_of(uct_ib_iface_md(ib_iface),
+                                              uct_ib_mlx5_md_t);
+    uct_ib_mlx5_mmio_mode_t mmio_mode;
+    uct_ib_mlx5_devx_uar_t *uar;
+    ucs_status_t status;
+
+    uct_ib_iface_fill_attr(ib_iface, &attr->super);
+
+    attr->pkey_index  = ib_iface->pkey_index;
+    attr->is_roce_dev = uct_ib_iface_is_roce(ib_iface);
+
+    status = uct_ib_mlx5_get_mmio_mode(iface->super.super.super.worker,
+                                       attr->mmio_mode,
+                                       UCT_IB_MLX5_BF_REG_SIZE, &mmio_mode);
+    if (status != UCS_OK) {
+        goto err;
+    }
+
+    uar = uct_worker_tl_data_get(ib_iface->super.worker,
+                                 UCT_IB_MLX5_DEVX_UAR_KEY,
+                                 uct_ib_mlx5_devx_uar_t,
+                                 uct_ib_mlx5_devx_uar_cmp,
+                                 uct_ib_mlx5_devx_uar_init,
+                                 md, mmio_mode);
+    if (UCS_PTR_IS_ERR(uar)) {
+        status = UCS_PTR_STATUS(uar);
+        goto err;
+    }
+
+    attr->uar = uar;
+
+    status = uct_ib_mlx5_devx_create_qp(md, qp, tx, attr);
+    if (status != UCS_OK) {
+        goto err_uar;
+    }
+
+    return UCS_OK;
+
+err_uar:
+    uct_worker_tl_data_put(uar, uct_ib_mlx5_devx_uar_cleanup);
+err:
+    return status;
+}
+
+ucs_status_t
 uct_rc_mlx5_iface_common_devx_connect_qp(uct_rc_mlx5_iface_common_t *iface,
                                          uct_ib_mlx5_qp_t *qp,
                                          uint32_t dest_qp_num,
@@ -333,11 +384,11 @@ uct_rc_mlx5_iface_common_devx_connect_qp(uct_rc_mlx5_iface_common_t *iface,
 {
     uct_ib_mlx5_md_t *md = ucs_derived_of(uct_ib_iface_md(&iface->super.super),
                                           uct_ib_mlx5_md_t);
+    uct_ib_device_t *dev = &md->super.dev;
     char in_2rtr[UCT_IB_MLX5DV_ST_SZ_BYTES(init2rtr_qp_in)]   = {};
     char out_2rtr[UCT_IB_MLX5DV_ST_SZ_BYTES(init2rtr_qp_out)] = {};
     char in_2rts[UCT_IB_MLX5DV_ST_SZ_BYTES(rtr2rts_qp_in)]    = {};
     char out_2rts[UCT_IB_MLX5DV_ST_SZ_BYTES(rtr2rts_qp_out)]  = {};
-    uct_ib_device_t *dev = uct_ib_iface_device(&iface->super.super);
     uint32_t opt_param_mask = UCT_IB_MLX5_QP_OPTPAR_RRE |
                               UCT_IB_MLX5_QP_OPTPAR_RAE |
                               UCT_IB_MLX5_QP_OPTPAR_RWE;
