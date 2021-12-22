@@ -613,49 +613,109 @@ static uct_ib_md_ops_t uct_ib_mlx5_devx_md_ops;
 static ucs_status_t uct_ib_mlx5_devx_md_umr_qp_create(uct_ib_mlx5_md_t *md)
 {
 #if HAVE_DEVX
-    uct_ib_mlx5_qp_attr_t attr = {};
-    uct_ib_device_t *dev       = &md->super.dev;
+    uct_ib_device_t *dev                          = &md->super.dev;
+    uint8_t port_num                              = dev->first_port;
+    struct ibv_port_attr *port_attr               =
+            uct_ib_device_port_attr(dev, port_num);
+    uct_ib_mlx5_qp_attr_t qp_attr                 = {
+        .super = {
+            .qp_type = IBV_QPT_RC,
+            .ibv     = {
+                .send_cq = md->umr.cq,
+                .recv_cq = md->umr.cq,
+                .pd      = md->super.pd
+            },
+            .cap = {
+                .max_inline_data = 0,
+                .max_send_wr     = 1,
+                .max_send_sge    = 1,
+                .max_recv_wr     = 16,
+                .max_send_wr     = 16
+            },
+            .srq                        = NULL,
+            .srq_num                    = 0,
+            .port                       = dev->first_port,
+            .max_inl_cqe[UCT_IB_DIR_TX] = 0,
+            .max_inl_cqe[UCT_IB_DIR_RX] = 0
+        },
+        .mmio_mode                        = UCT_IB_MLX5_MMIO_MODE_BF_POST,
+        .is_roce_dev                      =
+                uct_ib_device_is_port_roce(dev, port_num),
+        .pkey_index                       = 0,
+        .uidx                             = 0xffffffff
+    };
+    struct ibv_ah_attr ah_attr                    = {
+        .port_num  = port_num,
+        .dlid      = port_attr->lid,
+        .is_global = 1
+    };
+    uct_ib_mlx5_qp_connect_attr_t qp_connect_attr = {
+        .ah_attr          = &ah_attr,
+        .path_mtu         = IBV_MTU_512,
+        .path_index       = 0,
+        .is_roce_dev      = uct_ib_device_is_port_roce(dev, port_num),
+        .traffic_class    = 0,
+        .sl               = 0,
+        .min_rnr_timer    = 7,
+        .timeout          = 7,
+        .rnr_retry        = 7,
+        .retry_cnt        = 7,
+        .max_rd_atomic    = 1,
+        .exp_backoff      = 0,
+        .log_ack_req_freq = 8
+    };
     ucs_status_t status;
 
-    attr.super.qp_type                    = IBV_QPT_RC;
-    attr.super.ibv.send_cq                = md->umr.cq;
-    attr.super.ibv.recv_cq                = md->umr.cq;
-    attr.super.cap.max_inline_data        = 0;
-    attr.super.cap.max_send_wr            = 1;
-    attr.super.cap.max_send_sge           = 1;
-    attr.super.srq                        = NULL;
-    attr.super.srq_num                    = 0;
-    attr.super.cap.max_recv_wr            = 16;
-    attr.super.cap.max_send_wr            = 16;
-    attr.super.ibv.pd                     = md->super.pd;
-    attr.super.port                       = dev->first_port;
-    attr.mmio_mode                        = UCT_IB_MLX5_MMIO_MODE_BF_POST;
-    attr.is_roce_dev                      =
-            uct_ib_device_is_port_roce(dev, dev->first_port);
-    attr.pkey_index                       = 0;
-    attr.uidx                             = 0xffffffff;
-    attr.super.max_inl_cqe[UCT_IB_DIR_TX] = 0;
-    attr.super.max_inl_cqe[UCT_IB_DIR_RX] = 0;
-
-
-    attr.uar = md->umr.uar = ucs_malloc(sizeof(*md->umr.uar), "umr_qp_uar");
+    qp_attr.uar = md->umr.uar = ucs_malloc(sizeof(*md->umr.uar), "umr_qp_uar");
     if (md->umr.uar == NULL) {
-        return UCS_ERR_NO_MEMORY;
+        status = UCS_ERR_NO_MEMORY;
+        goto err;
     }
 
-    status = uct_ib_mlx5_devx_uar_init(md->umr.uar, md, attr.mmio_mode);
+    status = uct_ib_mlx5_devx_uar_init(md->umr.uar, md, qp_attr.mmio_mode);
     if (status != UCS_OK) {
-        return status;
+        goto err_uar_free;
     }
 
     status = uct_ib_mlx5_devx_create_qp(md, &md->umr.txwq.super,
-                                        &md->umr.txwq, &attr);
+                                        &md->umr.txwq, &qp_attr);
     if (status != UCS_OK) {
-        return status;
+        goto err_uar_cleanup;
+    }
+
+    status = uct_ib_device_query_gid(dev, port_num,
+                                     UCT_IB_MD_DEFAULT_GID_INDEX,
+                                     &ah_attr.grh.dgid, UCS_LOG_LEVEL_ERROR);
+    if (status != UCS_OK) {
+        goto err_qp_destroy;
+    }
+
+    qp_connect_attr.dest_qp_num = md->umr.txwq.super.qp_num;
+    if (qp_connect_attr.is_roce_dev) {
+        qp_connect_attr.roce_ver =
+                uct_ib_device_roce_version(dev, port_num,
+                                           UCT_IB_MD_DEFAULT_GID_INDEX);
+    }
+
+    status = uct_ib_mlx5_devx_connect_rc_qp(md, &md->umr.txwq.super,
+                                            &qp_connect_attr);
+    if (status != UCS_OK) {
+        goto err_qp_destroy;
     }
 
     return UCS_OK;
+
+err_qp_destroy:
+    uct_ib_mlx5_devx_destroy_qp(md, &md->umr.txwq.super);
+err_uar_cleanup:
+    uct_ib_mlx5_devx_uar_cleanup(md->umr.uar);
+err_uar_free:
+    ucs_free(md->umr.uar);
+    md->umr.uar = NULL;
+err:
+    return status;
 #endif
+
     return UCS_ERR_UNSUPPORTED;
 }
 

@@ -344,6 +344,25 @@ typedef struct uct_ib_mlx5_qp_attr {
 } uct_ib_mlx5_qp_attr_t;
 
 
+typedef struct uct_ib_mlx5_qp_connect_attr {
+    uint32_t              dest_qp_num;
+    struct ibv_ah_attr    *ah_attr;
+    enum ibv_mtu          path_mtu;
+    uint8_t               path_index;
+    int                   is_roce_dev;
+    uct_ib_roce_version_t roce_ver;
+    uint8_t               traffic_class;
+    uint8_t               sl;
+    uint8_t               min_rnr_timer;
+    uint8_t               timeout;
+    uint8_t               rnr_retry;
+    uint8_t               retry_cnt;
+    uint8_t               max_rd_atomic;
+    unsigned              exp_backoff;
+    unsigned              log_ack_req_freq;
+} uct_ib_mlx5_qp_connect_attr_t;
+
+
 /* MLX5 QP wrapper */
 typedef struct uct_ib_mlx5_qp {
     uct_ib_mlx5_obj_type_t             type;
@@ -652,6 +671,10 @@ ucs_status_t uct_ib_mlx5_devx_modify_qp(uct_ib_mlx5_qp_t *qp,
 ucs_status_t uct_ib_mlx5_devx_modify_qp_state(uct_ib_mlx5_qp_t *qp,
                                               enum ibv_qp_state state);
 
+ucs_status_t
+uct_ib_mlx5_devx_connect_rc_qp(uct_ib_mlx5_md_t *md, uct_ib_mlx5_qp_t *qp,
+                               const uct_ib_mlx5_qp_connect_attr_t *attr);
+
 void uct_ib_mlx5_devx_destroy_qp(uct_ib_mlx5_md_t *md, uct_ib_mlx5_qp_t *qp);
 
 ucs_status_t uct_ib_mlx5_devx_query_ooo_sl_mask(uct_ib_mlx5_md_t *md,
@@ -752,6 +775,13 @@ uct_ib_mlx5_devx_modify_qp(uct_ib_mlx5_qp_t *qp,
 
 static inline ucs_status_t
 uct_ib_mlx5_devx_modify_qp_state(uct_ib_mlx5_qp_t *qp, enum ibv_qp_state state)
+{
+    return UCS_ERR_UNSUPPORTED;
+}
+
+ucs_status_t
+uct_ib_mlx5_devx_connect_rc_qp(uct_ib_mlx5_md_t *md, uct_ib_mlx5_qp_t *qp,
+                               const uct_ib_mlx5_qp_connect_attr_t *attr)
 {
     return UCS_ERR_UNSUPPORTED;
 }
