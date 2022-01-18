@@ -473,15 +473,14 @@ protected:
     public:
         Buffer(void *buffer, size_t size, BufferMemoryPool<Buffer> &pool,
                ucs_memory_type_t memory_type, UcxContext *map_context,
-               ucp_mem_h memh) :
-            _capacity(size),
-            _buffer(buffer),
-            _size(0),
-            _pool(pool),
-            _memory_type(memory_type),
-            _map_context(map_context),
-            _memh(memh)
+               ucp_mem_h memh) : _pool(pool)
         {
+            init(*this, buffer, size, memory_type, map_context, memh);
+        }
+
+        Buffer() : _pool(*(reinterpret_cast<BufferMemoryPool<P2pDemoCommon::Buffer>*>(0)))
+        {
+            reset(*this);
         }
 
         static Buffer *allocate(size_t size, BufferMemoryPool<Buffer> &pool,
@@ -522,24 +521,40 @@ protected:
                 throw std::bad_alloc();
             }
 
-            if (map_context != NULL) {
-                if (!map_context->map_buffer(size, buffer, &memh)) {
-                    LOG << "ERROR: Failed to map buffer " << buffer << " size "
-                        << size;
-                    throw std::bad_alloc();
-                }
-            } else {
-                memh = NULL;
-            }
+            memh = map(buffer, size, map_context);
             return new Buffer(buffer, size, pool, memory_type, map_context,
                               memh);
         }
 
+        static void assign(Buffer &assign_buffer, void *buffer, size_t size,
+                           ucs_memory_type_t memory_type,
+                           UcxContext *map_context)
+        {
+            init(assign_buffer, buffer, size, memory_type, map_context,
+                 map(buffer, size, map_context));
+            assign_buffer.resize(size);
+        }
+
+        static void unassign(Buffer &assign_buffer)
+        {
+            unmap(assign_buffer._map_context, assign_buffer._memh,
+                  assign_buffer._buffer);
+            reset(assign_buffer);
+        }
+
         ~Buffer()
         {
-            if ((_memh != NULL) && !_map_context->unmap_buffer(_memh)) {
-                LOG << "WARNING: Failed to unmap buffer" << _buffer;
+            if (_buffer == NULL) {
+                assert(_memory_type == UCS_MEMORY_TYPE_UNKNOWN);
+                assert(_map_context == NULL);
+                assert(_memh == NULL);
+                assert(_capacity == 0);
+                assert(_size == 0);
+                return;
             }
+
+            unmap(_map_context, _memh, _buffer);
+
             switch (_memory_type) {
 #ifdef HAVE_CUDA
             case UCS_MEMORY_TYPE_CUDA:
@@ -587,11 +602,53 @@ protected:
             return _size;
         }
 
-    public:
-        const size_t             _capacity;
+protected:
+        static void init(Buffer &obj, void *buffer, size_t size,
+                         ucs_memory_type_t memory_type,
+                         UcxContext *map_context, ucp_mem_h memh)
+        {
+            obj._buffer = buffer;
+            obj._capacity = size;
+            obj._size = 0;
+            obj._memory_type = memory_type;
+            obj._map_context = map_context;
+            obj._memh = memh;
+        }
 
-    private:
+        static void reset(Buffer &obj)
+        {
+            init(obj, NULL, 0, UCS_MEMORY_TYPE_UNKNOWN, NULL, NULL);
+        }
+
+        static ucp_mem_h map(void *buffer, size_t size,
+                             UcxContext *map_context)
+        {
+            ucp_mem_h memh;
+
+            if (map_context != NULL) {
+                if (!map_context->map_buffer(size, buffer, &memh)) {
+                    LOG << "ERROR: Failed to map buffer " << buffer << " size "
+                        << size;
+                    throw std::bad_alloc();
+                }
+
+                return memh;
+            }
+
+            return NULL;
+        }
+
+        static void unmap(UcxContext *map_context, ucp_mem_h memh,
+                          void *buffer)
+        {
+            if ((memh != NULL) && !map_context->unmap_buffer(memh)) {
+                LOG << "WARNING: Failed to unmap buffer" << buffer;
+            }
+        }    
+
+private:
         void                     *_buffer;
+        size_t                   _capacity;
         size_t                   _size;
         BufferMemoryPool<Buffer> &_pool;
         ucs_memory_type_t        _memory_type;
@@ -603,26 +660,26 @@ protected:
     public:
         BufferIov(size_t size, MemoryPool<BufferIov> &pool) :
                 _data_size(0lu), _memory_type(UCS_MEMORY_TYPE_UNKNOWN),
-                _validate(false), _pool(pool), _extra_buf(NULL)
+                _validate(false), _pool(pool)
         {
             _iov.reserve(size);
         }
 
         size_t size() const
         {
-            assert(!_iov.empty() || _extra_buf);
-            return _iov.size() + !!_extra_buf;
+            assert(!_iov.empty() || (_bogus_buf.size() != 0));
+            return _iov.size() + _bogus_buf.size();
         }
 
         size_t data_size() const
         {
-            assert(!_iov.empty() || _extra_buf);
+            assert(!_iov.empty() || (_bogus_buf.size() != 0));
             return _data_size;
         }
 
         ucs_memory_type_t mem_type() const
         {
-            assert(!_iov.empty() || _extra_buf);
+            assert(!_iov.empty() || (_bogus_buf.size() != 0));
             return _memory_type;
         }
 
@@ -630,7 +687,7 @@ protected:
                   uint32_t sn, uint64_t conn_id, bool validate)
         {
             assert(_iov.empty());
-            assert(_extra_buf == NULL);
+            assert(_bogus_buf.size() == 0);
 
             _validate     = validate;
             _data_size    = data_size;
@@ -650,23 +707,26 @@ protected:
             }
         }
 
-        void init(size_t data_size, void *ext_buf)
+        void init(size_t data_size, void *ext_buf, bool validate)
         {
             assert(ext_buf != NULL);
             assert(_iov.empty());
-            assert(_extra_buf == NULL);
+            assert(_bogus_buf.size() == 0);
 
+            _memory_type = UCS_MEMORY_TYPE_HOST;
             _data_size = data_size;
-            _extra_buf = ext_buf;
+            _validate = validate;
+            Buffer::assign(_bogus_buf, ext_buf, data_size,
+                           UCS_MEMORY_TYPE_HOST, NULL);
         }
 
         inline Buffer &operator[](size_t i) const
         {
-            return *_iov[i];
+            return (!_iov.empty()) ? *_iov[i] : _bogus_buf;
         }
 
         void release() {
-            assert(!_iov.empty() || _extra_buf);
+            assert(!_iov.empty() || (_bogus_buf.size() != 0));
 
             if (_validate) {
                 fill_data(std::numeric_limits<unsigned>::max(),
@@ -679,14 +739,16 @@ protected:
                 _iov.pop_back();
             }
 
-            _validate  = false;
-            _extra_buf = NULL;
-            _pool.put(this);
+            if (_bogus_buf.size() == 0) {
+                _pool.put(this);
+            } else {
+                Buffer::unassign(_bogus_buf);
+            }
         }
 
         inline size_t validate(unsigned seed, uint64_t conn_id,
                                std::stringstream &err_str) const {
-            assert(!_iov.empty() || _extra_buf);
+            assert(!_iov.empty() || (_bogus_buf.size() != 0));
             assert(_validate);
 
             for (size_t iov_err_pos = 0, i = 0; i < _iov.size(); ++i) {
@@ -699,10 +761,10 @@ protected:
                 }
             }
 
-            if (_extra_buf) {
+            if (_bogus_buf.size() != 0) {
                 size_t buf_err_pos = IoDemoRandom::validate(
-                        seed, uint16_t(conn_id), _extra_buf, _data_size,
-                        _memory_type, err_str);
+                        seed, uint16_t(conn_id), _bogus_buf.buffer(),
+                        _data_size, _memory_type, err_str);
                 if (buf_err_pos < _data_size) {
                     return buf_err_pos;
                 }
@@ -738,7 +800,7 @@ protected:
         bool                   _validate;
         std::vector<Buffer*>   _iov;
         MemoryPool<BufferIov>& _pool;
-        void                   *_extra_buf;
+        mutable Buffer         _bogus_buf;
     };
 
     /* Asynchronous IO message */
@@ -1015,7 +1077,7 @@ protected:
 
         if (!ucx_am_is_rndv(data_desc)) {
             iov = _data_buffers_pool.get();
-            iov->init(data_size, ucx_am_get_data(data_desc));
+            iov->init(data_size, ucx_am_get_data(data_desc), opts().validate);
         } else {
             iov = prepare_recv_data_iov(data_size);
         }
