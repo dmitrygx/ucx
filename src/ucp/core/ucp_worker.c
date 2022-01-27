@@ -1981,14 +1981,15 @@ err:
 
 static void ucp_worker_keepalive_reset(ucp_worker_h worker)
 {
-    worker->keepalive.timerfd     = -1;
-    worker->keepalive.cb_id       = UCS_CALLBACKQ_ID_NULL;
-    worker->keepalive.last_round  = 0;
-    worker->keepalive.lane_map    = 0;
-    worker->keepalive.ep_count    = 0;
-    worker->keepalive.iter_count  = 0;
-    worker->keepalive.iter        = &worker->all_eps;
-    worker->keepalive.round_count = 0;
+    worker->keepalive.timerfd          = -1;
+    worker->keepalive.cb_id            = UCS_CALLBACKQ_ID_NULL;
+    worker->keepalive.last_round       = 0;
+    worker->keepalive.lane_map         = 0;
+    worker->keepalive.lane_check_flags = 0;
+    worker->keepalive.ep_count         = 0;
+    worker->keepalive.iter_count       = 0;
+    worker->keepalive.iter             = &worker->all_eps;
+    worker->keepalive.round_count      = 0;
 }
 
 static void ucp_worker_destroy_configs(ucp_worker_h worker)
@@ -3016,6 +3017,7 @@ static UCS_F_ALWAYS_INLINE void
 ucp_worker_keepalive_complete(ucp_worker_h worker, ucs_time_t now)
 {
     ucs_assert(worker->keepalive.lane_map == 0);
+    ucs_assert(worker->keepalive.lane_check_flags == 0);
 
     ucs_trace("worker %p: keepalive round %zu completed on %u endpoints, "
               "now: <%lf sec>",
@@ -3146,6 +3148,7 @@ void ucp_worker_keepalive_remove_ep(ucp_ep_h ep)
         ucs_debug("worker %p: removed keepalive current ep %p, moving to next",
                   worker, ep);
         worker->keepalive.lane_map = 0;
+        worker->keepalive.lane_check_flags = 0;
         ucp_worker_keepalive_next_ep(worker);
         ucs_assert(worker->keepalive.iter != &ucp_ep_ext_gen(ep)->ep_list);
 

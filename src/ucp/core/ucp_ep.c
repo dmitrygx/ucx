@@ -3057,6 +3057,7 @@ ucs_status_t ucp_ep_do_uct_ep_keepalive(ucp_ep_h ucp_ep, uct_ep_h uct_ep,
                                         ucp_rsc_index_t rsc_idx, unsigned flags,
                                         uct_completion_t *comp)
 {
+    ucp_worker_h worker       = ucp_ep->worker;
     ucp_tl_bitmap_t tl_bitmap = UCS_BITMAP_ZERO;
     ucs_status_t status;
     ssize_t packed_len;
@@ -3065,14 +3066,38 @@ ucs_status_t ucp_ep_do_uct_ep_keepalive(ucp_ep_h ucp_ep, uct_ep_h uct_ep,
 
     ucs_assert(!(ucp_ep->flags & UCP_EP_FLAG_FAILED));
     ucs_assert((rsc_idx == UCP_NULL_RESOURCE) ||
-               (ucp_worker_iface(ucp_ep->worker, rsc_idx)->attr.cap.flags &
+               (ucp_worker_iface(worker, rsc_idx)->attr.cap.flags &
                 UCT_IFACE_FLAG_EP_CHECK));
 
-    if (!ucp_ep_is_am_keepalive(ucp_ep, rsc_idx)) {
-        return uct_ep_check(uct_ep, flags, comp);
+    if (worker->keepalive.lane_check_flags == 0) {
+        /* Must be done by all lanes to verify if the peer alive */
+        worker->keepalive.lane_check_flags |=
+                UCP_WORKER_KEEPALIVE_FLAG_EP_CHECK;
+        if (ucp_ep_is_am_keepalive(ucp_ep, rsc_idx)) {
+            worker->keepalive.lane_check_flags |=
+                    UCP_WORKER_KEEPALIVE_FLAG_AM;
+        }
     }
 
-    ucs_assert(ucp_worker_iface(ucp_ep->worker, rsc_idx)->attr.cap.flags &
+    if (worker->keepalive.lane_check_flags &
+                UCP_WORKER_KEEPALIVE_FLAG_EP_CHECK) {
+        status = uct_ep_check(uct_ep, flags, comp);
+        if (status == UCS_ERR_NO_RESOURCE) {
+            return UCS_ERR_NO_RESOURCE;
+        }
+
+        worker->keepalive.lane_check_flags &=
+                ~UCP_WORKER_KEEPALIVE_FLAG_EP_CHECK;
+        if (status != UCS_OK) {
+            return status;
+        }
+    }
+
+    if (!(worker->keepalive.lane_check_flags & UCP_WORKER_KEEPALIVE_FLAG_AM)) {
+        return UCS_OK;
+    }
+
+    ucs_assert(ucp_worker_iface(worker, rsc_idx)->attr.cap.flags &
                UCT_IFACE_FLAG_AM_BCOPY);
 
     UCS_BITMAP_SET(tl_bitmap, rsc_idx);
@@ -3082,7 +3107,7 @@ ucs_status_t ucp_ep_do_uct_ep_keepalive(ucp_ep_h ucp_ep, uct_ep_h uct_ep,
                                     &wireup_msg_iov[1].iov_base,
                                     &wireup_msg_iov[1].iov_len);
     if (status != UCS_OK) {
-        return status;
+        goto out_check_am_complete;
     }
 
     wireup_msg_iov[0].iov_base = &wireup_msg;
@@ -3091,7 +3116,14 @@ ucs_status_t ucp_ep_do_uct_ep_keepalive(ucp_ep_h ucp_ep, uct_ep_h uct_ep,
     packed_len = uct_ep_am_bcopy(uct_ep, UCP_AM_ID_WIREUP,
                                  ucp_wireup_msg_pack, wireup_msg_iov, 0);
     ucs_free(wireup_msg_iov[1].iov_base);
-    return (packed_len > 0) ? UCS_OK : (ucs_status_t)packed_len;
+    status = (packed_len > 0) ? UCS_OK : (ucs_status_t)packed_len;
+    if (status == UCS_ERR_NO_RESOURCE) {
+        return UCS_ERR_NO_RESOURCE;
+    }
+
+out_check_am_complete:
+    worker->keepalive.lane_check_flags &= ~UCP_WORKER_KEEPALIVE_FLAG_AM;
+    return status;
 }
 
 int ucp_ep_do_keepalive(ucp_ep_h ep, ucs_time_t now)
@@ -3125,6 +3157,7 @@ int ucp_ep_do_keepalive(ucp_ep_h ep, ucs_time_t now)
                      ep, lane, ep->uct_eps[lane], ucs_status_string(status));
         }
 
+        ucs_assert(worker->keepalive.lane_check_flags == 0);
         worker->keepalive.lane_map &= ~UCS_BIT(lane);
     }
 

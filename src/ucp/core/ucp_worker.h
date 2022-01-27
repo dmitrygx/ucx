@@ -168,6 +168,12 @@ enum {
 };
 
 
+enum {
+    UCP_WORKER_KEEPALIVE_FLAG_EP_CHECK = UCS_BIT(0),
+    UCP_WORKER_KEEPALIVE_FLAG_AM       = UCS_BIT(1)
+};
+
+
 #define UCP_WORKER_STAT_EAGER_MSG(_worker, _flags) \
     UCS_STATS_UPDATE_COUNTER((_worker)->stats, \
                              ((_flags) & UCP_RECV_DESC_FLAG_EAGER_SYNC) ? \
@@ -333,6 +339,8 @@ typedef struct ucp_worker {
         ucs_time_t                   last_round;          /* Last round timestamp */
         ucs_list_link_t              *iter;               /* Last EP processed keepalive */
         ucp_lane_map_t               lane_map;            /* Lane map used to retry after no-resources */
+        uint8_t                      lane_check_flags;    /* Remaining checks which should be performed for
+                                                           * the lane */
         unsigned                     ep_count;            /* Number of EPs processed in current time slot */
         unsigned                     iter_count;          /* Number of progress iterations to skip,
                                                            * used to minimize call of ucs_get_time */
