@@ -206,8 +206,6 @@ static ucs_status_t uct_dc_mlx5_iface_query(uct_iface_h tl_iface, uct_iface_attr
         iface_attr->cap.flags &= ~(UCT_IFACE_FLAG_ERRHANDLE_PEER_FAILURE |
                                    UCT_IFACE_FLAG_ERRHANDLE_ZCOPY_BUF    |
                                    UCT_IFACE_FLAG_ERRHANDLE_REMOTE_MEM);
-    } else {
-        iface_attr->cap.flags |= UCT_IFACE_FLAG_EP_CHECK;
     }
 
     return UCS_OK;
@@ -1259,7 +1257,8 @@ static uct_iface_ops_t uct_dc_mlx5_iface_tl_ops = {
     .ep_pending_purge         = uct_dc_mlx5_ep_pending_purge,
     .ep_flush                 = uct_dc_mlx5_ep_flush,
     .ep_fence                 = uct_dc_mlx5_ep_fence,
-    .ep_check                 = uct_dc_mlx5_ep_check,
+    .ep_check                 = 
+            (uct_ep_check_func_t)ucs_empty_function_return_unsupported,
 #if IBV_HW_TM
     .ep_tag_eager_short       = uct_dc_mlx5_ep_tag_eager_short,
     .ep_tag_eager_bcopy       = uct_dc_mlx5_ep_tag_eager_bcopy,
