@@ -150,6 +150,7 @@ void ucp_ep_config_key_reset(ucp_ep_config_key_t *key)
     key->am_lane          = UCP_NULL_LANE;
     key->wireup_msg_lane  = UCP_NULL_LANE;
     key->cm_lane          = UCP_NULL_LANE;
+    key->keepalive_lane   = UCP_NULL_LANE;
     key->rkey_ptr_lane    = UCP_NULL_LANE;
     key->tag_lane         = UCP_NULL_LANE;
     key->rma_bw_md_map    = 0;
@@ -2738,6 +2739,10 @@ void ucp_ep_config_lane_info_str(ucp_worker_h worker,
 
     if (lane == key->tag_lane) {
         ucs_string_buffer_appendf(strbuf, " tag_offload");
+    }
+
+    if (key->keepalive_lane == lane) {
+        ucs_string_buffer_appendf(strbuf, " keepalive");
     }
 
     if (key->wireup_msg_lane == lane) {

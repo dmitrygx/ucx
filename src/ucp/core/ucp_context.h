@@ -31,10 +31,12 @@
 enum {
     /* The flag indicates that the resource may be used for auxiliary
      * wireup communications only */
-    UCP_TL_RSC_FLAG_AUX      = UCS_BIT(0),
+    UCP_TL_RSC_FLAG_AUX       = UCS_BIT(0),
     /* The flag indicates that the resource may be used for client-server
      * connection establishment with a sockaddr */
-    UCP_TL_RSC_FLAG_SOCKADDR = UCS_BIT(1)
+    UCP_TL_RSC_FLAG_SOCKADDR  = UCS_BIT(1),
+    /* The flag indicates that the resource may be used for keepalive only */
+    UCP_TL_RSC_FLAG_KEEPALIVE = UCS_BIT(2)
 };
 
 

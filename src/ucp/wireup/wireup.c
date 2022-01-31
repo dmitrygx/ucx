@@ -709,7 +709,8 @@ ucp_wireup_send_ep_removed(ucp_worker_h worker, const ucp_wireup_msg_t *msg,
      * WIREUP_MSG phase between peers which require a direct EP ID */
     unsigned ep_init_flags = UCP_EP_INIT_ERR_MODE_PEER_FAILURE |
                              UCP_EP_INIT_FLAG_INTERNAL |
-                             UCP_EP_INIT_CONNECT_TO_IFACE_ONLY;
+                             UCP_EP_INIT_CONNECT_TO_IFACE_ONLY |
+                             UCP_EP_INIT_CREATE_AM_LANE_ONLY;
     ucs_status_t status;
     ucp_ep_h reply_ep;
     unsigned addr_indices[UCP_MAX_LANES];
