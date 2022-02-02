@@ -121,6 +121,7 @@ typedef struct uct_ud_neth {
     uint32_t            packet_type;
     uct_ud_psn_t        psn;
     uct_ud_psn_t        ack_psn;
+    uint64_t            cookie;
 } UCS_S_PACKED uct_ud_neth_t;
 
 
@@ -227,6 +228,7 @@ struct uct_ud_iface_addr {
 struct uct_ud_ep_addr {
     uct_ud_iface_addr_t iface_addr;
     uct_ib_uint24_t     ep_id;
+    //uint64_t            cookie;
 };
 
 

@@ -716,7 +716,7 @@ ucs_status_t uct_ud_iface_query(uct_ud_iface_t *iface,
 
     iface_attr->cap.flags              = UCT_IFACE_FLAG_AM_BCOPY         |
                                          UCT_IFACE_FLAG_AM_ZCOPY         |
-                                         UCT_IFACE_FLAG_CONNECT_TO_EP    |
+                                         //UCT_IFACE_FLAG_CONNECT_TO_EP    |
                                          UCT_IFACE_FLAG_CONNECT_TO_IFACE |
                                          UCT_IFACE_FLAG_PENDING          |
                                          UCT_IFACE_FLAG_EP_CHECK         |

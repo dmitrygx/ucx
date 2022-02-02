@@ -255,6 +255,8 @@ struct uct_ud_ep {
     } resend;
     ucs_conn_match_elem_t conn_match;
     uct_ud_ep_conn_sn_t   conn_sn;      /* connection sequence number. assigned in connect_to_iface() */
+    uint64_t              cookie;
+    uint64_t              dest_cookie;
     uint16_t              flags;
     uint8_t               rx_creq_count; /* TODO: remove when reason for DUP/OOO CREQ is found */
     uint8_t               path_index;
@@ -354,7 +356,8 @@ void uct_ud_ep_process_rx(uct_ud_iface_t *iface,
 static UCS_F_ALWAYS_INLINE void
 uct_ud_neth_init_data(uct_ud_ep_t *ep, uct_ud_neth_t *neth)
 {
-    neth->psn = ep->tx.psn;
+    neth->cookie  = ep->cookie; 
+    neth->psn     = ep->tx.psn;
     neth->ack_psn = ep->rx.acked_psn = ucs_frag_list_sn(&ep->rx.ooo_pkts);
 }
 
