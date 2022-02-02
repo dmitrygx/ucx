@@ -255,6 +255,8 @@ struct uct_ud_ep {
     } resend;
     ucs_conn_match_elem_t conn_match;
     uct_ud_ep_conn_sn_t   conn_sn;      /* connection sequence number. assigned in connect_to_iface() */
+    uint64_t              cookie;
+    uint64_t              dest_cookie;
     uint16_t              flags;
     uint8_t               rx_creq_count; /* TODO: remove when reason for DUP/OOO CREQ is found */
     uint8_t               path_index;

@@ -223,6 +223,7 @@ struct uct_ud_ctl_hdr {
             uct_ud_ep_addr_t    ep_addr;
             uct_ud_ep_conn_sn_t conn_sn;
             uint8_t             path_index;
+            uint64_t            cookie;
         } conn_req;
         struct {
             uint32_t            src_ep_id;

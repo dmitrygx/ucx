@@ -381,7 +381,9 @@ UCS_CLASS_INIT_FUNC(uct_ud_ep_t, uct_ud_iface_t *iface,
     self->path_index = UCT_EP_PARAMS_GET_PATH_INDEX(params);
     uct_ud_ep_reset(self);
     uct_ud_iface_add_ep(iface, self);
-    self->tx.tick = iface->tx.tick;
+    self->dest_cookie = 0;
+    self->cookie      = ucs_generate_uuid((uint64_t)self);
+    self->tx.tick     = iface->tx.tick;
     ucs_wtimer_init(&self->timer, uct_ud_ep_timer);
     ucs_arbiter_group_init(&self->tx.pending.group);
     ucs_arbiter_elem_init(&self->tx.pending.elem);
@@ -708,7 +710,9 @@ static uct_ud_ep_t *uct_ud_ep_create_passive(uct_ud_iface_t *iface, uct_ud_ctl_h
         goto err_ep_destroy;
     }
 
-    ep->path_index = ctl->conn_req.path_index;
+    ucs_assert(ep->dest_cookie == 0);
+    ep->dest_cookie = ctl->conn_req.cookie;
+    ep->path_index  = ctl->conn_req.path_index;
 
     uct_ud_ep_set_state(ep, UCT_UD_EP_FLAG_PRIVATE);
 
@@ -768,7 +772,10 @@ static void uct_ud_ep_rx_creq(uct_ud_iface_t *iface, uct_ud_neth_t *neth)
         uct_ud_ep_ctl_op_add(iface, ep, UCT_UD_EP_OP_CREP);
     } else if (ep->dest_ep_id == UCT_UD_EP_NULL_ID) {
         /* simultaneous CREQ */
-        uct_ud_ep_set_dest_ep_id(ep, uct_ib_unpack_uint24(ctl->conn_req.ep_addr.ep_id));
+        uct_ud_ep_set_dest_ep_id(
+                ep, uct_ib_unpack_uint24(ctl->conn_req.ep_addr.ep_id));
+        ucs_assert(ep->dest_cookie == 0);
+        ep->dest_cookie         = ctl->conn_req.cookie;
         ep->rx.ooo_pkts.head_sn = neth->psn;
         uct_ud_peer_copy(&ep->peer, ucs_unaligned_ptr(&ctl->peer));
         ucs_debug("simultaneous CREQ ep=%p"
@@ -789,6 +796,10 @@ static void uct_ud_ep_rx_creq(uct_ud_iface_t *iface, uct_ud_neth_t *neth)
     ucs_assertv_always(ctl->conn_req.conn_sn == ep->conn_sn,
                        "creq->conn_sn=%d ep->conn_sn=%d",
                        ctl->conn_req.conn_sn, ep->conn_sn);
+
+    ucs_assertv_always(ctl->conn_req.cookie == ep->dest_cookie,
+                       "creq->cookie=%zu ep->dest_cookie=%zu",
+                       ctl->conn_req.cookie, ep->dest_cookie);
 
     ucs_assertv_always(ctl->conn_req.path_index == ep->path_index,
                        "creq->path_index=%d ep->path_index=%d",
@@ -893,6 +904,7 @@ uct_ud_send_skb_t *uct_ud_ep_prepare_creq(uct_ud_ep_t *ep)
     creq->type                = UCT_UD_PACKET_CREQ;
     creq->conn_req.conn_sn    = ep->conn_sn;
     creq->conn_req.path_index = ep->path_index;
+    creq->conn_req.cookie     = ep->cookie;
 
     status = uct_ud_ep_get_address(&ep->super.super,
                                    (void*)&creq->conn_req.ep_addr);
