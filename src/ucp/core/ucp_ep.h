@@ -193,6 +193,7 @@ struct ucp_ep_config_key {
     ucp_lane_index_t         tag_lane;        /* Lane for tag matching offload (can be NULL) */
     ucp_lane_index_t         wireup_msg_lane; /* Lane for wireup messages (can be NULL) */
     ucp_lane_index_t         cm_lane;         /* Lane for holding a CM connection (can be NULL) */
+    ucp_lane_index_t         keepalive_lane;  /* Keepalive lane */
 
     /* Lanes for remote memory access, sorted by priority, highest first */
     ucp_lane_index_t         rma_lanes[UCP_MAX_LANES];
@@ -223,9 +224,6 @@ struct ucp_ep_config_key {
      * component index to be used for unpacking remote key from each set bit in
      * reachable_md_map */
     ucp_rsc_index_t          *dst_md_cmpts;
-
-    /* Bitmap of lanes to ep_check keepalive operations. */
-    ucp_lane_map_t           ep_check_map;
 
     /* Error handling mode */
     ucp_err_handling_mode_t  err_mode;

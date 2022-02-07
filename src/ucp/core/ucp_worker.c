@@ -1982,7 +1982,7 @@ static void ucp_worker_keepalive_reset(ucp_worker_h worker)
     worker->keepalive.timerfd     = -1;
     worker->keepalive.cb_id       = UCS_CALLBACKQ_ID_NULL;
     worker->keepalive.last_round  = 0;
-    worker->keepalive.lane_map    = 0;
+    worker->keepalive.ep          = NULL;
     worker->keepalive.ep_count    = 0;
     worker->keepalive.iter_count  = 0;
     worker->keepalive.iter        = &worker->all_eps;
@@ -2975,13 +2975,11 @@ ucp_worker_keepalive_next_ep(ucp_worker_h worker)
 {
     ucp_ep_h ep;
 
-    if (worker->keepalive.lane_map == 0) {
+    if (worker->keepalive.ep == NULL) {
         worker->keepalive.iter = worker->keepalive.iter->next;
         if (worker->keepalive.iter == &worker->all_eps) {
             return NULL;
         }
-
-        worker->keepalive.lane_map = UCS_MASK(UCP_MAX_LANES);
     }
 
     ucs_assert(worker->keepalive.iter != &worker->all_eps);
@@ -2990,17 +2988,11 @@ ucp_worker_keepalive_next_ep(ucp_worker_h worker)
 
     if ((ep->cfg_index == UCP_WORKER_CFG_INDEX_NULL) ||
         (ep->flags & UCP_EP_FLAG_FAILED)) {
-        worker->keepalive.lane_map = 0;
+        worker->keepalive.ep = NULL;
         return NULL;
     }
 
-    /* Take updated ep_check_map, in case endpoint configuration has changed
-     * before continuing this round */
-    worker->keepalive.lane_map &= ucp_ep_config(ep)->key.ep_check_map;
-    if (worker->keepalive.lane_map == 0) {
-        return NULL;
-    }
-
+    worker->keepalive.ep = ep;
     return ep;
 }
 
@@ -3050,7 +3042,7 @@ err_close_timerfd:
 static UCS_F_ALWAYS_INLINE void
 ucp_worker_keepalive_complete(ucp_worker_h worker, ucs_time_t now)
 {
-    ucs_assert(worker->keepalive.lane_map == 0);
+    ucs_assert(worker->keepalive.ep == NULL);
 
     ucs_trace("worker %p: keepalive round %zu completed on %u endpoints, "
               "now: <%lf sec>",
@@ -3106,8 +3098,8 @@ ucp_worker_do_keepalive_progress(ucp_worker_h worker)
             continue;
         }
 
-        ucs_trace_func("worker %p: do keepalive on ep %p lane_map 0x%x", worker,
-                       ep, worker->keepalive.lane_map);
+        ucs_trace_func("worker %p: do keepalive on ep %p lane %u", worker,
+                       ep, ucp_ep_config(ep)->key.keepalive_lane);
         if (!ucp_ep_do_keepalive(ep, now)) {
             /* In case if EP has no resources to send keepalive message
              * then just return without update of last_round timestamp,
@@ -3146,18 +3138,16 @@ void ucp_worker_keepalive_add_ep(ucp_ep_h ep)
     ucs_assert(ep->cfg_index != UCP_WORKER_CFG_INDEX_NULL);
 
     if ((ep->flags & UCP_EP_FLAG_INTERNAL) ||
-        (ucp_ep_config(ep)->key.ep_check_map == 0) ||
         !ucp_worker_keepalive_is_enabled(worker)) {
-        ucs_trace("ep %p flags 0x%x cfg_index %d: not using keepalive, "
-                  "err_mode %d ep_check_map 0x%x",
-                  ep, ep->flags, ep->cfg_index, ucp_ep_config(ep)->key.err_mode,
-                  ucp_ep_config(ep)->key.ep_check_map);
+        ucs_trace("ep %p flags 0x%x cfg_index %d: not using keepalive,"
+                  " err_mode %d", ep, ep->flags, ep->cfg_index,
+                  ucp_ep_config(ep)->key.err_mode);
         return;
     }
 
     ucp_worker_keepalive_timerfd_init(worker);
-    ucs_trace("ep %p flags 0x%x: adding to keepalive lane_map 0x%x", ep,
-              ep->flags, ucp_ep_config(ep)->key.ep_check_map);
+    ucs_trace("ep %p flags 0x%x lane %u: adding to keepalive", ep,
+              ep->flags, ucp_ep_config(ep)->key.keepalive_lane);
     uct_worker_progress_register_safe(worker->uct,
                                       ucp_worker_keepalive_progress, worker,
                                       UCS_CALLBACKQ_FLAG_FAST,
@@ -3180,7 +3170,7 @@ void ucp_worker_keepalive_remove_ep(ucp_ep_h ep)
         /* Set lane_map=0 to make sure the endpoint won't be selected again */
         ucs_debug("worker %p: removed keepalive current ep %p, moving to next",
                   worker, ep);
-        worker->keepalive.lane_map = 0;
+        worker->keepalive.ep = NULL;
         ucp_worker_keepalive_next_ep(worker);
         ucs_assert(worker->keepalive.iter != &ucp_ep_ext_gen(ep)->ep_list);
 

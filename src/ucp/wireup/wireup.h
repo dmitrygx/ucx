@@ -83,11 +83,12 @@ typedef struct ucp_wireup_msg {
 
 
 typedef struct {
-    double          score;
-    unsigned        addr_index;
-    unsigned        path_index;
-    ucp_rsc_index_t rsc_index;
-    uint8_t         priority;
+    double           score;
+    unsigned         addr_index;
+    unsigned         path_index;
+    ucp_rsc_index_t  rsc_index;
+    uint8_t          priority;
+    ucp_lane_index_t lane;
 } ucp_wireup_select_info_t;
 
 

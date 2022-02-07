@@ -517,12 +517,13 @@ UCS_TEST_P(test_ucp_peer_failure_keepalive, kill_receiver,
     smoke_test(true); /* allow wireup to complete */
     smoke_test(false);
 
-    if (ucp_ep_config(stable_sender())->key.ep_check_map == 0) {
+    if (ucp_ep_config(stable_sender())->key.keepalive_lane == UCP_NULL_LANE) {
         UCS_TEST_SKIP_R("Unsupported");
     }
 
     /* ensure both pair have ep_check map */
-    ASSERT_NE(0, ucp_ep_config(failing_sender())->key.ep_check_map);
+    ASSERT_NE(UCP_NULL_LANE,
+              ucp_ep_config(failing_sender())->key.keepalive_lane);
 
     /* aux (ud) transport doesn't support keepalive feature and
      * we are assuming that wireup/connect procedure is done */
