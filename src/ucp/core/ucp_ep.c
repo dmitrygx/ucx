@@ -163,9 +163,11 @@ void ucp_ep_config_key_reset(ucp_ep_config_key_t *key)
     memset(key->amo_lanes,    UCP_NULL_LANE, sizeof(key->amo_lanes));
 }
 
-ucs_status_t ucp_ep_create_base(ucp_worker_h worker, const char *peer_name,
-                                const char *message, ucp_ep_h *ep_p)
+ucs_status_t ucp_ep_create_base(ucp_worker_h worker, unsigned ep_init_flags,
+                                const char *peer_name, const char *message,
+                                ucp_ep_h *ep_p)
 {
+    ucp_context_h context = worker->context;
     ucp_lane_index_t lane;
     ucs_status_t status;
     ucp_ep_h ep;
@@ -225,15 +227,43 @@ ucs_status_t ucp_ep_create_base(ucp_worker_h worker, const char *peer_name,
                       peer_name);
 #endif
 
+    if (!(ep_init_flags & UCP_EP_INIT_FLAG_INTERNAL) &&
+        ((context->config.ext.proto_indirect_id == UCS_CONFIG_ON) ||
+         ((context->config.ext.proto_indirect_id == UCS_CONFIG_AUTO) &&
+          (ep_init_flags & UCP_EP_INIT_ERR_MODE_PEER_FAILURE)))) {
+        ucp_ep_update_flags(ep, UCP_EP_FLAG_INDIRECT_ID, 0);
+    }
+
+    status = UCS_PTR_MAP_PUT(ep, &worker->ep_map, ep,
+                             !!(ep->flags & UCP_EP_FLAG_INDIRECT_ID),
+                             &ucp_ep_ext_control(ep)->local_ep_id);
+    if ((status != UCS_OK) && (status != UCS_ERR_NO_PROGRESS)) {
+        ucs_error("ep %p: failed to allocate ID: %s", ep,
+                  ucs_status_string(status));
+        goto err_free_ep_control_ext;
+    }
+
     /* Create statistics */
     status = UCS_STATS_NODE_ALLOC(&ep->stats, &ucp_ep_stats_class,
                                   worker->stats, "-%p", ep);
     if (status != UCS_OK) {
-        goto err_free_ep_control_ext;
+        goto err_release_local_id;
     }
+
+    ucp_ep_flush_state_reset(ep);
 
     /* Create endpoint VFS node on demand to avoid memory bloat */
     ucs_vfs_obj_set_dirty(worker, ucp_worker_vfs_refresh);
+
+    /* Insert new UCP endpoint to the UCP worker */
+    if (ep_init_flags & UCP_EP_INIT_FLAG_INTERNAL) {
+        ucp_ep_update_flags(ep, UCP_EP_FLAG_INTERNAL, 0);
+        ucs_list_add_tail(&worker->internal_eps, &ucp_ep_ext_gen(ep)->ep_list);
+    } else {
+        ucs_list_add_tail(&worker->all_eps, &ucp_ep_ext_gen(ep)->ep_list);
+        ucs_assert(ep->worker->num_all_eps < UINT_MAX);
+        ++ep->worker->num_all_eps;
+    }
 
     ucp_ep_refcount_add(ep, create);
 
@@ -241,6 +271,8 @@ ucs_status_t ucp_ep_create_base(ucp_worker_h worker, const char *peer_name,
     ucs_debug("created ep %p to %s %s", ep, ucp_ep_peer_name(ep), message);
     return UCS_OK;
 
+err_release_local_id:
+    ucp_ep_release_id(ep);
 err_free_ep_control_ext:
     ucs_free(ucp_ep_ext_control(ep));
 err_free_ep:
@@ -324,66 +356,6 @@ void ucp_ep_destroy_base(ucp_ep_h ep)
     ucp_ep_refcount_assert(ep, discard, ==, 0);
     ucs_assert(ucs_hlist_is_empty(&ucp_ep_ext_gen(ep)->proto_reqs));
 
-    ucs_vfs_obj_remove(ep);
-    ucs_callbackq_remove_if(&ep->worker->uct->progress_q, ucp_ep_remove_filter,
-                            ep);
-    UCS_STATS_NODE_FREE(ep->stats);
-    ucs_free(ucp_ep_ext_control(ep));
-    ucs_strided_alloc_put(&ep->worker->ep_alloc, ep);
-}
-
-ucs_status_t ucp_worker_create_ep(ucp_worker_h worker, unsigned ep_init_flags,
-                                  const char *peer_name, const char *message,
-                                  ucp_ep_h *ep_p)
-{
-    ucp_context_h context = worker->context;
-    ucs_status_t status;
-    ucp_ep_h ep;
-
-    status = ucp_ep_create_base(worker, peer_name, message, &ep);
-    if (status != UCS_OK) {
-        goto err;
-    }
-
-    if (!(ep_init_flags & UCP_EP_INIT_FLAG_INTERNAL) &&
-        ((context->config.ext.proto_indirect_id == UCS_CONFIG_ON) ||
-         ((context->config.ext.proto_indirect_id == UCS_CONFIG_AUTO) &&
-          (ep_init_flags & UCP_EP_INIT_ERR_MODE_PEER_FAILURE)))) {
-        ucp_ep_update_flags(ep, UCP_EP_FLAG_INDIRECT_ID, 0);
-    }
-
-    status = UCS_PTR_MAP_PUT(ep, &worker->ep_map, ep,
-                             !!(ep->flags & UCP_EP_FLAG_INDIRECT_ID),
-                             &ucp_ep_ext_control(ep)->local_ep_id);
-    if ((status != UCS_OK) && (status != UCS_ERR_NO_PROGRESS)) {
-        ucs_error("ep %p: failed to allocate ID: %s", ep,
-                  ucs_status_string(status));
-        goto err_destroy_ep_base;
-    }
-
-    if (ep_init_flags & UCP_EP_INIT_FLAG_INTERNAL) {
-        ucp_ep_update_flags(ep, UCP_EP_FLAG_INTERNAL, 0);
-        ucs_list_add_tail(&worker->internal_eps, &ucp_ep_ext_gen(ep)->ep_list);
-    } else {
-        ucs_list_add_tail(&worker->all_eps, &ucp_ep_ext_gen(ep)->ep_list);
-        ucs_assert(ep->worker->num_all_eps < UINT_MAX);
-        ++ep->worker->num_all_eps;
-    }
-
-    ucp_ep_flush_state_reset(ep);
-
-    *ep_p = ep;
-    return UCS_OK;
-
-err_destroy_ep_base:
-    ucp_ep_refcount_assert(ep, create, ==, 1);
-    ucp_ep_refcount_remove(ep, create);
-err:
-    return status;
-}
-
-void ucp_ep_delete(ucp_ep_h ep)
-{
     if (!(ep->flags & UCP_EP_FLAG_INTERNAL)) {
         ucs_assert(ep->worker->num_all_eps > 0);
         --ep->worker->num_all_eps;
@@ -392,6 +364,17 @@ void ucp_ep_delete(ucp_ep_h ep)
 
     ucp_ep_release_id(ep);
     ucs_list_del(&ucp_ep_ext_gen(ep)->ep_list);
+
+    ucs_vfs_obj_remove(ep);
+    ucs_callbackq_remove_if(&ep->worker->uct->progress_q, ucp_ep_remove_filter,
+                            ep);
+    UCS_STATS_NODE_FREE(ep->stats);
+    ucs_free(ucp_ep_ext_control(ep));
+    ucs_strided_alloc_put(&ep->worker->ep_alloc, ep);
+}
+
+void ucp_ep_delete(ucp_ep_h ep)
+{
     ucp_ep_refcount_assert(ep, create, ==, 1);
     ucp_ep_refcount_remove(ep, create);
 }
@@ -666,7 +649,7 @@ ucp_ep_create_to_worker_addr(ucp_worker_h worker,
     ucp_ep_h ep;
 
     /* allocate endpoint */
-    status = ucp_worker_create_ep(worker, ep_init_flags, remote_address->name,
+    status = ucp_ep_create_base(worker, ep_init_flags, remote_address->name,
                                   message, &ep);
     if (status != UCS_OK) {
         goto err;
@@ -714,8 +697,8 @@ static ucs_status_t ucp_ep_create_to_sock_addr(ucp_worker_h worker,
     ep_init_flags = ucp_ep_init_flags(worker, params) |
                     ucp_cm_ep_init_flags(params);
 
-    status = ucp_worker_create_ep(worker, ep_init_flags, peer_name,
-                                  "from api call", &ep);
+    status = ucp_ep_create_base(worker, ep_init_flags, peer_name,
+                                "from api call", &ep);
     if (status != UCS_OK) {
         goto err;
     }
