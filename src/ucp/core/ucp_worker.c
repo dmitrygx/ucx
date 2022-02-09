@@ -2536,9 +2536,9 @@ static void ucp_worker_eps_cleanup(ucp_worker_h worker)
     ucp_worker_discard_uct_ep_cleanup(worker);
     ucp_worker_destroy_eps(worker, &worker->all_eps, "all");
     ucp_worker_destroy_eps(worker, &worker->internal_eps, "internal");
-    /* Cleanup hash of discarded UCT EPs one more time to destroy UCP EPs
-     * for which procedure of discarding UCT EPs were started during destroying
-     * UCP EPs (it could be discarding of AUX EPs from WIREUP EPs) */
+    /* Cleanup hash of discarded UCT EPs one more time to stop discarding of
+     * UCT EPs (it could be discarding of AUX EPs from WIREUP EPs) which might
+     * be started during destroying of UCP EPs */
     ucp_worker_discard_uct_ep_cleanup(worker);
 
     if (worker->num_all_eps != 0) {
@@ -2555,8 +2555,9 @@ void ucp_worker_destroy(ucp_worker_h worker)
     uct_worker_progress_unregister_safe(worker->uct, &worker->keepalive.cb_id);
     ucp_am_cleanup(worker);
     ucp_worker_eps_cleanup(worker);
-    /* Put ucp_worker_remove_am_handlers after ucp_worker_discard_uct_ep_cleanup
-     * to make sure iface->am[] always cleared.
+    /* Put ucp_worker_remove_am_handlers after ucp_worker_eps_cleanup which
+     * does ucp_worker_discard_uct_ep_cleanup to make sure iface->am[] always
+     * cleared.
      * ucp_worker_discard_uct_ep_cleanup might trigger ucp_worker_iface_deactivate
      * which further set iface->am[UCP_AM_ID_WIREUP].
      */
