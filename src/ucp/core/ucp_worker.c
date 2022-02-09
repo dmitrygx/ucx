@@ -2519,6 +2519,10 @@ static void ucp_worker_destroy_eps(ucp_worker_h worker,
     ucs_debug("worker %p: destroy %s endpoints", worker, ep_type_name);
     ucs_list_for_each_safe(ep_ext, tmp, ep_list, ep_list) {
         ep = ucp_ep_from_ext_gen(ep_ext);
+        if (ep->flags & UCP_EP_FLAG_DELETED) {
+            continue;
+        }
+
         /* Cleanup pending operations on the UCP EP before destroying it, since
          * ucp_ep_destroy_internal() expects the pending queues of the UCT EPs
          * will be empty before they are destroyed */
@@ -2528,40 +2532,27 @@ static void ucp_worker_destroy_eps(ucp_worker_h worker,
     }
 }
 
-static void ucp_worker_eps_cleanup(ucp_worker_h worker)
-{
-    /* Cleanup hash of discarded UCT EPs prior destroying all UCP EPs. It makes
-     * sure destroying UCP EPs which were already marked as closed by a user
-     * and have discarding is in progress */
-    ucp_worker_discard_uct_ep_cleanup(worker);
-    ucp_worker_destroy_eps(worker, &worker->all_eps, "all");
-    ucp_worker_destroy_eps(worker, &worker->internal_eps, "internal");
-    /* Cleanup hash of discarded UCT EPs one more time to stop discarding of
-     * UCT EPs (it could be discarding of AUX EPs from WIREUP EPs) which might
-     * be started during destroying of UCP EPs */
-    ucp_worker_discard_uct_ep_cleanup(worker);
-
-    if (worker->num_all_eps != 0) {
-        ucs_warn("worker %p: %u endpoints were not destroyed", worker,
-                 worker->num_all_eps);
-    }
-}
-
 void ucp_worker_destroy(ucp_worker_h worker)
 {
     ucs_debug("destroy worker %p", worker);
 
     UCS_ASYNC_BLOCK(&worker->async);
     uct_worker_progress_unregister_safe(worker->uct, &worker->keepalive.cb_id);
+    ucp_worker_destroy_eps(worker, &worker->all_eps, "all");
+    ucp_worker_destroy_eps(worker, &worker->internal_eps, "internal");
     ucp_am_cleanup(worker);
-    ucp_worker_eps_cleanup(worker);
-    /* Put ucp_worker_remove_am_handlers after ucp_worker_eps_cleanup which
-     * does ucp_worker_discard_uct_ep_cleanup to make sure iface->am[] always
-     * cleared.
+    ucp_worker_discard_uct_ep_cleanup(worker);
+    /* Put ucp_worker_remove_am_handlers after ucp_worker_discard_uct_ep_cleanup
+     * to make sure iface->am[] always cleared.
      * ucp_worker_discard_uct_ep_cleanup might trigger ucp_worker_iface_deactivate
      * which further set iface->am[UCP_AM_ID_WIREUP].
      */
     ucp_worker_remove_am_handlers(worker);
+
+    if (worker->num_all_eps != 0) {
+        ucs_warn("worker %p: %u endpoints were not destroyed", worker,
+                 worker->num_all_eps);
+    }
 
     if (worker->flush_ops_count != 0) {
         ucs_warn("worker %p: %u pending operations were not flushed", worker,
