@@ -253,7 +253,8 @@ ucs_status_t ucp_ep_create_base(ucp_worker_h worker, unsigned ep_init_flags,
 
     ep = ucp_ep_allocate(worker, peer_name);
     if (ep == NULL) {
-        return UCS_ERR_NO_MEMORY;
+        status = UCS_ERR_NO_MEMORY;
+        goto err;
     }
 
     ucp_stream_ep_init(ep);
