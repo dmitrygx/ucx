@@ -2530,9 +2530,9 @@ static void ucp_worker_destroy_eps(ucp_worker_h worker,
 
 static void ucp_worker_eps_cleanup(ucp_worker_h worker)
 {
-    /* Cleanup hash of discarded UCT EPs prior destroying all UCP EPs to
-     * destroy UCP EPs which were already marked as closed by a user, but had
-     * discarding is in progress */
+    /* Cleanup hash of discarded UCT EPs prior destroying all UCP EPs. It makes
+     * sure destroying UCP EPs which were already marked as closed by a user
+     * and have discarding is in progress */
     ucp_worker_discard_uct_ep_cleanup(worker);
     ucp_worker_destroy_eps(worker, &worker->all_eps, "all");
     ucp_worker_destroy_eps(worker, &worker->internal_eps, "internal");

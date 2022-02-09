@@ -244,11 +244,19 @@ err:
     return NULL;
 }
 
+static int ucp_ep_is_indirect_id(ucp_ep_h ep, unsigned ep_init_flags)
+{
+    ucp_context_h context = ep->worker->context;
+    return !(ep_init_flags & UCP_EP_INIT_FLAG_INTERNAL) &&
+           ((context->config.ext.proto_indirect_id == UCS_CONFIG_ON) ||
+            ((context->config.ext.proto_indirect_id == UCS_CONFIG_AUTO) &&
+             (ep_init_flags & UCP_EP_INIT_ERR_MODE_PEER_FAILURE)));
+}
+
 ucs_status_t ucp_ep_create_base(ucp_worker_h worker, unsigned ep_init_flags,
                                 const char *peer_name, const char *message,
                                 ucp_ep_h *ep_p)
 {
-    ucp_context_h context = worker->context;
     ucs_status_t status;
     ucp_ep_h ep;
 
@@ -260,10 +268,7 @@ ucs_status_t ucp_ep_create_base(ucp_worker_h worker, unsigned ep_init_flags,
     ucp_stream_ep_init(ep);
     ucp_am_ep_init(ep);
 
-    if (!(ep_init_flags & UCP_EP_INIT_FLAG_INTERNAL) &&
-        ((context->config.ext.proto_indirect_id == UCS_CONFIG_ON) ||
-         ((context->config.ext.proto_indirect_id == UCS_CONFIG_AUTO) &&
-          (ep_init_flags & UCP_EP_INIT_ERR_MODE_PEER_FAILURE)))) {
+    if (ucp_ep_is_indirect_id(ep, ep_init_flags)) {
         ucp_ep_update_flags(ep, UCP_EP_FLAG_INDIRECT_ID, 0);
     }
 
