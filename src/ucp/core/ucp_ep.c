@@ -179,7 +179,7 @@ static ucp_ep_h ucp_ep_allocate(ucp_worker_h worker, const char *peer_name)
     ep = ucs_strided_alloc_get(&worker->ep_alloc, "ucp_ep");
     if (ep == NULL) {
         ucs_error("Failed to allocate ep");
-        return NULL;
+        goto err;
     }
 
     ucp_ep_ext_gen(ep)->control_ext = ucs_calloc(1,
