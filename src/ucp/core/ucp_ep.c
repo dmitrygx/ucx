@@ -163,20 +163,23 @@ void ucp_ep_config_key_reset(ucp_ep_config_key_t *key)
     memset(key->amo_lanes,    UCP_NULL_LANE, sizeof(key->amo_lanes));
 }
 
-ucs_status_t ucp_ep_create_base(ucp_worker_h worker, unsigned ep_init_flags,
-                                const char *peer_name, const char *message,
-                                ucp_ep_h *ep_p)
+static void ucp_ep_deallocate(ucp_ep_h ep)
 {
-    ucp_context_h context = worker->context;
+    UCS_STATS_NODE_FREE(ep->stats);
+    ucs_free(ucp_ep_ext_control(ep));
+    ucs_strided_alloc_put(&ep->worker->ep_alloc, ep);
+}
+
+static ucp_ep_h ucp_ep_allocate(ucp_worker_h worker, const char *peer_name)
+{
+    ucp_ep_h ep;
     ucp_lane_index_t lane;
     ucs_status_t status;
-    ucp_ep_h ep;
 
     ep = ucs_strided_alloc_get(&worker->ep_alloc, "ucp_ep");
     if (ep == NULL) {
         ucs_error("Failed to allocate ep");
-        status = UCS_ERR_NO_MEMORY;
-        goto err;
+        return NULL;
     }
 
     ucp_ep_ext_gen(ep)->control_ext = ucs_calloc(1,
@@ -184,7 +187,6 @@ ucs_status_t ucp_ep_create_base(ucp_worker_h worker, unsigned ep_init_flags,
                                                  "ep_control_ext");
     if (ucp_ep_ext_gen(ep)->control_ext == NULL) {
         ucs_error("Failed to allocate ep control extension");
-        status = UCS_ERR_NO_MEMORY;
         goto err_free_ep;
     }
 
@@ -215,8 +217,6 @@ ucs_status_t ucp_ep_create_base(ucp_worker_h worker, unsigned ep_init_flags,
            sizeof(ucp_ep_ext_gen(ep)->ep_match));
 
     ucs_hlist_head_init(&ucp_ep_ext_gen(ep)->proto_reqs);
-    ucp_stream_ep_init(ep);
-    ucp_am_ep_init(ep);
 
     for (lane = 0; lane < UCP_MAX_LANES; ++lane) {
         ep->uct_eps[lane] = NULL;
@@ -227,6 +227,39 @@ ucs_status_t ucp_ep_create_base(ucp_worker_h worker, unsigned ep_init_flags,
                       peer_name);
 #endif
 
+    /* Create statistics */
+    status = UCS_STATS_NODE_ALLOC(&ep->stats, &ucp_ep_stats_class,
+                                  worker->stats, "-%p", ep);
+    if (status != UCS_OK) {
+        goto err_free_ep_control_ext;
+    }
+
+    return ep;
+
+err_free_ep_control_ext:
+    ucs_free(ucp_ep_ext_control(ep));
+err_free_ep:
+    ucs_strided_alloc_put(&worker->ep_alloc, ep);
+err:
+    return NULL;
+}
+
+ucs_status_t ucp_ep_create_base(ucp_worker_h worker, unsigned ep_init_flags,
+                                const char *peer_name, const char *message,
+                                ucp_ep_h *ep_p)
+{
+    ucp_context_h context = worker->context;
+    ucs_status_t status;
+    ucp_ep_h ep;
+
+    ep = ucp_ep_allocate(worker, peer_name);
+    if (ep == NULL) {
+        return UCS_ERR_NO_MEMORY;
+    }
+
+    ucp_stream_ep_init(ep);
+    ucp_am_ep_init(ep);
+
     if (!(ep_init_flags & UCP_EP_INIT_FLAG_INTERNAL) &&
         ((context->config.ext.proto_indirect_id == UCS_CONFIG_ON) ||
          ((context->config.ext.proto_indirect_id == UCS_CONFIG_AUTO) &&
@@ -235,19 +268,12 @@ ucs_status_t ucp_ep_create_base(ucp_worker_h worker, unsigned ep_init_flags,
     }
 
     status = UCS_PTR_MAP_PUT(ep, &worker->ep_map, ep,
-                             !!(ep->flags & UCP_EP_FLAG_INDIRECT_ID),
+                             ep->flags & UCP_EP_FLAG_INDIRECT_ID,
                              &ucp_ep_ext_control(ep)->local_ep_id);
     if ((status != UCS_OK) && (status != UCS_ERR_NO_PROGRESS)) {
         ucs_error("ep %p: failed to allocate ID: %s", ep,
                   ucs_status_string(status));
-        goto err_free_ep_control_ext;
-    }
-
-    /* Create statistics */
-    status = UCS_STATS_NODE_ALLOC(&ep->stats, &ucp_ep_stats_class,
-                                  worker->stats, "-%p", ep);
-    if (status != UCS_OK) {
-        goto err_release_local_id;
+        goto err_ep_deallocate;
     }
 
     ucp_ep_flush_state_reset(ep);
@@ -271,12 +297,8 @@ ucs_status_t ucp_ep_create_base(ucp_worker_h worker, unsigned ep_init_flags,
     ucs_debug("created ep %p to %s %s", ep, ucp_ep_peer_name(ep), message);
     return UCS_OK;
 
-err_release_local_id:
-    ucp_ep_release_id(ep);
-err_free_ep_control_ext:
-    ucs_free(ucp_ep_ext_control(ep));
-err_free_ep:
-    ucs_strided_alloc_put(&worker->ep_alloc, ep);
+err_ep_deallocate:
+    ucp_ep_deallocate(ep);
 err:
     return status;
 }
@@ -368,9 +390,7 @@ void ucp_ep_destroy_base(ucp_ep_h ep)
     ucs_vfs_obj_remove(ep);
     ucs_callbackq_remove_if(&ep->worker->uct->progress_q, ucp_ep_remove_filter,
                             ep);
-    UCS_STATS_NODE_FREE(ep->stats);
-    ucs_free(ucp_ep_ext_control(ep));
-    ucs_strided_alloc_put(&ep->worker->ep_alloc, ep);
+    ucp_ep_deallocate(ep);
 }
 
 void ucp_ep_delete(ucp_ep_h ep)

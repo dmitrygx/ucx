@@ -2519,7 +2519,6 @@ static void ucp_worker_destroy_eps(ucp_worker_h worker,
     ucs_debug("worker %p: destroy %s endpoints", worker, ep_type_name);
     ucs_list_for_each_safe(ep_ext, tmp, ep_list, ep_list) {
         ep = ucp_ep_from_ext_gen(ep_ext);
-
         /* Cleanup pending operations on the UCP EP before destroying it, since
          * ucp_ep_destroy_internal() expects the pending queues of the UCT EPs
          * will be empty before they are destroyed */
@@ -2532,13 +2531,14 @@ static void ucp_worker_destroy_eps(ucp_worker_h worker,
 static void ucp_worker_eps_cleanup(ucp_worker_h worker)
 {
     /* Cleanup hash of discarded UCT EPs prior destroying all UCP EPs to
-     * destroy UCP EPs which were fully discarded */
+     * destroy UCP EPs which were already marked as closed by a user, but had
+     * discarding is in progress */
     ucp_worker_discard_uct_ep_cleanup(worker);
     ucp_worker_destroy_eps(worker, &worker->all_eps, "all");
     ucp_worker_destroy_eps(worker, &worker->internal_eps, "internal");
     /* Cleanup hash of discarded UCT EPs one more time to destroy UCP EPs
-     * for which UCT EP discarding procedure were started during destroying
-     * UCP EPs */
+     * for which procedure of discarding UCT EPs were started during destroying
+     * UCP EPs (it could be discarding of AUX EPs from WIREUP EPs) */
     ucp_worker_discard_uct_ep_cleanup(worker);
 
     if (worker->num_all_eps != 0) {
