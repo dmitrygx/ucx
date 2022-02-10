@@ -469,6 +469,7 @@ static UCS_CLASS_CLEANUP_FUNC(ucp_wireup_ep_t)
         /* No pending operations should be scheduled */
         uct_ep_pending_purge(self->aux_ep, ucp_destroyed_ep_pending_purge,
                              ucp_ep);
+        ucp_ep_unprogress_uct_ep(ucp_ep, self->aux_ep, self->aux_rsc_index);
         uct_ep_destroy(self->aux_ep);
         self->aux_ep = NULL;
     }
@@ -477,6 +478,8 @@ static UCS_CLASS_CLEANUP_FUNC(ucp_wireup_ep_t)
         /* No pending operations should be scheduled */
         uct_ep_pending_purge(self->super.uct_ep,
                              ucp_destroyed_ep_pending_purge, ucp_ep);
+        ucp_ep_unprogress_uct_ep(ucp_ep, self->super.uct_ep,
+                                 self->super.rsc_index);
         uct_ep_destroy(self->super.uct_ep);
         ucp_proxy_ep_set_uct_ep(&self->super, NULL, 0, UCP_NULL_RESOURCE);
     }
