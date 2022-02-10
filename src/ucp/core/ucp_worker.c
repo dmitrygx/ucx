@@ -2519,10 +2519,6 @@ static void ucp_worker_destroy_eps(ucp_worker_h worker,
     ucs_debug("worker %p: destroy %s endpoints", worker, ep_type_name);
     ucs_list_for_each_safe(ep_ext, tmp, ep_list, ep_list) {
         ep = ucp_ep_from_ext_gen(ep_ext);
-        if (ep->flags & UCP_EP_FLAG_DELETED) {
-            continue;
-        }
-
         /* Cleanup pending operations on the UCP EP before destroying it, since
          * ucp_ep_destroy_internal() expects the pending queues of the UCT EPs
          * will be empty before they are destroyed */
@@ -2538,10 +2534,10 @@ void ucp_worker_destroy(ucp_worker_h worker)
 
     UCS_ASYNC_BLOCK(&worker->async);
     uct_worker_progress_unregister_safe(worker->uct, &worker->keepalive.cb_id);
+    ucp_worker_discard_uct_ep_cleanup(worker);
     ucp_worker_destroy_eps(worker, &worker->all_eps, "all");
     ucp_worker_destroy_eps(worker, &worker->internal_eps, "internal");
     ucp_am_cleanup(worker);
-    ucp_worker_discard_uct_ep_cleanup(worker);
     /* Put ucp_worker_remove_am_handlers after ucp_worker_discard_uct_ep_cleanup
      * to make sure iface->am[] always cleared.
      * ucp_worker_discard_uct_ep_cleanup might trigger ucp_worker_iface_deactivate

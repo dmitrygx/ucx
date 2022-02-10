@@ -369,7 +369,6 @@ static int ucp_ep_remove_filter(const ucs_callbackq_elem_t *elem, void *arg)
 
 void ucp_ep_destroy_base(ucp_ep_h ep)
 {
-    ucs_assert(ep->flags & UCP_EP_FLAG_DELETED);
     ucp_ep_refcount_field_assert(ep, refcount, ==, 0);
     ucp_ep_refcount_assert(ep, create, ==, 0);
     ucp_ep_refcount_assert(ep, flush, ==, 0);
@@ -393,9 +392,6 @@ void ucp_ep_destroy_base(ucp_ep_h ep)
 
 void ucp_ep_delete(ucp_ep_h ep)
 {
-    ucs_assert(!(ep->flags & UCP_EP_FLAG_DELETED));
-    ep->flags |= UCP_EP_FLAG_DELETED;
-
     ucp_ep_refcount_assert(ep, create, ==, 1);
     ucp_ep_refcount_remove(ep, create);
 }
