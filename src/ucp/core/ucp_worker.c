@@ -2505,8 +2505,6 @@ static void ucp_worker_discard_uct_ep_cleanup(ucp_worker_h worker)
         ucs_callbackq_remove_if(&worker->uct->progress_q,
                                 ucp_worker_discard_remove_filter, req);
     })
-
-    kh_clear(ucp_worker_discard_uct_ep_hash, &worker->discard_uct_ep_hash);
 }
 
 static void ucp_worker_destroy_eps(ucp_worker_h worker,
