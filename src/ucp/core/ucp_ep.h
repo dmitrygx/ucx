@@ -108,6 +108,9 @@ enum {
     UCP_EP_FLAG_INTERNAL               = UCS_BIT(13),/* the internal EP which is mem-type EP
                                                         or created for ending EP_REMOVED
                                                         wireup message */
+    UCP_EP_FLAG_INDIRECT_ID            = UCS_BIT(14),/* protocols on this endpoint will send
+                                                        indirect endpoint id instead of pointer,
+                                                        can be replaced with looking at local ID */
 
     /* DEBUG bits */
     UCP_EP_FLAG_CONNECT_REQ_SENT       = UCS_BIT(16),/* DEBUG: Connection request was sent */

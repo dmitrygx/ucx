@@ -244,6 +244,15 @@ err:
     return NULL;
 }
 
+static int ucp_ep_shall_use_indirect_id(ucp_context_h context,
+                                        unsigned ep_init_flags)
+{
+    return !(ep_init_flags & UCP_EP_INIT_FLAG_INTERNAL) &&
+           ((context->config.ext.proto_indirect_id == UCS_CONFIG_ON) ||
+            ((context->config.ext.proto_indirect_id == UCS_CONFIG_AUTO) &&
+             (ep_init_flags & UCP_EP_INIT_ERR_MODE_PEER_FAILURE)));
+}
+
 ucs_status_t ucp_ep_create_base(ucp_worker_h worker, unsigned ep_init_flags,
                                 const char *peer_name, const char *message,
                                 ucp_ep_h *ep_p)
@@ -260,13 +269,13 @@ ucs_status_t ucp_ep_create_base(ucp_worker_h worker, unsigned ep_init_flags,
     ucp_stream_ep_init(ep);
     ucp_am_ep_init(ep);
 
-    status = UCS_PTR_MAP_PUT(
-            ep, &worker->ep_map, ep,
-            ucp_ep_shall_use_indirect_id(
-                    ep->worker->context,
-                    ep_init_flags & UCP_EP_INIT_FLAG_INTERNAL,
-                    ep_init_flags & UCP_EP_INIT_ERR_MODE_PEER_FAILURE),
-            &ucp_ep_ext_control(ep)->local_ep_id);
+    if (ucp_ep_shall_use_indirect_id(ep->worker->context, ep_init_flags)) {
+        ucp_ep_update_flags(ep, UCP_EP_FLAG_INDIRECT_ID, 0);
+    }
+
+    status = UCS_PTR_MAP_PUT(ep, &worker->ep_map, ep,
+                             ep->flags & UCP_EP_FLAG_INDIRECT_ID,
+                             &ucp_ep_ext_control(ep)->local_ep_id);
     if ((status != UCS_OK) && (status != UCS_ERR_NO_PROGRESS)) {
         ucs_error("ep %p: failed to allocate ID: %s", ep,
                   ucs_status_string(status));

@@ -269,23 +269,10 @@ ucp_ep_config_connect_p2p(ucp_worker_h worker,
                                   ucp_ep_config_key_has_cm_lane(ep_config_key));
 }
 
-static UCS_F_ALWAYS_INLINE int
-ucp_ep_shall_use_indirect_id(ucp_context_h context, int is_ep_internal,
-                            int is_ep_err_handling)
-{
-    return !is_ep_internal &&
-           ((context->config.ext.proto_indirect_id == UCS_CONFIG_ON) ||
-            ((context->config.ext.proto_indirect_id == UCS_CONFIG_AUTO) &&
-             is_ep_err_handling));
-}
-
 static UCS_F_ALWAYS_INLINE int ucp_ep_use_indirect_id(ucp_ep_h ep)
 {
     UCS_STATIC_ASSERT(sizeof(ep->flags) <= sizeof(int));
-    return ucp_ep_shall_use_indirect_id(ep->worker->context,
-                                        ep->flags & UCP_EP_FLAG_INTERNAL,
-                                        ucp_ep_config(ep)->key.err_mode !=
-                                                UCP_ERR_HANDLING_MODE_NONE);
+    return ep->flags & UCP_EP_FLAG_INDIRECT_ID;
 }
 
 #endif
