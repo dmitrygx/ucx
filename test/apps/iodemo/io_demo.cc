@@ -1801,6 +1801,7 @@ public:
                                  UcxLog &log)
     {
         log << server_info.conn->get_log_prefix()
+            << " deferred requests " << server_info.conn->has_deferred_requests()
             << " read " << server_info.num_completed[IO_READ] << "/"
             << server_info.num_sent[IO_READ] << " write "
             << server_info.num_completed[IO_WRITE] << "/"

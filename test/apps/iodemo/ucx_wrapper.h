@@ -347,6 +347,10 @@ public:
         return _num_instances;
     }
 
+    bool has_deferred_requests() const {
+        return !_iomsg_recv_backlog.empty();
+    }
+
 private:
     static ucp_tag_t make_data_tag(uint32_t conn_id, uint32_t sn);
 
