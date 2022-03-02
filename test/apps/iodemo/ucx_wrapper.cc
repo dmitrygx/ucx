@@ -444,15 +444,15 @@ void UcxContext::progress_io_message()
         UCX_LOG << "could not find connection with id " << conn_id;
     } else {
         UcxConnection *conn = iter->second;
-        if (conn->ucx_status() == UCS_OK) {
-            dispatch_io_message(conn, &_iomsg_buffer[0],
-                                _iomsg_recv_request->recv_length);
-        } else if (!conn->is_established()) {
+        if (!conn->is_established()) {
             // tag-recv request can be completed before stream-recv callback
             // has been invoked, defer the processing of io message to the
             // point when connection is established
             conn->iomsg_recv_defer(_iomsg_buffer,
                                    _iomsg_recv_request->recv_length);
+        } else {
+            dispatch_io_message(conn, &_iomsg_buffer[0],
+                                _iomsg_recv_request->recv_length);
         }
     }
     request_release(_iomsg_recv_request);
@@ -1202,13 +1202,10 @@ void UcxConnection::established(ucs_status_t status)
     _context.remove_connection_inprogress(this);
     invoke_callback(_establish_cb, status);
 
-    if (status == UCS_OK) {
-        while (!_iomsg_recv_backlog.empty()) {
-            const UcxContext::iomsg_buffer_t &iomsg =
-                    _iomsg_recv_backlog.front();
-            _context.dispatch_io_message(this, &iomsg[0], iomsg.size());
-            _iomsg_recv_backlog.pop();
-        }
+    while (!_iomsg_recv_backlog.empty()) {
+        const UcxContext::iomsg_buffer_t &iomsg = _iomsg_recv_backlog.front();
+        _context.dispatch_io_message(this, &iomsg[0], iomsg.size());
+        _iomsg_recv_backlog.pop();
     }
 }
 

@@ -1359,7 +1359,12 @@ public:
                     << msg->sn << " data size " << msg->data_size
                     << " conn " << conn;
 
-        assert(conn->ucx_status() == UCS_OK);
+        assert(conn->is_established());
+
+        if (conn->ucx_status() != UCS_OK) {
+            // no need to handle
+            return;
+        }
 
         if (opts().validate) {
             assert(length == opts().iomsg_size);
@@ -1861,7 +1866,7 @@ public:
                     << msg->sn << " data size " << msg->data_size
                     << " conn " << conn;
 
-        assert(conn->ucx_status() == UCS_OK);
+        assert(conn->is_established());
 
         if (msg->op >= IO_COMP_MIN) {
             assert(msg->op == IO_WRITE_COMP);
