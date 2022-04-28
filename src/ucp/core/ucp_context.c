@@ -1368,6 +1368,14 @@ static ucs_status_t ucp_add_component_resources(ucp_context_h context,
                 }
             }
 
+            if (md_attr->cap.flags & UCT_MD_FLAG_SHARED_MKEY) {
+                ucs_memory_type_for_each(mem_type) {
+                    if (md_attr->cap.reg_mem_types & UCS_BIT(mem_type)) {
+                        context->shared_md_map[mem_type] |= UCS_BIT(md_index);
+                    }
+                }
+            }
+
             ++context->num_mds;
         } else {
             /* If the MD does not have transport resources (device or sockaddr),
@@ -1410,7 +1418,8 @@ static ucs_status_t ucp_fill_resources(ucp_context_h context,
     context->num_mem_type_detect_mds  = 0;
 
     for (i = 0; i < UCS_MEMORY_TYPE_LAST; ++i) {
-        context->reg_md_map[i] = 0;
+        context->reg_md_map[i]    = 0;
+        context->shared_md_map[i] = 0;
     }
 
     ucs_string_set_init(&avail_tls);
@@ -1903,6 +1912,8 @@ ucs_status_t ucp_init_version(unsigned api_major_version, unsigned api_minor_ver
     if (status != UCS_OK) {
         goto err_thread_lock_finalize;
     }
+
+    context->uuid = ucs_generate_uuid((uintptr_t)context);
 
     if (config->enable_rcache != UCS_NO) {
         status = ucp_mem_rcache_init(context);

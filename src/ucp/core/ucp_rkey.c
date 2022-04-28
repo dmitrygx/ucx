@@ -56,6 +56,9 @@ size_t ucp_rkey_packed_size(ucp_context_h context, ucp_md_map_t md_map,
     size  = sizeof(ucp_md_map_t); /* Memory domains map */
     size += sizeof(uint8_t); /* Memory type */
 
+    /* Always include shared key info for now */
+    size += sizeof(uint8_t); /* Peer ID */
+
     ucs_for_each_bit(md_index, md_map) {
         tl_rkey_size = context->tl_mds[md_index].attr.rkey_packed_size;
         ucs_assert_always(tl_rkey_size <= UINT8_MAX);
@@ -141,8 +144,8 @@ ucp_rkey_pack_common(ucp_context_h context, ucp_md_map_t md_map,
     ucs_log_indent(1);
 
     UCS_STATIC_ASSERT(UCS_MEMORY_TYPE_LAST <= 255);
-    *ucs_serialize_next(&p, ucp_md_map_t) = md_map;
-    *ucs_serialize_next(&p, uint8_t)      = mem_info->type;
+    *ucs_serialize_next(&p, ucp_md_map_t)    = md_map;
+    *ucs_serialize_next(&p, uint8_t)         = mem_info->type;
 
     params.field_mask = UCT_MD_MKEY_PACK_FIELD_FLAGS;
     /* Write both size and rkey_buffer for each UCT rkey */
@@ -198,7 +201,8 @@ UCS_PROFILE_FUNC(ssize_t, ucp_rkey_pack_uct,
                  const ucs_sys_dev_distance_t *sys_distance, void *buffer)
 {
     return ucp_rkey_pack_common(context, md_map, memh, mem_info,
-                                sys_dev_map, sys_distance, buffer, 0, uct_flags);
+                                sys_dev_map, sys_distance, buffer, 0,
+                                uct_flags);
 }
 
 UCS_PROFILE_FUNC(ssize_t, ucp_rkey_pack_memh,
