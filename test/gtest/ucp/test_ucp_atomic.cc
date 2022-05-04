@@ -44,8 +44,10 @@ public:
     };
 
     void post(size_t size, void *target_ptr, ucp_rkey_h rkey,
-              void *expected_data, void *arg)
+              void *expected_data, ucp_mem_h memh, void *arg)
     {
+        ASSERT_TRUE(memh == NULL);
+
         const send_func_data* data = (send_func_data*)arg;
         T value                    = (T)ucs::rand() * (T)ucs::rand();
         T prev;
@@ -67,8 +69,10 @@ public:
     }
 
     void misaligned_post(size_t size, void *target_ptr, ucp_rkey_h rkey,
-                         void *expected_data, void *arg)
+                         void *expected_data, ucp_mem_h memh, void *arg)
     {
+        ASSERT_TRUE(memh == NULL);
+
         const send_func_data* data = (send_func_data*)arg;
         T value = 0;
 
@@ -85,8 +89,10 @@ public:
     }
 
     void fetch(size_t size, void *target_ptr, ucp_rkey_h rkey,
-               void *expected_data, void *arg)
+               void *expected_data, ucp_mem_h memh, void *arg)
     {
+        ASSERT_TRUE(memh == NULL);
+
         const send_func_data* data = (send_func_data*)arg;
         T value                    = (T)ucs::rand() * (T)ucs::rand();
         T prev;
@@ -263,7 +269,7 @@ private:
             ms << opcode_name(data.op) << " ";
             test_xfer(send_func, sizeof(T), num_iters, sizeof(T),
                       send_mem_type, recv_mem_type, 0,
-                      is_ep_flush, &data);
+                      is_ep_flush, false, &data);
         }
     }
 };

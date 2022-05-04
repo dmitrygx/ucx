@@ -23,12 +23,12 @@ void test_ucp_memheap::test_xfer(send_func_t send_func, size_t size,
                                  ucs_memory_type_t send_mem_type,
                                  ucs_memory_type_t target_mem_type,
                                  unsigned mem_map_flags,
-                                 bool is_ep_flush, void *arg)
+                                 bool is_ep_flush, bool is_prereg, void *arg)
 {
     ucp_mem_map_params_t params;
     ucs_status_t status;
     ptrdiff_t padding;
-    ucp_mem_h memh;
+    ucp_mem_h target_memh, expected_data_memh;
 
     ucs_assert(!(mem_map_flags & (UCP_MEM_MAP_ALLOCATE | UCP_MEM_MAP_FIXED)));
 
@@ -46,7 +46,7 @@ void test_ucp_memheap::test_xfer(send_func_t send_func, size_t size,
     params.length     = memheap.size();
     params.flags      = mem_map_flags;
 
-    status = ucp_mem_map(receiver().ucph(), &params, &memh);
+    status = ucp_mem_map(receiver().ucph(), &params, &target_memh);
     ASSERT_UCS_OK(status);
 
     mem_buffer::pattern_fill(memheap.ptr(), memheap.size(), ucs::rand(),
@@ -55,7 +55,7 @@ void test_ucp_memheap::test_xfer(send_func_t send_func, size_t size,
     /* Unpack remote key */
     void *rkey_buffer;
     size_t rkey_buffer_size;
-    status = ucp_rkey_pack(receiver().ucph(), memh, &rkey_buffer,
+    status = ucp_rkey_pack(receiver().ucph(), target_memh, &rkey_buffer,
                            &rkey_buffer_size);
     ASSERT_UCS_OK(status);
 
@@ -67,16 +67,29 @@ void test_ucp_memheap::test_xfer(send_func_t send_func, size_t size,
 
     mem_buffer expected_data(memheap.size(), send_mem_type);
 
+    if (is_prereg) {
+        params.field_mask = UCP_MEM_MAP_PARAM_FIELD_ADDRESS |
+                            UCP_MEM_MAP_PARAM_FIELD_LENGTH |
+                            UCP_MEM_MAP_PARAM_FIELD_FLAGS;
+        params.address    = expected_data.ptr();
+        params.length     = expected_data.size();
+        params.flags      = mem_map_flags;
+
+        status = ucp_mem_map(sender().ucph(), &params, &expected_data_memh);
+        ASSERT_UCS_OK(status);
+    } else {
+        expected_data_memh = NULL;
+    }
+
     /* Perform data sends */
     for (unsigned i = 0; i < num_iters; ++i) {
         ptrdiff_t offset = padding + (i * size);
         ucs_assert(offset + size <= memheap.size());
 
-        (this->*send_func)(size,
-                           UCS_PTR_BYTE_OFFSET(memheap.ptr(), offset),
+        (this->*send_func)(size, UCS_PTR_BYTE_OFFSET(memheap.ptr(), offset),
                            rkey,
                            UCS_PTR_BYTE_OFFSET(expected_data.ptr(), offset),
-                           arg);
+                           expected_data_memh, arg);
         if (num_errors() > 0) {
             break;
         }
@@ -96,8 +109,13 @@ void test_ucp_memheap::test_xfer(send_func_t send_func, size_t size,
         ADD_FAILURE() << "data validation failed";
     }
 
+    if (expected_data_memh != NULL) {
+        status = ucp_mem_unmap(sender().ucph(), expected_data_memh);
+        ASSERT_UCS_OK(status);
+    }
+
     ucp_rkey_destroy(rkey);
 
-    status = ucp_mem_unmap(receiver().ucph(), memh);
+    status = ucp_mem_unmap(receiver().ucph(), target_memh);
     ASSERT_UCS_OK(status);
 }

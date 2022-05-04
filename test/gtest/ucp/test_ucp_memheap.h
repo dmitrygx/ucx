@@ -20,6 +20,7 @@ public:
      * @param [in]  target_ptr      VA to perform the RMA operation to
      * @param [in]  rkey            RMA remote key
      * @param [in]  expected_data   Buffer to fill with expected data at 'target_ptr'
+     * @param [in]  memh            Preregistered memory handle of expected data
      * @param [in]  arg             User-defined argument
      *
      * @note The expected data buffer memory type is 'send_mem_type' as passed
@@ -30,7 +31,7 @@ public:
     typedef void
     (test_ucp_memheap::* send_func_t)(size_t size, void *target_ptr,
                                       ucp_rkey_h rkey, void *expected_data,
-                                      void *arg);
+                                      ucp_mem_h memh, void *arg);
 
 protected:
     virtual void init();
@@ -38,7 +39,7 @@ protected:
     void test_xfer(send_func_t send_func, size_t size, unsigned num_iters,
                    size_t alignment, ucs_memory_type_t send_mem_type,
                    ucs_memory_type_t target_mem_type, unsigned mem_map_flags,
-                   bool is_ep_flush, void *arg);
+                   bool is_ep_flush, bool is_prereg, void *arg);
 };
 
 #endif

@@ -25,6 +25,8 @@ public:
         add_variant_with_value(variants, UCP_FEATURE_RMA, FLUSH_EP, "flush_ep");
         add_variant_with_value(variants, UCP_FEATURE_RMA,
                                FLUSH_EP | ENABLE_PROTO, "flush_ep_proto");
+        add_variant_with_value(variants, UCP_FEATURE_RMA, PREREG,
+                               "flush_worker_prereg");
     }
 
     virtual void init() {
@@ -34,14 +36,20 @@ public:
         test_ucp_memheap::init();
     }
 
-    void do_nbi_iov(iov_op_t op, size_t size, void *target_ptr, ucp_rkey_h rkey,
-                    void *expected_data, void *arg) {
+    void do_nbi_iov(iov_op_t op, size_t size, void *target_ptr,
+                    ucp_rkey_h rkey, void *expected_data, ucp_mem_h memh,
+                    void *arg)
+    {
         ucp_dt_iov_t iov[UCP_MAX_IOV];
         ucs_status_ptr_t status_ptr;
         ucp_request_param_t param;
 
         param.op_attr_mask = UCP_OP_ATTR_FIELD_DATATYPE;
         param.datatype     = DATATYPE_IOV;
+        if (prereg()) {
+            param.op_attr_mask |= UCP_OP_ATTR_FIELD_MEMH;
+            param.memh          = memh;
+        }
 
         for (auto iov_count = 0; iov_count <= UCP_MAX_IOV;
              iov_count += ucs_max(iov_count, 1)) {
@@ -53,43 +61,49 @@ public:
     }
 
     void put_b(size_t size, void *target_ptr, ucp_rkey_h rkey,
-               void *expected_data, void *arg) {
+               void *expected_data, ucp_mem_h memh, void *arg)
+    {
         ucs_status_ptr_t status_ptr = do_put(size, target_ptr, rkey,
-                                             expected_data, arg);
+                                             expected_data, memh, arg);
         request_wait(status_ptr);
     }
 
     void put_nbi(size_t size, void *target_ptr, ucp_rkey_h rkey,
-                 void *expected_data, void *arg) {
+                 void *expected_data, ucp_mem_h memh, void *arg)
+    {
         ucs_status_ptr_t status_ptr = do_put(size, target_ptr, rkey,
-                                             expected_data, arg);
+                                             expected_data, memh, arg);
         request_release(status_ptr);
     }
 
     void put_nbi_iov(size_t size, void *target_ptr, ucp_rkey_h rkey,
-                     void *expected_data, void *arg) {
+                     void *expected_data, ucp_mem_h memh, void *arg)
+    {
         do_nbi_iov(&test_ucp_rma::do_put_iov, size, target_ptr, rkey,
-                   expected_data, arg);
+                   expected_data, memh, arg);
     }
 
     void get_b(size_t size, void *target_ptr, ucp_rkey_h rkey,
-               void *expected_data, void *arg) {
+               void *expected_data, ucp_mem_h memh, void *arg)
+    {
         ucs_status_ptr_t status_ptr = do_get(size, target_ptr, rkey,
-                                             expected_data);
+                                             expected_data, memh);
         request_wait(status_ptr);
     }
 
     void get_nbi(size_t size, void *target_ptr, ucp_rkey_h rkey,
-                 void *expected_data, void *arg) {
+                 void *expected_data, ucp_mem_h memh, void *arg)
+    {
         ucs_status_ptr_t status_ptr = do_get(size, target_ptr, rkey,
-                                             expected_data);
+                                             expected_data, memh);
         request_release(status_ptr);
     }
 
     void get_nbi_iov(size_t size, void *target_ptr, ucp_rkey_h rkey,
-                     void *expected_data, void *arg) {
+                     void *expected_data, ucp_mem_h memh, void *arg)
+    {
         do_nbi_iov(&test_ucp_rma::do_get_iov, size, target_ptr, rkey,
-                   expected_data, arg);
+                   expected_data, memh, arg);
     }
 
 
@@ -125,11 +139,17 @@ protected:
         return get_variant_value() & ENABLE_PROTO;
     }
 
+    bool prereg() const
+    {
+        return get_variant_value(0) & PREREG;
+    }
+
 private:
     /* Test variants */
     enum {
         FLUSH_EP     = UCS_BIT(0), /* If not set, flush worker */
-        ENABLE_PROTO = UCS_BIT(1)
+        ENABLE_PROTO = UCS_BIT(1),
+        PREREG       = UCS_BIT(2)
     };
 
     void init_iov(size_t size, ucp_dt_iov_t *iov, size_t iov_count,
@@ -146,12 +166,18 @@ private:
     }
 
     ucs_status_ptr_t do_put(size_t size, void *target_ptr, ucp_rkey_h rkey,
-                            void *expected_data, void *arg) {
+                            void *expected_data, ucp_mem_h memh, void *arg)
+    {
         ucs_memory_type_t *mem_types = reinterpret_cast<ucs_memory_type_t*>(arg);
         mem_buffer::pattern_fill(expected_data, size, ucs::rand(), mem_types[0]);
 
         ucp_request_param_t param;
         param.op_attr_mask = 0;
+        if (prereg()) {
+            param.op_attr_mask |= UCP_OP_ATTR_FIELD_MEMH;
+            param.memh          = memh;
+        }
+
         return ucp_put_nbx(sender().ep(), expected_data, size,
                            (uintptr_t)target_ptr, rkey, &param);
     }
@@ -174,10 +200,16 @@ private:
     }
 
     ucs_status_ptr_t do_get(size_t size, void *target_ptr, ucp_rkey_h rkey,
-                            void *expected_data) {
+                            void *expected_data, ucp_mem_h memh)
+    {
         ucp_request_param_t param;
 
         param.op_attr_mask = 0;
+        if (prereg()) {
+            param.op_attr_mask |= UCP_OP_ATTR_FIELD_MEMH;
+            param.memh          = memh;
+        }
+
         return ucp_get_nbx(sender().ep(), expected_data, size,
                            (uintptr_t)target_ptr, rkey, &param);
     }
@@ -224,7 +256,8 @@ private:
 
             ucs_memory_type_t mem_types[] = {send_mem_type, target_mem_type};
             test_xfer(send_func, size, num_iters, 1, send_mem_type,
-                      target_mem_type, mem_map_flags, is_ep_flush(), mem_types);
+                      target_mem_type, mem_map_flags, is_ep_flush(), prereg(),
+                      mem_types);
 
             if (HasFailure() || (num_errors() > 0)) {
                 break;
