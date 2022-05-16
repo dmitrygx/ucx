@@ -649,6 +649,8 @@ uct_ib_mlx5_get_mmio_mode(uct_priv_worker_t *worker,
                           int need_lock, unsigned bf_size,
                           uct_ib_mlx5_mmio_mode_t *mmio_mode);
 
+size_t uct_ib_mlx5_bb_max(size_t wqe_cnt);
+
 /**
  * Initialize txwq structure.
  */

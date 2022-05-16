@@ -638,6 +638,11 @@ uct_ib_mlx5_get_mmio_mode(uct_priv_worker_t *worker,
     return UCS_OK;
 }
 
+size_t uct_ib_mlx5_bb_max(size_t wqe_cnt)
+{
+    return wqe_cnt - 2 * UCT_IB_MLX5_MAX_BB;
+}
+
 ucs_status_t uct_ib_mlx5_txwq_init(uct_priv_worker_t *worker,
                                    uct_ib_mlx5_mmio_mode_t cfg_mmio_mode,
                                    uct_ib_mlx5_txwq_t *txwq,
@@ -700,7 +705,7 @@ ucs_status_t uct_ib_mlx5_txwq_init(uct_priv_worker_t *worker,
      *  - on send we check that there is at least one bb. We know
      *  exact number of bbs once we actually are sending.
      */
-    txwq->bb_max     = qp_info.dv.sq.wqe_cnt - 2 * UCT_IB_MLX5_MAX_BB;
+    txwq->bb_max     = uct_ib_mlx5_bb_max(qp_info.dv.sq.wqe_cnt);
     ucs_assert_always(txwq->bb_max > 0);
 
     uct_ib_mlx5_txwq_reset(txwq);

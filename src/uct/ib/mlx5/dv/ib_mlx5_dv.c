@@ -194,7 +194,7 @@ ucs_status_t uct_ib_mlx5_devx_create_qp(uct_ib_iface_t *iface,
         tx->qstart = qp->devx.wq_buf;
         tx->qend   = UCS_PTR_BYTE_OFFSET(qp->devx.wq_buf, len_tx);
         tx->dbrec  = &qp->devx.dbrec->db[MLX5_SND_DBR];
-        tx->bb_max = max_tx - 2 * UCT_IB_MLX5_MAX_BB;
+        tx->bb_max = uct_ib_mlx5_bb_max(max_tx);
         ucs_assert(*tx->dbrec == 0);
         uct_ib_mlx5_txwq_reset(tx);
     } else {

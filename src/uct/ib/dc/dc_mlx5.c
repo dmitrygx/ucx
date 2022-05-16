@@ -1261,9 +1261,11 @@ static UCS_CLASS_INIT_FUNC(uct_dc_mlx5_iface_t, uct_md_h tl_md, uct_worker_h wor
         init_attr.flags  |= UCT_IB_TM_SUPPORTED;
     }
 
-    init_attr.cq_len[UCT_IB_DIR_TX] = config->super.super.tx.queue_len *
-                                      UCT_IB_MLX5_MAX_BB *
-                                      (config->ndci + UCT_DC_MLX5_KEEPALIVE_NUM_DCIS);
+    init_attr.cq_len[UCT_IB_DIR_TX] =
+            uct_ib_mlx5_bb_max(
+                    ucs_roundup_pow2_or0(config->super.super.tx.queue_len *
+                                         UCT_IB_MLX5_MAX_BB)) *
+            (config->ndci + UCT_DC_MLX5_KEEPALIVE_NUM_DCIS);
     /* TODO check caps instead */
     UCS_CLASS_CALL_SUPER_INIT(uct_rc_mlx5_iface_common_t,
                               &uct_dc_mlx5_iface_tl_ops, &uct_dc_mlx5_iface_ops,
@@ -1272,9 +1274,7 @@ static UCS_CLASS_INIT_FUNC(uct_dc_mlx5_iface_t, uct_md_h tl_md, uct_worker_h wor
 
     tx_cq_size = uct_ib_cq_size(&self->super.super.super, &init_attr,
                                 UCT_IB_DIR_TX);
-
-    /* driver will round up num cqes to pow of 2 if needed */
-    if (ucs_roundup_pow2(tx_cq_size) > UCT_DC_MLX5_MAX_TX_CQ_LEN) {
+    if (tx_cq_size > UCT_DC_MLX5_MAX_TX_CQ_LEN) {
         ucs_error("Can't allocate TX resources, try to decrease dcis number (%d)"
                   " or tx qp length (%d)",
                   config->ndci, config->super.super.tx.queue_len);
