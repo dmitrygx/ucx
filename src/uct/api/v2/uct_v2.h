@@ -296,13 +296,18 @@ typedef enum {
 
 typedef enum {
     /**
+     * Hide errors on memory attach.
+     */
+    UCT_MD_MEM_ATTACH_FLAG_HIDE_ERRORS = UCS_BIT(0),
+
+    /**
      * The flag is used indicate that memory handle should be created to attach
      * to the memory region shared by a peer. This flag requires that a shared
      * memory key is passed through @ref uct_md_mem_attach_field_mask_t and
      * the resulted local memory handle could be obtained from @a memh field of
      * @ref uct_md_mem_attach_field_mask_t.
      */
-    UCT_MD_MEM_ATTACH_FLAG_SHARED = UCS_BIT(0)
+    UCT_MD_MEM_ATTACH_FLAG_SHARED      = UCS_BIT(1),
 } uct_md_mem_attach_flags_t;
 
 
@@ -486,7 +491,7 @@ typedef struct uct_md_mem_attach_params {
      * Operation specific flags, using bits from
      * @ref uct_md_mem_attach_flags_t.
      */
-    unsigned                     flags;
+    uint64_t                     flags;
 
     /**
      * Shared memory key buffer.

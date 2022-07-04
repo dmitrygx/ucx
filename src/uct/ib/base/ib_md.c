@@ -774,7 +774,7 @@ uct_ib_mem_reg(uct_md_h uct_md, void *address, size_t length,
 
     if (flags & UCT_MD_MEM_FLAG_SHARED) {
         uct_ib_mem_init(memh, 0, 0);
-        status = md->ops->reg_shared_key(md, address, length,
+        status = md->ops->reg_shared_key(md, flags, address, length,
                                          0 /* TODO: remove */, memh);
         if (status != UCS_OK) {
             goto err_memh_free;
@@ -821,10 +821,12 @@ static ucs_status_t uct_ib_mem_dereg(uct_md_h uct_md,
 static ucs_status_t
 uct_ib_md_mem_attach(uct_md_h uct_md, uct_md_mem_attach_params_t *params)
 {
-    const uint64_t *mkey  =
-            (params->field_mask & UCT_MD_MEM_ATTACH_FIELD_SHARED_MKEY_BUFFER) ?
-            (const uint64_t*)params->shared_mkey_buffer : NULL;
-    uct_ib_md_t *md       = ucs_derived_of(uct_md, uct_ib_md_t);
+    const uint64_t *mkey =
+            UCT_MD_MEM_ATTACH_FIELD_VALUE(params, shared_mkey_buffer,
+                                          FIELD_SHARED_MKEY_BUFFER, NULL);
+    uint64_t flags       = UCT_MD_MEM_ATTACH_FIELD_VALUE(params, flags,
+                                                         FIELD_FLAGS, 0);
+    uct_ib_md_t *md      = ucs_derived_of(uct_md, uct_ib_md_t);
     uct_ib_mem_t *ib_memh;
     ucs_status_t status;
 
@@ -835,12 +837,14 @@ uct_ib_md_mem_attach(uct_md_h uct_md, uct_md_mem_attach_params_t *params)
 
     ib_memh = uct_ib_memh_alloc(md);
     if (ib_memh == NULL) {
-        ucs_error("md %p: failed to allocate memory handle", md);
+        uct_md_log_mem_attach_error(flags,
+                                    "md %p: failed to allocate memory handle",
+                                    md);
         return UCS_ERR_NO_MEMORY;
     }
     uct_ib_mem_init(ib_memh, 0, 0);
 
-    status = md->ops->import_shared_key(md, uct_ib_md_vhca_id(*mkey),
+    status = md->ops->import_shared_key(md, flags, uct_ib_md_vhca_id(*mkey),
                                         uct_ib_md_lkey(*mkey), ib_memh);
     if (status != UCS_OK) {
         goto out_memh_free;

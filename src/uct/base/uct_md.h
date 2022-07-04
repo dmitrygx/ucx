@@ -24,6 +24,8 @@
 #define uct_md_log_mem_reg_error(_flags, _fmt, ...) \
     ucs_log(uct_md_reg_log_lvl(_flags), _fmt, ## __VA_ARGS__)
 
+#define uct_md_log_mem_attach_error(_flags, _fmt, ...) \
+    ucs_log(uct_md_attach_log_lvl(_flags), _fmt, ## __VA_ARGS__)
 
 #define UCT_MD_MEM_REG_FIELD_VALUE(_params, _name, _flag, _default) \
     UCS_PARAM_VALUE(UCT_MD_MEM_REG, _params, _name, _flag, _default)
@@ -31,6 +33,10 @@
 
 #define UCT_MD_MEM_DEREG_FIELD_VALUE(_params, _name, _flag, _default) \
     UCS_PARAM_VALUE(UCT_MD_MEM_DEREG, _params, _name, _flag, _default)
+
+
+#define UCT_MD_MEM_ATTACH_FIELD_VALUE(_params, _name, _flag, _default) \
+    UCS_PARAM_VALUE(UCT_MD_MEM_ATTACH, _params, _name, _flag, _default)
 
 
 #define UCT_MD_MEM_DEREG_CHECK_PARAMS(_params, _invalidate_supported) \
@@ -249,6 +255,12 @@ static inline ucs_log_level_t uct_md_reg_log_lvl(unsigned flags)
             UCS_LOG_LEVEL_ERROR;
 }
 
+static UCS_F_ALWAYS_INLINE ucs_log_level_t
+uct_md_attach_log_lvl(unsigned flags)
+{
+    return (flags & UCT_MD_MEM_ATTACH_FLAG_HIDE_ERRORS) ? UCS_LOG_LEVEL_DIAG :
+            UCS_LOG_LEVEL_ERROR;
+}
 
 void uct_md_vfs_init(uct_component_h component, uct_md_h md,
                      const char *md_name);

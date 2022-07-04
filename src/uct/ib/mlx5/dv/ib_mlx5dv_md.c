@@ -1402,8 +1402,9 @@ err_out:
 }
 
 static ucs_status_t
-uct_ib_mlx5_devx_reg_shared_key_alias(uct_ib_md_t *ib_md, void *address,
-                                      size_t length, uint32_t allowed_gvmi_id,
+uct_ib_mlx5_devx_reg_shared_key_alias(uct_ib_md_t *ib_md, uint64_t flags,
+                                      void *address, size_t length,
+                                      uint32_t allowed_gvmi_id,
                                       uct_ib_mem_t *ib_memh)
 {
     uct_ib_mlx5_md_t *md = ucs_derived_of(ib_md, uct_ib_mlx5_md_t);
@@ -1428,7 +1429,8 @@ uct_ib_mlx5_devx_reg_shared_key_alias(uct_ib_md_t *ib_md, void *address,
     umem_in.comp_mask   = 0;
     memh->umem = mlx5dv_devx_umem_reg_ex(md->super.dev.ibv_context, &umem_in);
     if (memh->umem == NULL) {
-        ucs_error("mlx5dv_devx_umem_reg_ex() failed: %m");
+        uct_md_log_mem_reg_error(flags,
+                                 "mlx5dv_devx_umem_reg_ex() failed: %m");
         status = UCS_ERR_NO_MEMORY;
         goto err_out;
     }
@@ -1438,7 +1440,7 @@ uct_ib_mlx5_devx_reg_shared_key_alias(uct_ib_md_t *ib_md, void *address,
     dv.pd.out = &dvpd;
     rc = mlx5dv_init_obj(&dv, MLX5DV_OBJ_PD);
     if (rc) {
-        ucs_error("mlx5dv_init_obj() failed: %m");
+        uct_md_log_mem_reg_error(flags, "mlx5dv_init_obj() failed: %m");
         status = UCS_ERR_IO_ERROR;
         goto err_free;
     }
@@ -1467,7 +1469,8 @@ uct_ib_mlx5_devx_reg_shared_key_alias(uct_ib_md_t *ib_md, void *address,
 
     memh->cross_mr = uct_ib_mlx5_devx_obj_create(md->super.dev.ibv_context, in,
                                                  sizeof(in), out, sizeof(out),
-                                                 "MKEY");
+                                                 "MKEY",
+                                                 uct_md_reg_log_lvl(flags));
     if (memh->cross_mr == NULL) {
         status = UCS_ERR_IO_ERROR;
         goto err_free;
@@ -1490,7 +1493,8 @@ uct_ib_mlx5_devx_reg_shared_key_alias(uct_ib_md_t *ib_md, void *address,
     rc = mlx5dv_devx_general_cmd(md->super.dev.ibv_context, ein, sizeof(ein),
                                  eout, sizeof(eout));
     if (rc) {
-        ucs_error("mlx5dv_devx_general_cmd() failed: %m");
+        uct_md_log_mem_reg_error(flags,
+                                 "mlx5dv_devx_general_cmd() failed: %m");
         status = UCS_ERR_IO_ERROR;
         goto err_destroy;
     }
@@ -1507,6 +1511,7 @@ err_out:
 
 static ucs_status_t
 uct_ib_mlx5_devx_import_shared_key_alias(uct_ib_md_t *ib_md,
+                                         uint64_t flags,
                                          uint32_t target_gvmi_id,
                                          uint32_t target_mkey,
                                          uct_ib_mem_t *ib_memh)
@@ -1527,7 +1532,7 @@ uct_ib_mlx5_devx_import_shared_key_alias(uct_ib_md_t *ib_md,
     dv.pd.out = &dvpd;
     rc        = mlx5dv_init_obj(&dv, MLX5DV_OBJ_PD);
     if (rc) {
-        ucs_error("mlx5dv_init_obj() failed: %m");
+        uct_md_log_mem_attach_error(flags, "mlx5dv_init_obj() failed: %m");
         return UCS_ERR_IO_ERROR;
     }
 
@@ -1547,15 +1552,19 @@ uct_ib_mlx5_devx_import_shared_key_alias(uct_ib_md_t *ib_md,
 
     memh->cross_mr = uct_ib_mlx5_devx_obj_create(md->super.dev.ibv_context, in,
                                                  sizeof(in), out, sizeof(out),
-                                                 "MKEY_ALIAS");
+                                                 "MKEY_ALIAS",
+                                                 uct_md_attach_log_lvl(flags));
     if (memh->cross_mr == NULL) {
         return UCS_ERR_IO_ERROR;
     }
 
     rc = UCT_IB_MLX5DV_GET(create_alias_obj_out, out, alias_ctx.status);
     if (rc) {
-        ucs_error("created MR alias object in bad state, syndrome 0x%x",
-                  UCT_IB_MLX5DV_GET(create_alias_obj_out, out, hdr.syndrome));
+        uct_md_log_mem_attach_error(flags,
+                                    "created MR alias object in bad state,"
+                                    " syndrome 0x%x",
+                                    UCT_IB_MLX5DV_GET(create_alias_obj_out,
+                                                      out, hdr.syndrome));
         return UCS_ERR_IO_ERROR;
     }
 
@@ -1569,14 +1578,16 @@ uct_ib_mlx5_devx_import_shared_key_alias(uct_ib_md_t *ib_md,
 }
 
 static ucs_status_t
-uct_ib_mlx5_devx_reg_shared_key(uct_ib_md_t *ib_md, void *address,
-                                size_t length, uint32_t allowed_gvmi_id,
+uct_ib_mlx5_devx_reg_shared_key(uct_ib_md_t *ib_md, uint64_t flags,
+                                void *address, size_t length,
+                                uint32_t allowed_gvmi_id,
                                 uct_ib_mem_t *ib_memh)
 {
     uct_ib_mlx5_md_t *md = ucs_derived_of(ib_md, uct_ib_mlx5_md_t);
 
     return (md->flags & UCT_IB_MLX5_MD_FLAG_CROSS_GVMI_ALIAS) ?
-                   uct_ib_mlx5_devx_reg_shared_key_alias(ib_md, address, length,
+                   uct_ib_mlx5_devx_reg_shared_key_alias(ib_md, flags, address,
+                                                         length,
                                                          allowed_gvmi_id,
                                                          ib_memh) :
                    uct_ib_mlx5_devx_reg_shared_key_old(ib_md, address, length,
@@ -1585,13 +1596,14 @@ uct_ib_mlx5_devx_reg_shared_key(uct_ib_md_t *ib_md, void *address,
 }
 
 static ucs_status_t
-uct_ib_mlx5_devx_import_shared_key(uct_ib_md_t *ib_md, uint32_t target_gvmi_id,
+uct_ib_mlx5_devx_import_shared_key(uct_ib_md_t *ib_md, uint64_t flags,
+                                   uint32_t target_gvmi_id,
                                    uint32_t target_mkey, uct_ib_mem_t *ib_memh)
 {
     uct_ib_mlx5_md_t *md = ucs_derived_of(ib_md, uct_ib_mlx5_md_t);
 
     return (md->flags & UCT_IB_MLX5_MD_FLAG_CROSS_GVMI_ALIAS) ?
-                   uct_ib_mlx5_devx_import_shared_key_alias(ib_md,
+                   uct_ib_mlx5_devx_import_shared_key_alias(ib_md, flags,
                                                             target_gvmi_id,
                                                             target_mkey,
                                                             ib_memh) :

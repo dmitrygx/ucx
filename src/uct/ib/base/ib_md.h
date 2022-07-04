@@ -364,6 +364,8 @@ typedef ucs_status_t (*uct_ib_md_get_atomic_mr_id_func_t)(uct_ib_md_t *md,
  *
  * @param [in] ib_md           Memory domain.
  *
+ * @param [in] flags           UCT memory registration flags.
+ *
  * @param [in] address         Memory area start address (HOST).
  *
  * @param [in] length          Memory area length (HOST).
@@ -376,6 +378,7 @@ typedef ucs_status_t (*uct_ib_md_get_atomic_mr_id_func_t)(uct_ib_md_t *md,
  * @return UCS_OK on success or error code in case of failure.
  */
 typedef ucs_status_t (*uct_ib_md_reg_shared_key_func_t)(uct_ib_md_t *ib_md,
+                                                        uint64_t flags,
                                                         void *address,
                                                         size_t length,
                                                         uint32_t allowed_gvmi_id,
@@ -386,6 +389,8 @@ typedef ucs_status_t (*uct_ib_md_reg_shared_key_func_t)(uct_ib_md_t *ib_md,
  * Memory domain method to register crossing mkey for memory area.
  *
  * @param [in] ib_md          Memory domain.
+ *
+ * @param [in] flags          UCT memory attach flags.
  *
  * @param [in] address        Memory area start address (HOST).
  *
@@ -401,6 +406,7 @@ typedef ucs_status_t (*uct_ib_md_reg_shared_key_func_t)(uct_ib_md_t *ib_md,
  * @return UCS_OK on success or error code in case of failure.
  */
 typedef ucs_status_t (*uct_ib_md_import_shared_key_func_t)(uct_ib_md_t *ib_md,
+                                                           uint64_t flags,
                                                            uint32_t target_gvmi_id,
                                                            uint32_t target_mkey,
                                                            uct_ib_mem_t *ib_memh);

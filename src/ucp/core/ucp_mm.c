@@ -338,9 +338,11 @@ ucp_memh_deregister(ucp_context_h context, ucp_mem_h memh)
         memh->md_map &= ~UCS_BIT(md_index);
     }
 
-    ucs_for_each_bit(md_index, memh->shared_md_map) {
-        ucp_memh_uct_deregister(context, memh, md_index, context->num_mds);
-        memh->shared_md_map &= ~UCS_BIT(md_index);
+    if (memh->flags & UCP_MEM_FLAG_SHARED) {
+        ucs_for_each_bit(md_index, memh->shared_md_map) {
+            ucp_memh_uct_deregister(context, memh, md_index, context->num_mds);
+            memh->shared_md_map &= ~UCS_BIT(md_index);
+        }
     }
 }
 
@@ -374,8 +376,6 @@ void ucp_memh_unmap(ucp_context_h context, ucp_mem_h memh)
 }
 
 static void ucp_memh_reg_cleanup(ucp_context_h context, ucp_mem_h memh,
-                                 ucp_md_map_t md_map_registered,
-                                 ucp_md_map_t md_map_shared,
                                  ucp_md_index_t md_index, unsigned uct_flags,
                                  ucs_status_t status, const char *action)
 {
@@ -430,8 +430,6 @@ ucp_memh_register(ucp_context_h context, ucp_mem_h memh,
                   ucp_md_map_t reg_md_map, ucp_md_map_t shared_md_map,
                   unsigned uct_flags)
 {
-    ucp_md_map_t md_map_registered = 0;
-    ucp_md_map_t md_map_shared     = 0;
     ucp_md_index_t md_index;
     ucs_status_t status;
     const char *action;
@@ -439,32 +437,27 @@ ucp_memh_register(ucp_context_h context, ucp_mem_h memh,
     ucs_for_each_bit(md_index, reg_md_map) {
         action = "registration";
         status = ucp_memh_uct_register(context, memh, uct_flags, md_index, 0,
-                                       action, &md_map_registered);
+                                       action, &memh->md_map);
         if (ucs_unlikely(status != UCS_OK)) {
             goto err;
         }
     }
-
-    memh->md_map |= md_map_registered;
 
     ucs_for_each_bit(md_index, shared_md_map) {
         action = "sharing";
         status = ucp_memh_uct_register(context, memh,
                                        uct_flags | UCT_MD_MEM_FLAG_SHARED,
                                        md_index, context->num_mds, action,
-                                       &md_map_shared);
+                                       &memh->shared_md_map);
         if (ucs_unlikely(status != UCS_OK)) {
             goto err;
         }
     }
 
-    memh->shared_md_map |= md_map_shared;
-
     return UCS_OK;
 
 err:
-    ucp_memh_reg_cleanup(context, memh, md_map_registered, md_map_shared,
-                         md_index, uct_flags, status, action);
+    ucp_memh_reg_cleanup(context, memh, md_index, uct_flags, status, action);
     return status;
 }
 
@@ -633,11 +626,12 @@ err:
     return status;
 }
 
-static ucp_md_index_t ucp_get_md_index(ucp_context_h context,
-                                       const void *component_name,
-                                       size_t component_name_size,
-                                       uint64_t global_id)
+static ucp_md_map_t ucp_find_md_map(ucp_context_h context,
+                                    const void *component_name,
+                                    size_t component_name_size,
+                                    uint64_t global_id)
 {
+    ucp_md_map_t md_map = 0;
     ucp_md_index_t md_index;
     uct_md_attr_t *md_attr;
     size_t cmp_size;
@@ -648,11 +642,12 @@ static ucp_md_index_t ucp_get_md_index(ucp_context_h context,
                            component_name_size);
         if ((memcmp(md_attr->component_name, component_name, cmp_size) == 0) &&
             (md_attr->global_id == global_id)) {
-            return md_index;
+            md_map |= UCS_BIT(md_index);
+            continue;
         }
     }
 
-    return UCP_NULL_RESOURCE;
+    return md_map;
 }
 
 static ucs_status_t ucp_mem_rcache_mem_reg_cb(void *context, ucs_rcache_t *rcache,
@@ -662,6 +657,7 @@ static ucs_status_t ucp_mem_rcache_mem_reg_cb(void *context, ucs_rcache_t *rcach
     ucp_mem_h memh = ucs_derived_of(rregion, ucp_mem_t);
 
     memh->md_map         = 0;
+    memh->shared_md_map  = 0;
     memh->shared_md_map  = 0;
     memh->remote_uuid    = 0;
     memh->alloc_md_index = UCP_NULL_RESOURCE;
@@ -731,7 +727,7 @@ ucp_memh_import_parse_tl_mkey_data(ucp_context_h context,
                                    const void **start_p,
                                    const void **tl_mkey_buf_p,
                                    uint64_t *md_global_id_p,
-                                   ucp_md_index_t *md_index_p)
+                                   ucp_md_map_t *md_map_p)
 {
     const void *p = *start_p;
     const void *tl_md_p, *next_tl_md_p;
@@ -739,7 +735,7 @@ ucp_memh_import_parse_tl_mkey_data(ucp_context_h context,
     size_t tl_mkey_size, component_name_size;
     const void *tl_mkey_buf, *component_name_buf;
     uint64_t md_global_id;
-    ucp_md_index_t md_index;
+    ucp_md_map_t md_map;
 
     tl_md_p = p;
 
@@ -763,8 +759,8 @@ ucp_memh_import_parse_tl_mkey_data(ucp_context_h context,
     md_global_id = *ucs_serialize_next(&p, uint64_t);
 
     /* Get local MD index which corresponds to the remote one */
-    md_index = ucp_get_md_index(context, component_name_buf,
-                                component_name_size, md_global_id);
+    md_map = ucp_find_md_map(context, component_name_buf,
+                             component_name_size, md_global_id);
 
     next_tl_md_p = UCS_PTR_BYTE_OFFSET(tl_md_p, tl_mkey_data_size);
     ucs_assertv(p <= next_tl_md_p, "p=%p, next_tl_md_p=%p", p, next_tl_md_p);
@@ -772,7 +768,7 @@ ucp_memh_import_parse_tl_mkey_data(ucp_context_h context,
     *start_p        = next_tl_md_p;
     *tl_mkey_buf_p  = tl_mkey_buf;
     *md_global_id_p = md_global_id;
-    *md_index_p     = md_index;
+    *md_map_p       = md_map;
 }
 
 typedef struct {
@@ -804,15 +800,16 @@ ucp_memh_import_attach(ucp_context_h context, ucp_mem_h memh,
                 UCT_MD_MEM_ATTACH_FIELD_FLAGS |
                 UCT_MD_MEM_ATTACH_FIELD_SHARED_MKEY_BUFFER |
                 UCT_MD_MEM_ATTACH_FIELD_MEMH;
-        attach_params.flags              = UCT_MD_MEM_ATTACH_FLAG_SHARED;
+        attach_params.flags              = UCT_MD_MEM_ATTACH_FLAG_SHARED |
+                                           UCT_MD_MEM_ATTACH_FLAG_HIDE_ERRORS;
         attach_params.shared_mkey_buffer = tl_mkey_buf;
 
         status = uct_md_mem_attach(context->tl_mds[md_index].md,
                                    &attach_params);
         if (ucs_unlikely(status != UCS_OK)) {
-            ucs_error("failed to attach memory on '%s': %s",
+            ucs_trace("failed to attach memory on '%s': %s",
                       md_attr->component_name, ucs_status_string(status));
-            goto err_memh_reg_cleanup;
+            continue;
         }
 
         memh->uct[md_index] = attach_params.memh;
@@ -828,15 +825,11 @@ ucp_memh_import_attach(ucp_context_h context, ucp_mem_h memh,
     memh->md_map = md_map_imported;
 
     return UCS_OK;
-
-err_memh_reg_cleanup:
-    ucp_memh_reg_cleanup(context, memh, md_map_imported, 0, md_index, 0,
-                         status, "importing");
-    return status;
 }
 
 static ucs_status_t
 ucp_memh_import_slow(ucp_context_h context, ucs_rcache_t *existing_rcache,
+                     ucp_md_map_t remote_md_map,
                      ucp_memh_import_attach_params_t *attach_params_array,
                      unsigned attach_params_num, void *address, size_t length,
                      uint64_t remote_uuid, ucs_memory_type_t mem_type,
@@ -882,10 +875,11 @@ ucp_memh_import_slow(ucp_context_h context, ucs_rcache_t *existing_rcache,
         goto err_rcache_destroy;
     }
 
-    memh->remote_uuid = remote_uuid;
-    status            = ucp_memh_import_attach(context, memh,
-                                               attach_params_array,
-                                               attach_params_num);
+    memh->remote_import_md_map = remote_md_map;
+    memh->remote_uuid          = remote_uuid;
+    status                     = ucp_memh_import_attach(context, memh,
+                                                        attach_params_array,
+                                                        attach_params_num);
     if (status != UCS_OK) {
         goto err_rcache_destroy;
     }
@@ -915,8 +909,7 @@ ucp_memh_import(ucp_context_h context, void *address, size_t length,
     ucp_mem_h memh;
     ucp_md_index_t remote_md_index;
     ucs_status_t status;
-    ucp_md_map_t remote_md_map;
-    ucp_md_map_t md_map_imported;
+    ucp_md_map_t remote_md_map, local_md_map;
     ucp_memh_import_attach_params_t *attach_params_array;
     unsigned attach_params_num;
     ucs_memory_type_t mem_type;
@@ -936,22 +929,28 @@ ucp_memh_import(ucp_context_h context, void *address, size_t length,
 
     attach_params_num   = 0;
     attach_params_array = ucs_alloca(sizeof(*attach_params_array) *
-                                     ucs_popcount(remote_md_map));
+                                     ucs_popcount(remote_md_map) *
+                                     context->num_mds);
 
     ucs_for_each_bit(remote_md_index, remote_md_map) {
         ucp_memh_import_parse_tl_mkey_data(context, &p, &tl_mkey_buf,
-                                           &md_global_id, &md_index);
+                                           &md_global_id, &local_md_map);
 
-        if (md_index == UCP_NULL_RESOURCE) {
-            ucs_error("couldn't find MD global ID %"PRIu64"", md_global_id);
-            md_index = UCP_NULL_RESOURCE;
-            return UCS_ERR_UNREACHABLE;
+        if (local_md_map == 0) {
+            ucs_trace("couldn't find MD global ID %"PRIu64"", md_global_id);
+            continue;
         }
 
-        md_map_imported                                   |= UCS_BIT(md_index);
-        attach_params_array[attach_params_num].md_index    = md_index;
-        attach_params_array[attach_params_num].tl_mkey_buf = tl_mkey_buf;
-        ++attach_params_num;
+        ucs_for_each_bit(md_index, local_md_map) {
+            attach_params_array[attach_params_num].md_index    = md_index;
+            attach_params_array[attach_params_num].tl_mkey_buf = tl_mkey_buf;
+            ++attach_params_num;
+        }
+    }
+
+    if (attach_params_num == 0) {
+        ucs_error("couldn't find local MDs which correspond to remote MDs");
+        return UCS_ERR_UNREACHABLE;
     }
 
     if (ucs_likely(context->imported_mem_rcaches != NULL)) {
@@ -974,8 +973,8 @@ ucp_memh_import(ucp_context_h context, void *address, size_t length,
             }
 
             memh = ucs_derived_of(rregion, ucp_mem_t);
-            if (ucs_likely(ucs_test_all_flags(memh->md_map,
-                                              md_map_imported))) {
+            if (ucs_likely(ucs_test_all_flags(memh->remote_import_md_map,
+                                              remote_md_map))) {
                 ucs_assertv(memh->remote_uuid == remote_uuid,
                             "memh->remote_uuid %zu remote_uuid %zu",
                             memh->remote_uuid, remote_uuid);
@@ -990,9 +989,10 @@ ucp_memh_import(ucp_context_h context, void *address, size_t length,
         UCP_THREAD_CS_EXIT(&context->mt_lock);
     }
 
-    return ucp_memh_import_slow(context, rcache, attach_params_array,
-                                attach_params_num, address, length,
-                                remote_uuid, mem_type, memh_p);
+    return ucp_memh_import_slow(context, rcache, remote_md_map,
+                                attach_params_array, attach_params_num,
+                                address, length, remote_uuid, mem_type,
+                                memh_p);
 
 out_unlock:
     UCP_THREAD_CS_EXIT(&context->mt_lock);

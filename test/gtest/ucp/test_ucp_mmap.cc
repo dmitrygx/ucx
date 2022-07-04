@@ -526,7 +526,7 @@ void test_ucp_mmap::test_rereg(unsigned flags, bool import_mem)
                              UCP_MEM_MAP_PARAM_FIELD_FLAGS;
         params.address     = buf.ptr();
         params.length      = size;
-        params.flags       = mem_map_flags();
+        params.flags       = mem_map_flags() | flags;
 
         status = ucp_mem_map(sender().ucph(), &params, &memh);
         if ((status == UCS_ERR_UNSUPPORTED) &&

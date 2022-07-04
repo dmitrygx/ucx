@@ -48,8 +48,11 @@ typedef struct ucp_mem {
     uint64_t            remote_uuid;    /* Remote UUID */
     ucp_md_map_t        md_map;         /* Which MDs have valid memory handles */
     uint32_t            map_count;      /* ucp_mem_map/unmap referrence count */
-    ucp_md_map_t        shared_md_map;  /* Which MDs with SHARED_MKEY capability
+    union {
+        ucp_md_map_t    shared_md_map;  /* Which MDs with SHARED_MKEY capability
                                            have valid memory handles */
+        ucp_md_map_t    remote_import_md_map;
+    };
     uct_mem_h           uct[0];         /* Sparse memory handles array "2 * num_mds" in size */
 } ucp_mem_t;
 
