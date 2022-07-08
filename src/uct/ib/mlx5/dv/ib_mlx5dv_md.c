@@ -1569,8 +1569,7 @@ uct_ib_mlx5_devx_import_shared_key_alias(uct_ib_md_t *ib_md,
     }
 
     memh->super.lkey =
-            (UCT_IB_MLX5DV_GET(create_alias_obj_out, out, hdr.obj_id) << 8) |
-            UCT_IB_CROSS_KEY_IDX;
+            (UCT_IB_MLX5DV_GET(create_alias_obj_out, out, hdr.obj_id) << 8);
     memh->super.rkey = memh->super.lkey;
     memh->type       = UCT_IB_MLX5_MEM_IMPORTED;
 

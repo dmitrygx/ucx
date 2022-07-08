@@ -209,7 +209,9 @@ static int shared_mem_do_operation(ucp_context_h ucp_context,
     size_t size;
     ucs_status_t status;
     int ret;
-    
+    void *send_addr = calloc(1, shared_mem_req_buf->size);
+    /*void *recv_addr = calloc(1, shared_mem_req_buf->size);*/
+
     ret = shared_mem_import(ucp_context,
                             (void*)shared_mem_req_buf->send_address,
                             shared_mem_req_buf->size, send_shared_mem_buf,
@@ -227,20 +229,20 @@ static int shared_mem_do_operation(ucp_context_h ucp_context,
     }
 
     am_data_desc.completed = 0;
-    am_data_desc.buf       = (void*)shared_mem_req_buf->recv_address;
+    am_data_desc.buf       = (void*)shared_mem_req_buf->recv_address /*recv_addr*/;
 
     /* Send */
     am_request_param_common_init(&params, &send_ctx);
-    params.op_attr_mask |= UCP_OP_ATTR_FIELD_MEMH;
+    /*params.op_attr_mask |= UCP_OP_ATTR_FIELD_MEMH;*/
     params.cb.send       = send_cb;
-    params.memh          = send_memh;
+    /*params.memh          = send_memh;*/
     send_request         =
             ucp_am_send_nbx(self_ep, TEST_AM_ID, NULL, 0ul,
-                            (void*)shared_mem_req_buf->send_address,
+                            /*(void*)shared_mem_req_buf->send_address,*/ send_addr,
                             shared_mem_req_buf->size, &params);
 
     /* Receive */
-    ret = am_recv(ucp_worker, recv_memh, &buf, &size);
+    ret = am_recv(ucp_worker, recv_memh /*NULL*/, &buf, &size);
 
     status = request_wait(ucp_worker, send_request, &send_ctx);
     if (status != UCS_OK) {

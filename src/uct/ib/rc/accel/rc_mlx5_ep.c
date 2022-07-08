@@ -231,6 +231,8 @@ ucs_status_t uct_rc_mlx5_ep_get_zcopy(uct_ep_h tl_ep, const uct_iov_t *iov, size
     UCT_RC_MLX5_EP_DECL(tl_ep, iface, ep);
     ucs_status_t status;
 
+    fprintf(stderr, "GET_ZCOPY: length=%zu\n", total_length);
+
     UCT_CHECK_IOV_SIZE(iovcnt, UCT_RC_MLX5_RMA_MAX_IOV(0),
                        "uct_rc_mlx5_ep_get_zcopy");
     UCT_CHECK_LENGTH(total_length,
