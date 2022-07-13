@@ -90,7 +90,7 @@ ucp_memh_put(ucp_context_h context, ucp_mem_h memh, int invalidate)
     }
 
     if (ucs_unlikely(!(memh->flags & UCP_MEM_FLAG_IN_RCACHE))) {
-        ucp_memh_unmap(context, memh);
+        ucp_memh_cleanup(context, memh);
         ucs_free(memh);
         return;
     }
@@ -109,6 +109,13 @@ ucp_memh_put(ucp_context_h context, ucp_mem_h memh, int invalidate)
     if (invalidate && context->config.ext.mem_invalidate) {
         ucs_rcache_region_invalidate(rcache, &memh->super,
                 (ucs_rcache_invalidate_comp_func_t)ucs_empty_function, NULL);
+    }
+
+    if ((memh->super.flags & UCS_RCACHE_REGION_FLAG_PGTABLE) &&
+        (memh->super.refcount == 2) &&
+        (memh->mem_type == UCS_MEMORY_TYPE_HOST)) {
+        ucp_memh_deregister(context, memh, context->dont_cache_md_map);
+        memh->md_map &= ~context->dont_cache_md_map;
     }
 
     ucs_rcache_region_put_unsafe(rcache, &memh->super);

@@ -713,7 +713,9 @@ enum {
                                                 connection establishment via
                                                 sockaddr */
     UCT_MD_FLAG_INVALIDATE  = UCS_BIT(8), /**< MD supports memory invalidation */
-    UCT_MD_FLAG_SHARED_MKEY = UCS_BIT(9)  /**< MD supports shared memory keys
+    UCT_MD_FLAG_DONT_CACHE  = UCS_BIT(9), /**< MD registrations should not be
+                                               cached between operation */
+    UCT_MD_FLAG_SHARED_MKEY = UCS_BIT(10) /**< MD supports shared memory keys
                                                with another process using the
                                                same MD */
 };

@@ -158,7 +158,10 @@ ucp_memh_get_slow(ucp_context_h context, void *address, size_t length,
                   ucp_md_map_t shared_md_map, unsigned uct_flags,
                   uint8_t memh_flags, ucp_mem_h *memh_p);
 
-void ucp_memh_unmap(ucp_context_h context, ucp_mem_h memh);
+void ucp_memh_deregister(ucp_context_h context, ucp_mem_h memh,
+                         ucp_md_map_t exclude_md_map);
+
+void ucp_memh_cleanup(ucp_context_h context, ucp_mem_h memh);
 
 ucs_status_t ucp_mem_rcache_init(ucp_context_h context);
 
