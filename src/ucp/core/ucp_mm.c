@@ -328,18 +328,18 @@ static void ucp_memh_uct_deregister(ucp_context_h context, ucp_mem_h memh,
 }
 
 void ucp_memh_deregister(ucp_context_h context, ucp_mem_h memh,
-                         ucp_md_map_t exclude_md_map)
+                         ucp_md_map_t dereg_md_map)
 {
     ucp_md_index_t md_index;
 
     /* Unregister from all memory domains */
-    ucs_for_each_bit(md_index, memh->md_map & ~exclude_md_map) {
+    ucs_for_each_bit(md_index, memh->md_map & dereg_md_map) {
         ucp_memh_uct_deregister(context, memh, md_index, 0);
         memh->md_map &= ~UCS_BIT(md_index);
     }
 
     if (memh->flags & UCP_MEM_FLAG_SHARED) {
-        ucs_for_each_bit(md_index, memh->shared_md_map & ~exclude_md_map) {
+        ucs_for_each_bit(md_index, memh->shared_md_map & dereg_md_map) {
             ucp_memh_uct_deregister(context, memh, md_index, context->num_mds);
             memh->shared_md_map &= ~UCS_BIT(md_index);
         }
@@ -348,7 +348,6 @@ void ucp_memh_deregister(ucp_context_h context, ucp_mem_h memh,
 
 void ucp_memh_cleanup(ucp_context_h context, ucp_mem_h memh)
 {
-    ucp_md_map_t exclude_md_map = 0;
     uct_allocated_memory_t mem;
     ucs_status_t status;
 
@@ -360,12 +359,14 @@ void ucp_memh_cleanup(ucp_context_h context, ucp_mem_h memh)
         ucs_assert(memh->alloc_md_index != UCP_NULL_RESOURCE);
         ucs_assert(!(memh->shared_md_map & UCS_BIT(memh->alloc_md_index)));
 
-        mem.md          = context->tl_mds[memh->alloc_md_index].md;
-        mem.memh        = memh->uct[memh->alloc_md_index];
-        exclude_md_map |= UCS_BIT(memh->alloc_md_index);
+        mem.md   = context->tl_mds[memh->alloc_md_index].md;
+        mem.memh = memh->uct[memh->alloc_md_index];
+
+        memh->md_map        &= ~UCS_BIT(memh->alloc_md_index);
+        memh->shared_md_map &= ~UCS_BIT(memh->alloc_md_index);
     }
 
-    ucp_memh_deregister(context, memh, exclude_md_map);
+    ucp_memh_deregister(context, memh, 0);
 
     /* If the memory was also allocated, release it */
     if (memh->alloc_method != UCT_ALLOC_METHOD_LAST) {
@@ -658,7 +659,6 @@ static ucs_status_t ucp_mem_rcache_mem_reg_cb(void *context, ucs_rcache_t *rcach
     ucp_mem_h memh = ucs_derived_of(rregion, ucp_mem_t);
 
     memh->md_map         = 0;
-    memh->shared_md_map  = 0;
     memh->shared_md_map  = 0;
     memh->remote_uuid    = 0;
     memh->alloc_md_index = UCP_NULL_RESOURCE;

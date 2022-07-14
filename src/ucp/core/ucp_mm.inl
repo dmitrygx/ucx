@@ -115,10 +115,11 @@ ucp_memh_put(ucp_context_h context, ucp_mem_h memh, int invalidate)
         (memh->super.refcount == 2) &&
         (memh->mem_type == UCS_MEMORY_TYPE_HOST)) {
         ucp_memh_deregister(context, memh, context->dont_cache_md_map);
-        memh->md_map &= ~context->dont_cache_md_map;
     }
 
-    ucs_rcache_region_put_unsafe(rcache, &memh->super);
+    if (!invalidate) {
+        ucs_rcache_region_put_unsafe(rcache, &memh->super);
+    }
     UCP_THREAD_CS_EXIT(&context->mt_lock);
 }
 
