@@ -33,11 +33,12 @@ ucp_mem_dummy_handle_t ucp_mem_dummy_handle = {
     .uct_shared = { UCT_MEM_HANDLE_NULL }
 };
 
+
 static struct {
     ucp_md_map_t md_map;
     uint8_t      mem_type;
     uint64_t     flags;
-} UCS_S_PACKED ucp_shared_mkey_dummy_buffer = { 0, UCS_MEMORY_TYPE_HOST, 0lu };
+} UCS_S_PACKED ucp_memh_dummy_buffer = { 0, UCS_MEMORY_TYPE_HOST, 0lu };
 
 
 static UCS_F_ALWAYS_INLINE size_t ucp_memh_size(ucp_context_h context)
@@ -562,8 +563,7 @@ out:
 static ucs_status_t
 ucp_memh_alloc(ucp_context_h context, void *address, size_t length,
                ucs_memory_type_t memory_type, unsigned uct_flags,
-               uint8_t memh_flags, const char *alloc_name,
-               void *shared_mkey_buffer, ucp_mem_h *memh_p)
+               uint8_t memh_flags, const char *alloc_name, ucp_mem_h *memh_p)
 {
     ucp_md_map_t reg_md_map       = context->reg_md_map[memory_type];
     ucp_md_map_t shared_md_map    = context->shared_md_map[memory_type];
@@ -612,10 +612,10 @@ ucp_memh_alloc(ucp_context_h context, void *address, size_t length,
         memh->alloc_md_index      = alloc_md_index;
         memh->uct[alloc_md_index] = mem.memh;
         memh->md_map             |= UCS_BIT(alloc_md_index);
-        ucs_trace("allocated address %p length %zu on md[%d]=%s"
-                  " shared_mkey_buffer=%p %p", mem.address, mem.length,
-                  alloc_md_index, context->tl_mds[alloc_md_index].rsc.md_name,
-                  shared_mkey_buffer, memh->uct[alloc_md_index]);
+        ucs_trace("allocated address %p length %zu on md[%d]=%s %p",
+                  mem.address, mem.length, alloc_md_index,
+                  context->tl_mds[alloc_md_index].rsc.md_name,
+                  memh->uct[alloc_md_index]);
     }
 
     *memh_p = memh;
@@ -786,6 +786,7 @@ ucp_memh_import_attach(ucp_context_h context, ucp_mem_h memh,
     uct_md_mem_attach_params_t attach_params;
     uct_md_attr_t *md_attr;
     ucs_status_t status;
+    uct_mem_h uct_memh;
 
     for (attach_params_iter = 0; attach_params_iter < attach_params_num;
          ++attach_params_iter) {
@@ -796,27 +797,25 @@ ucp_memh_import_attach(ucp_context_h context, ucp_mem_h memh,
 
         attach_params.field_mask         =
                 UCT_MD_MEM_ATTACH_FIELD_FLAGS |
-                UCT_MD_MEM_ATTACH_FIELD_SHARED_MKEY_BUFFER |
-                UCT_MD_MEM_ATTACH_FIELD_MEMH;
-        attach_params.flags              = UCT_MD_MEM_ATTACH_FLAG_SHARED |
-                                           UCT_MD_MEM_ATTACH_FLAG_HIDE_ERRORS;
+                UCT_MD_MEM_ATTACH_FIELD_SHARED_MKEY_BUFFER;
+        attach_params.flags              = UCT_MD_MEM_ATTACH_FLAG_HIDE_ERRORS;
         attach_params.shared_mkey_buffer = tl_mkey_buf;
 
         status = uct_md_mem_attach(context->tl_mds[md_index].md,
-                                   &attach_params);
+                                   &attach_params, &uct_memh);
         if (ucs_unlikely(status != UCS_OK)) {
             ucs_trace("failed to attach memory on '%s': %s",
                       md_attr->component_name, ucs_status_string(status));
             continue;
         }
 
-        memh->uct[md_index] = attach_params.memh;
+        memh->uct[md_index] = uct_memh;
 
         ucs_trace("imported address %p length %zu on md[%d]=%s:"
-                  "address %p memh %p",
+                  "amemh %p",
                   ucp_memh_address(memh), ucp_memh_length(memh), md_index,
                   context->tl_mds[md_index].rsc.md_name,
-                  attach_params.address, memh->uct[md_index]);
+                  memh->uct[md_index]);
         md_map_imported |= UCS_BIT(md_index);
     }
 
@@ -898,8 +897,8 @@ err:
 }
 
 static ucs_status_t
-ucp_memh_import(ucp_context_h context, void *address, size_t length,
-                void *shared_mkey_buffer, ucp_mem_h *memh_p)
+ucp_memh_import(ucp_context_h context, const void *shared_mkey_buffer,
+                ucp_mem_h *memh_p)
 {
     ucs_rcache_t *rcache = NULL;
     const void *p        = shared_mkey_buffer;
@@ -917,10 +916,14 @@ ucp_memh_import(ucp_context_h context, void *address, size_t length,
     const void *tl_mkey_buf;
     ucs_rcache_region_t *rregion;
     khiter_t iter;
+    void *address;
+    size_t length;
 
     ucs_assert(shared_mkey_buffer != NULL);
 
     remote_md_map = *ucs_serialize_next(&p, const ucp_md_map_t);
+    address       = (void*)*ucs_serialize_next(&p, uint64_t);
+    length        = *ucs_serialize_next(&p, uint64_t);
     mem_type      = *ucs_serialize_next(&p, uint8_t);
     remote_uuid   = *ucs_serialize_next(&p, uint64_t);
     flags         = *ucs_serialize_next(&p, uint64_t);
@@ -963,7 +966,7 @@ ucp_memh_import(ucp_context_h context, void *address, size_t length,
             rcache = kh_value(context->imported_mem_rcaches, iter);
             ucs_assert(rcache != NULL);
 
-            status = ucs_rcache_get_unsafe(rcache, (void*)address, length,
+            status = ucs_rcache_get_unsafe(rcache, address, length,
                                            PROT_READ | PROT_WRITE, NULL,
                                            &rregion);
             if (status != UCS_OK) {
@@ -1018,10 +1021,11 @@ ucs_status_t ucp_mem_map(ucp_context_h context, const ucp_mem_map_params_t *para
     ucs_status_t status;
     unsigned flags;
     void *address;
-    void *shared_mkey_buffer;
+    const void *shared_mkey_buffer;
     size_t length;
 
-    if (!(params->field_mask & UCP_MEM_MAP_PARAM_FIELD_LENGTH)) {
+    if (!(params->field_mask & (UCP_MEM_MAP_PARAM_FIELD_LENGTH |
+                                UCP_MEM_MAP_PARAM_FIELD_SHARED_MKEY_BUFFER))) {
         ucs_error("The length value for mapping memory isn't set: %s",
                   ucs_status_string(UCS_ERR_INVALID_PARAM));
         status = UCS_ERR_INVALID_PARAM;
@@ -1038,19 +1042,6 @@ ucs_status_t ucp_mem_map(ucp_context_h context, const ucp_mem_map_params_t *para
     if ((flags & UCP_MEM_MAP_FIXED) &&
         ((uintptr_t)address % ucs_get_page_size())) {
         ucs_error("UCP_MEM_MAP_FIXED flag requires page aligned address");
-        status = UCS_ERR_INVALID_PARAM;
-        goto out;
-    }
-
-    if (address == NULL) {
-        if (!(flags & UCP_MEM_MAP_ALLOCATE) && (length > 0)) {
-            ucs_error("Undefined address with nonzero length requires "
-                      "UCP_MEM_MAP_ALLOCATE flag");
-            status = UCS_ERR_INVALID_PARAM;
-            goto out;
-        }
-    } else if (!(flags & UCP_MEM_MAP_ALLOCATE) && (flags & UCP_MEM_MAP_FIXED)) {
-        ucs_error("Wrong combination of flags when address is defined");
         status = UCS_ERR_INVALID_PARAM;
         goto out;
     }
@@ -1086,20 +1077,33 @@ ucs_status_t ucp_mem_map(ucp_context_h context, const ucp_mem_map_params_t *para
         memh_flags |= UCP_MEM_FLAG_REGISTERED;
     }
 
+    if (address == NULL) {
+        if (!(flags & UCP_MEM_MAP_ALLOCATE) && (length > 0)) {
+            ucs_error("Undefined address with nonzero length requires "
+                      "UCP_MEM_MAP_ALLOCATE flag");
+            status = UCS_ERR_INVALID_PARAM;
+            goto out;
+        }
+    } else if ((!(flags & UCP_MEM_MAP_ALLOCATE) &&
+                (flags & UCP_MEM_MAP_FIXED)) ||
+               (memh_flags & UCP_MEM_FLAG_IMPORTED)) {
+        ucs_error("Wrong combination of flags when address is defined");
+        status = UCS_ERR_INVALID_PARAM;
+        goto out;
+    }
+
     if (memh_flags & UCP_MEM_FLAG_IMPORTED) {
-        status = ucp_memh_import(context, address, length, shared_mkey_buffer,
-                                 memh_p);
+        status = ucp_memh_import(context, shared_mkey_buffer, memh_p);
     } else if (flags & UCP_MEM_MAP_ALLOCATE) {
         status = ucp_memh_alloc(context, address, length, memory_type,
                                 ucp_mem_map_params2uct_flags(params),
-                                memh_flags, "user memory", shared_mkey_buffer,
-                                memh_p);
+                                memh_flags, "user memory", memh_p);
     } else {
         status = ucp_memh_get(context, address, length, memory_type,
                               context->reg_md_map[memory_type],
                               context->shared_md_map[memory_type],
                               ucp_mem_map_params2uct_flags(params), memh_flags,
-                              shared_mkey_buffer, memh_p);
+                              memh_p);
     }
 
     if (status == UCS_OK) {
@@ -1308,6 +1312,8 @@ ucp_shared_mkey_packed_size(ucp_context_h context, ucp_md_map_t md_map)
     unsigned md_index;
 
     size  = sizeof(ucp_md_map_t); /* Memory domains map */
+    size += sizeof(uint64_t); /* Address */
+    size += sizeof(uint64_t); /* Length */
     size += sizeof(uint8_t); /* Memory type */
     size +=  sizeof(uint64_t); /* UCP uuid */
     size += sizeof(uint64_t); /* Flags */
@@ -1338,6 +1344,8 @@ static ssize_t
 ucp_shared_mkey_pack_memh(ucp_context_h context, const ucp_mem_h memh,
                           void *buffer)
 {
+    uint64_t address     = (uint64_t)ucp_memh_address(memh);
+    uint64_t length      = ucp_memh_length(memh);
     uct_mem_h *uct_memhs = &memh->uct[context->num_mds];
     void *p              = buffer;
     void *md_data_p;
@@ -1354,12 +1362,15 @@ ucp_shared_mkey_pack_memh(ucp_context_h context, const ucp_mem_h memh,
     /* Check that md_map is valid */
     ucs_assert(ucs_test_all_flags(UCS_MASK(context->num_mds), memh->md_map));
 
-    ucs_trace("packing shared mkey, memory type %s md_map 0x%" PRIx64,
+    ucs_trace("packing shared mkey, address 0%lx length %zu memory type %s"
+              " md_map 0x%" PRIx64, address, length,
               ucs_memory_type_names[memh->mem_type], memh->shared_md_map);
     ucs_log_indent(1);
 
     UCS_STATIC_ASSERT(UCS_MEMORY_TYPE_LAST <= 255);
     *ucs_serialize_next(&p, ucp_md_map_t) = memh->shared_md_map;
+    *ucs_serialize_next(&p, uint64_t)     = address;
+    *ucs_serialize_next(&p, uint64_t)     = length;
     *ucs_serialize_next(&p, uint8_t)      = memh->mem_type;
     *ucs_serialize_next(&p, uint64_t)     = context->uuid;
     *ucs_serialize_next(&p, uint64_t)     = 0; /* Reserved for future use */
@@ -1435,19 +1446,9 @@ ucp_shared_mkey_pack(ucp_context_h context, ucp_mem_h memh, void **buffer_p,
     size_t size;
     void *buffer;
 
-    UCP_THREAD_CS_ENTER(&context->mt_lock);
-
     ucs_assert(memh->flags & UCP_MEM_FLAG_SHARED);
     ucs_trace("packing shared mkeys for buffer %p memh %p md_map 0x%"PRIx64,
               ucp_memh_address(memh), memh, memh->shared_md_map);
-
-    if (ucp_memh_is_zero_length(memh)) {
-        /* Dummy memh, return dummy key */
-        *buffer_p      = &ucp_shared_mkey_dummy_buffer;
-        *buffer_size_p = sizeof(ucp_shared_mkey_dummy_buffer);
-        status         = UCS_OK;
-        goto out;
-    }
 
     size   = ucp_shared_mkey_packed_size(context, memh->shared_md_map);
     buffer = ucs_malloc(size, "ucp_shared_mkey_buffer");
@@ -1473,57 +1474,98 @@ ucp_shared_mkey_pack(ucp_context_h context, ucp_mem_h memh, void **buffer_p,
 err_buffer_free:
     ucs_free(buffer);
 out:
-    UCP_THREAD_CS_EXIT(&context->mt_lock);
     return status;   
 }
 
-static void ucp_shared_mkey_buffer_release(void *buffer)
+static ucs_status_t ucp_remote_mkey_pack(ucp_context_h context, ucp_mem_h memh,
+                                         void **rkey_buffer_p, size_t *size_p)
 {
-    if (buffer == &ucp_shared_mkey_dummy_buffer) {
+    ucp_memory_info_t mem_info;
+    ucs_status_t status;
+    ssize_t packed_size;
+    void *rkey_buffer;
+    size_t size;
+
+    ucs_trace("packing rkeys for buffer %p memh %p md_map 0x%"PRIx64,
+              ucp_memh_address(memh), memh, memh->md_map);
+
+    size        = ucp_rkey_packed_size(context, memh->md_map,
+                                       UCS_SYS_DEVICE_ID_UNKNOWN, 0);
+    rkey_buffer = ucs_malloc(size, "ucp_rkey_buffer");
+    if (rkey_buffer == NULL) {
+        status = UCS_ERR_NO_MEMORY;
+        goto out;
+    }
+
+    mem_info.type    = memh->mem_type;
+    mem_info.sys_dev = UCS_SYS_DEVICE_ID_UNKNOWN;
+
+    packed_size = ucp_rkey_pack_memh(context, memh->md_map, memh, &mem_info,
+                                     0, NULL, rkey_buffer);
+    if (packed_size < 0) {
+        status = (ucs_status_t)packed_size;
+        goto err_destroy;
+    }
+
+    ucs_assert(packed_size == size);
+
+    *rkey_buffer_p = rkey_buffer;
+    *size_p        = size;
+    status         = UCS_OK;
+    goto out;
+
+err_destroy:
+    ucs_free(rkey_buffer);
+out:
+    return status;
+}
+
+ucs_status_t ucp_memh_pack(ucp_context_h context, ucp_mem_h memh,
+                           ucp_memh_pack_params_t *params, void **buffer_p,
+                           size_t *buffer_size_p)
+{
+    uint64_t flags = (params->field_mask & UCP_MEMH_PACK_PARAM_FIELD_FLAGS) ?
+                     params->flags : 0;
+    ucs_status_t status;
+
+    if ((flags == 0) ||
+        ucs_test_all_flags(flags, UCP_MEMH_PACK_FLAG_RKEY |
+                                  UCP_MEMH_PACK_FLAG_SHARED)) {
+        ucs_error("memory handle pack flags are invalid, it should be either"
+                  " RKEY or SHARED");
+        return UCS_ERR_INVALID_PARAM;
+    }
+
+    /* always acquire context lock */
+    UCP_THREAD_CS_ENTER(&context->mt_lock);
+
+    if (ucp_memh_is_zero_length(memh)) {
+        /* Dummy memh, return dummy key */
+        *buffer_p      = &ucp_memh_dummy_buffer;
+        *buffer_size_p = sizeof(ucp_memh_dummy_buffer);
+        status         = UCS_OK;
+        goto out;
+    }
+
+    if (flags & UCP_MEMH_PACK_FLAG_RKEY) {
+        status = ucp_remote_mkey_pack(context, memh, buffer_p, buffer_size_p);
+    } else if (flags & UCP_MEMH_PACK_FLAG_SHARED) {
+        status = ucp_shared_mkey_pack(context, memh, buffer_p, buffer_size_p);
+    }
+
+out:
+    UCP_THREAD_CS_EXIT(&context->mt_lock);
+    return status;
+}
+
+void ucp_memh_buffer_release(void *buffer)
+{
+    if (buffer == &ucp_memh_dummy_buffer) {
         /* Dummy key, just return */
         return;
     }
 
     ucs_free(buffer);
-}
-
-ucs_status_t ucp_mkey_pack(ucp_context_h context, ucp_mem_h memh,
-                           ucp_mkey_pack_params_t *params, void **buffer_p,
-                           size_t *buffer_size_p)
-{
-    uint64_t flags = (params->field_mask & UCP_MKEY_PACK_PARAM_FIELD_FLAGS) ?
-                     params->flags : 0;
-
-    if (flags & UCP_MKEY_PACK_FLAG_RKEY) {
-        return ucp_rkey_pack(context, memh, buffer_p, buffer_size_p);
-    }
-
-    if (flags & UCP_MKEY_PACK_FLAG_SHARED) {
-        return ucp_shared_mkey_pack(context, memh, buffer_p, buffer_size_p);
-    }
-
-    return UCS_OK;
-}
-
-ucs_status_t
-ucp_mkey_buffer_release(const ucp_mkey_buffer_release_params_t *params,
-                        void *buffer)
-{
-    uint64_t flags =
-            (params->field_mask & UCP_MKEY_BUFFER_RELEASE_PARAM_FIELD_FLAGS) ?
-            params->flags : 0;
-
-    if (flags & UCP_MKEY_BUFFER_RELEASE_FLAG_RKEY) {
-        ucp_rkey_buffer_release(buffer);
-    } else if (flags & UCP_MKEY_BUFFER_RELEASE_FLAG_SHARED) {
-        ucp_shared_mkey_buffer_release(buffer);
-    } else {
-        ucs_error("invalid type of mkey buffer supplied, flags 0x%"PRIx64,
-                  flags);
-        return UCS_ERR_INVALID_PARAM;
-    }
-
-    return UCS_OK;
 }
 
 static inline ucs_status_t
@@ -1538,7 +1580,7 @@ ucp_mpool_malloc(ucp_worker_h worker, ucs_mpool_t *mp, size_t *size_p, void **ch
     status = ucp_memh_alloc(worker->context, NULL,
                             *size_p + sizeof(*chunk_hdr), UCS_MEMORY_TYPE_HOST,
                             ucp_mem_map_params2uct_flags(&mem_params), 0,
-                            ucs_mpool_name(mp), NULL, &memh);
+                            ucs_mpool_name(mp), &memh);
     if (status != UCS_OK) {
         goto out;
     }
@@ -1589,7 +1631,7 @@ ucp_rndv_frag_malloc_mpools(ucs_mpool_t *mp, size_t *size_p, void **chunk_p)
 
     /* payload; need to get default flags from ucp_mem_map_params2uct_flags() */
     status = ucp_memh_alloc(context, NULL, frag_size * num_elems, mem_type,
-                            UCT_MD_MEM_ACCESS_RMA, 0, ucs_mpool_name(mp), NULL,
+                            UCT_MD_MEM_ACCESS_RMA, 0, ucs_mpool_name(mp),
                             &chunk_hdr->memh);
     if (status != UCS_OK) {
         return status;
@@ -1661,7 +1703,7 @@ ucp_mm_get_alloc_md_map(ucp_context_h context, ucp_md_map_t *md_map_p)
         /* Allocate dummy 1-byte buffer to get the expected md_map */
         status = ucp_memh_alloc(context, NULL, 1, UCS_MEMORY_TYPE_HOST,
                                 UCT_MD_MEM_ACCESS_ALL, 0, "get_alloc_md_map",
-                                NULL, &memh);
+                                &memh);
         if (status != UCS_OK) {
             return status;
         }

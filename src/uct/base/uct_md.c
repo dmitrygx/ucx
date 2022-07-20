@@ -517,9 +517,10 @@ ucs_status_t uct_md_mem_dereg_v2(uct_md_h md,
 }
 
 ucs_status_t
-uct_md_mem_attach(uct_md_h md, uct_md_mem_attach_params_t *params)
+uct_md_mem_attach(uct_md_h md, uct_md_mem_attach_params_t *params,
+                  uct_mem_h *memh_p)
 {
-    return md->ops->mem_attach(md, params);
+    return md->ops->mem_attach(md, params, memh_p);
 }
 
 ucs_status_t uct_md_mem_query(uct_md_h md, const void *address, size_t length,

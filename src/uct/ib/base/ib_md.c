@@ -819,7 +819,8 @@ static ucs_status_t uct_ib_mem_dereg(uct_md_h uct_md,
 }
 
 static ucs_status_t
-uct_ib_md_mem_attach(uct_md_h uct_md, uct_md_mem_attach_params_t *params)
+uct_ib_md_mem_attach(uct_md_h uct_md, uct_md_mem_attach_params_t *params,
+                     uct_mem_h *memh_p)
 {
     const uint64_t *mkey =
             UCT_MD_MEM_ATTACH_FIELD_VALUE(params, shared_mkey_buffer,
@@ -851,9 +852,7 @@ uct_ib_md_mem_attach(uct_md_h uct_md, uct_md_mem_attach_params_t *params)
     }
 
     ib_memh->flags |= UCT_IB_MEM_FLAG_NO_RCACHE;
-    if (params->field_mask & UCT_MD_MEM_ATTACH_FIELD_MEMH) {
-        params->memh = ib_memh;
-    }
+    *memh_p         = ib_memh;
 
     return UCS_OK;
 

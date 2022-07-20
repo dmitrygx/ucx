@@ -72,6 +72,63 @@ ucs_status_t ucp_request_test(void *request, ucp_tag_recv_info_t *info);
 
 
 /**
+ * @ingroup UCP_MEM
+ * @deprecated Replaced by @ref ucp_memh_pack "ucp_memh_pack()" and passing
+ *             @ref UCP_MEMH_PACK_FLAG_RKEY in flags.
+ * @brief Pack memory region remote access key.
+ *
+ * This routine allocates memory buffer and packs into the buffer
+ * a remote access key (RKEY) object. RKEY is an opaque object that provides
+ * the information that is necessary for remote memory access.
+ * This routine packs the RKEY object in a portable format such that the
+ * object can be @ref ucp_ep_rkey_unpack "unpacked" on any platform supported by the
+ * UCP library. In order to release the memory buffer allocated by this routine
+ * the application is responsible for calling the @ref ucp_rkey_buffer_release
+ * "ucp_rkey_buffer_release()" routine.
+ *
+ *
+ * @note
+ * @li RKEYs for InfiniBand and Cray Aries networks typically includes
+ * InfiniBand and Aries key.
+ * @li In order to enable remote direct memory access to the memory associated
+ * with the memory handle the application is responsible for sharing the RKEY with
+ * the peers that will initiate the access.
+ *
+ * @param [in]  context       Application @ref ucp_context_h "context" which was
+ *                            used to allocate/map the memory.
+ * @param [in]  memh          @ref ucp_mem_h "Handle" to memory region.
+ * @param [out] rkey_buffer_p Memory buffer allocated by the library.
+ *                            The buffer contains packed RKEY.
+ * @param [out] size_p        Size (in bytes) of the packed RKEY.
+ *
+ * @return Error code as defined by @ref ucs_status_t
+ */
+ucs_status_t ucp_rkey_pack(ucp_context_h context, ucp_mem_h memh,
+                           void **rkey_buffer_p, size_t *size_p);
+
+
+/**
+ * @ingroup UCP_MEM
+ * @deprecated Replaced by @ref ucp_memh_buffer_release
+ *             "ucp_memh_buffer_release()".
+ * @brief Release packed remote key buffer.
+ *
+ * This routine releases the buffer that was allocated using @ref ucp_rkey_pack
+ * "ucp_rkey_pack()".
+ *
+ * @warning
+ * @li Once memory is released an access to the memory may cause a
+ * failure.
+ * @li If the input memory address was not allocated using
+ * @ref ucp_rkey_pack "ucp_rkey_pack()" routine the behaviour of this routine
+ * is undefined.
+ *
+ * @param [in]  rkey_buffer   Buffer to release.
+ */
+void ucp_rkey_buffer_release(void *rkey_buffer);
+
+
+/**
  * @ingroup UCP_ENDPOINT
  * @deprecated Replaced by @ref ucp_ep_flush_nb.
  */

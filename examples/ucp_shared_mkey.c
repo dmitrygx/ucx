@@ -56,9 +56,6 @@ struct am_data_desc {
 
 
 typedef struct shared_mem_req {
-    uint64_t size;
-    uint64_t send_address;
-    uint64_t recv_address;
     uint64_t send_shared_mkey_buf_size;
     uint64_t recv_shared_mkey_buf_size;
     /* Shared mkey buffers follow in the order:
@@ -84,31 +81,39 @@ typedef struct {
 } shared_mem_info_t;
 
 
-static int shared_mem_import(ucp_context_h ucp_context, void *address,
-                             size_t length, void *shared_mkey_buf,
-                             ucp_mem_h *memh_p)
+static int shared_mem_import(ucp_context_h ucp_context, void *shared_mkey_buf,
+                             void **address_p, ucp_mem_h *memh_p)
 {
     ucp_mem_map_params_t params;
     ucs_status_t status;
     ucp_mem_h memh;
+    ucp_mem_attr_t attr;
 
     params.field_mask         = UCP_MEM_MAP_PARAM_FIELD_FLAGS |
-                                UCP_MEM_MAP_PARAM_FIELD_SHARED_MKEY_BUFFER |
-                                UCP_MEM_MAP_PARAM_FIELD_ADDRESS |
-                                UCP_MEM_MAP_PARAM_FIELD_LENGTH;
+                                UCP_MEM_MAP_PARAM_FIELD_SHARED_MKEY_BUFFER;
     params.flags              = UCP_MEM_MAP_SHARED;
     params.shared_mkey_buffer = shared_mkey_buf;
-    params.address            = address;
-    params.length             = length;
     status                    = ucp_mem_map(ucp_context, &params, &memh);
     if (status != UCS_OK) {
         fprintf(stderr, "failed to import memory (%s)\n",
                 ucs_status_string(status));
-        return -1;
+        goto out;
     }
 
-    *memh_p = memh;
+    attr.field_mask = UCP_MEM_ATTR_FIELD_ADDRESS | UCP_MEM_ATTR_FIELD_LENGTH;
+    status          = ucp_mem_query(memh, &attr);
+    if (status != UCS_OK) {
+        goto out_mem_unmap;
+    }
+
+    *address_p = attr.address;
+    *memh_p    = memh;
     return 0;
+
+out_mem_unmap:
+    ucp_mem_unmap(ucp_context, memh);
+out:
+    return -1;
 }
 
 static void shared_mem_import_release(ucp_context_h ucp_context,
@@ -127,7 +132,7 @@ static int shared_mem_export(ucp_context_h ucp_context, size_t length,
                              size_t *shared_mkey_buf_size_p)
 {
     ucp_mem_map_params_t mem_map_params;
-    ucp_mkey_pack_params_t mkey_pack_params;
+    ucp_memh_pack_params_t memh_pack_params;
     ucs_status_t status;
     ucp_mem_h memh;
     void *shared_mkey_buf;
@@ -157,10 +162,10 @@ static int shared_mem_export(ucp_context_h ucp_context, size_t length,
         goto err_mem_free;
     }
 
-    mkey_pack_params.field_mask = UCP_MKEY_PACK_PARAM_FIELD_FLAGS;
-    mkey_pack_params.flags      = UCP_MKEY_PACK_FLAG_SHARED;
-    status                      = ucp_mkey_pack(ucp_context, memh,
-                                                &mkey_pack_params,
+    memh_pack_params.field_mask = UCP_MEMH_PACK_PARAM_FIELD_FLAGS;
+    memh_pack_params.flags      = UCP_MEMH_PACK_FLAG_SHARED;
+    status                      = ucp_memh_pack(ucp_context, memh,
+                                                &memh_pack_params,
                                                 &shared_mkey_buf,
                                                 &shared_mkey_buf_size);
     if (status != UCS_OK) {
@@ -189,14 +194,8 @@ err:
 static void shared_mem_export_release(ucp_context_h ucp_context, void *buffer,
                                       ucp_mem_h memh, void *shared_mkey_buf)
 {
-    ucp_mkey_buffer_release_params_t mkey_release_params;
-
-    mkey_release_params.field_mask = UCP_MKEY_BUFFER_RELEASE_PARAM_FIELD_FLAGS;
-    mkey_release_params.flags      = UCP_MKEY_BUFFER_RELEASE_FLAG_SHARED;
-    ucp_mkey_buffer_release(&mkey_release_params, shared_mkey_buf);
-
+    ucp_memh_buffer_release(shared_mkey_buf);
     ucp_mem_unmap(ucp_context, memh);
-
     free(buffer);
 }
 
@@ -253,9 +252,6 @@ static int client_shared_mem_export(ucp_context_h ucp_context, size_t size,
         goto out_recv_shared_mem_export_release;
     }
 
-    shared_mem_req_buf->size                      = test_string_length;
-    shared_mem_req_buf->send_address              = (uintptr_t)send_address;
-    shared_mem_req_buf->recv_address              = (uintptr_t)recv_address;
     shared_mem_req_buf->send_shared_mkey_buf_size = send_shared_mkey_buf_size;
     shared_mem_req_buf->recv_shared_mkey_buf_size = recv_shared_mkey_buf_size;
 
@@ -403,7 +399,7 @@ static int am_recv(ucp_worker_h ucp_worker, ucp_mem_h memh,
 }
 
 static int send_recv_am(ucp_worker_h ucp_worker, ucp_ep_h self_ep,
-                        shared_mem_req_t *shared_mem_req_buf,
+                        void *send_address, void *recv_address, 
                         ucp_mem_h send_memh, ucp_mem_h recv_memh)
 {
     ucp_request_param_t params;
@@ -415,7 +411,7 @@ static int send_recv_am(ucp_worker_h ucp_worker, ucp_ep_h self_ep,
     int ret;
 
     am_data_desc.completed = 0;
-    am_data_desc.buf       = (void*)shared_mem_req_buf->recv_address;
+    am_data_desc.buf       = recv_address;
 
     /* Send */
     am_request_param_common_init(&params, &send_ctx);
@@ -423,9 +419,8 @@ static int send_recv_am(ucp_worker_h ucp_worker, ucp_ep_h self_ep,
     params.cb.send       = send_cb;
     params.memh          = send_memh;
     send_request         =
-            ucp_am_send_nbx(self_ep, TEST_AM_ID, NULL, 0ul,
-                            (void*)shared_mem_req_buf->send_address,
-                            shared_mem_req_buf->size, &params);
+            ucp_am_send_nbx(self_ep, TEST_AM_ID, NULL, 0ul, send_address,
+                            test_string_length, &params);
 
     /* Receive */
     ret = am_recv(ucp_worker, recv_memh, &buf, &size);
@@ -441,9 +436,9 @@ static int send_recv_am(ucp_worker_h ucp_worker, ucp_ep_h self_ep,
 }
 
 static int send_recv_rma(ucp_context_h ucp_context, ucp_worker_h ucp_worker,
-                         ucp_ep_h self_ep,
-                         shared_mem_req_t *shared_mem_req_buf,
-                         ucp_mem_h send_memh, ucp_mem_h recv_memh)
+                         ucp_ep_h self_ep, void *send_address,
+                         void *recv_address, ucp_mem_h send_memh,
+                         ucp_mem_h recv_memh)
 {
     int ret = 0;
     ucp_request_param_t params;
@@ -478,9 +473,8 @@ static int send_recv_rma(ucp_context_h ucp_context, ucp_worker_h ucp_worker,
     params.cb.send       = send_cb;
     params.memh          = recv_memh;
 
-    request = ucp_get_nbx(self_ep, (void*)shared_mem_req_buf->recv_address,
-                          shared_mem_req_buf->size,
-                          shared_mem_req_buf->send_address, rkey, &params);
+    request = ucp_get_nbx(self_ep, recv_address, test_string_length,
+                          (uint64_t)send_address, rkey, &params);
     status = request_wait(ucp_worker, request, &ctx);
     if (status != UCS_OK) {
         fprintf(stderr, "GET request failed (%s)\n",
@@ -510,32 +504,29 @@ static int shared_mem_do_operation(ucp_context_h ucp_context,
             (void*)((char*)(shared_mem_req_buf + 1) +
                     shared_mem_req_buf->send_shared_mkey_buf_size);
     ucp_mem_h send_memh, recv_memh;
+    void *send_address, *recv_address;
     int ret;
     
-    ret = shared_mem_import(ucp_context,
-                            (void*)shared_mem_req_buf->send_address,
-                            shared_mem_req_buf->size, send_shared_mem_buf,
-                            &send_memh);
+    ret = shared_mem_import(ucp_context, send_shared_mem_buf,
+                            &send_address, &send_memh);
     if (ret != 0) {
         goto out;
     }
 
-    ret = shared_mem_import(ucp_context,
-                            (void*)shared_mem_req_buf->recv_address,
-                            shared_mem_req_buf->size, recv_shared_mem_buf,
-                            &recv_memh);
+    ret = shared_mem_import(ucp_context, recv_shared_mem_buf,
+                            &recv_address, &recv_memh);
     if (ret != 0) {
         goto out_send_shared_mem_import_release;
     }
 
     switch (send_recv_type) {
     case CLIENT_SERVER_SEND_RECV_AM:
-        ret = send_recv_am(ucp_worker, self_ep, shared_mem_req_buf, send_memh,
-                           recv_memh);
+        ret = send_recv_am(ucp_worker, self_ep, send_address, recv_address,
+                           send_memh, recv_memh);
         break;
     case CLIENT_SERVER_SEND_RECV_RMA:
-        ret = send_recv_rma(ucp_context, ucp_worker, self_ep,
-                            shared_mem_req_buf, send_memh, recv_memh);
+        ret = send_recv_rma(ucp_context, ucp_worker, self_ep, send_address,
+                            recv_address, send_memh, recv_memh);
         break;
     default:
         fprintf(stderr, "send-recv type %d isn't supported\n", send_recv_type);

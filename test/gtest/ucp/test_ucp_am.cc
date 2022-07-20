@@ -1282,10 +1282,10 @@ public:
         // the network
         void *shared_mkey_buf;
         size_t shared_mkey_buf_size;
-        ucp_mkey_pack_params_t pack_params;
-        pack_params.field_mask = UCP_MKEY_PACK_PARAM_FIELD_FLAGS;
-        pack_params.flags      = UCP_MKEY_PACK_FLAG_SHARED;
-        ASSERT_UCS_OK(ucp_mkey_pack(sender().ucph(), memh, &pack_params,
+        ucp_memh_pack_params_t pack_params;
+        pack_params.field_mask = UCP_MEMH_PACK_PARAM_FIELD_FLAGS;
+        pack_params.flags      = UCP_MEMH_PACK_FLAG_SHARED;
+        ASSERT_UCS_OK(ucp_memh_pack(sender().ucph(), memh, &pack_params,
                                     &shared_mkey_buf, &shared_mkey_buf_size));
 
         mparams.field_mask         =
@@ -1303,16 +1303,7 @@ public:
         ASSERT_UCS_OK(status);
         *imp_memh = memh;
 
-        ucp_mkey_buffer_release_params_t release_params;
-        release_params.field_mask = UCP_MKEY_BUFFER_RELEASE_PARAM_FIELD_FLAGS;
-        release_params.flags      = UCP_MKEY_BUFFER_RELEASE_FLAG_SHARED;
-        status                    = ucp_mkey_buffer_release(&release_params,
-                                                            shared_mkey_buf);
-        if (status != UCS_OK) {
-            ucp_mem_unmap(sender().ucph(), *exp_memh);
-            ucp_mem_unmap(context, *imp_memh);
-        }
-        ASSERT_UCS_OK(status);
+        ucp_memh_buffer_release(shared_mkey_buf);
 
         return attr.address;
     }

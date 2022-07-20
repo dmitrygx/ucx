@@ -253,9 +253,7 @@ typedef enum {
  */
 typedef enum {
     UCT_MD_MEM_ATTACH_FIELD_FLAGS              = UCS_BIT(0),
-    UCT_MD_MEM_ATTACH_FIELD_SHARED_MKEY_BUFFER = UCS_BIT(1),
-    UCT_MD_MEM_ATTACH_FIELD_MEMH               = UCS_BIT(2),
-    UCT_MD_MEM_ATTACH_FIELD_ADDRESS            = UCS_BIT(3)
+    UCT_MD_MEM_ATTACH_FIELD_SHARED_MKEY_BUFFER = UCS_BIT(1)
 } uct_md_mem_attach_field_mask_t;
 
 
@@ -298,16 +296,7 @@ typedef enum {
     /**
      * Hide errors on memory attach.
      */
-    UCT_MD_MEM_ATTACH_FLAG_HIDE_ERRORS = UCS_BIT(0),
-
-    /**
-     * The flag is used indicate that memory handle should be created to attach
-     * to the memory region shared by a peer. This flag requires that a shared
-     * memory key is passed through @ref uct_md_mem_attach_field_mask_t and
-     * the resulted local memory handle could be obtained from @a memh field of
-     * @ref uct_md_mem_attach_field_mask_t.
-     */
-    UCT_MD_MEM_ATTACH_FLAG_SHARED      = UCS_BIT(1),
+    UCT_MD_MEM_ATTACH_FLAG_HIDE_ERRORS = UCS_BIT(0)
 } uct_md_mem_attach_flags_t;
 
 
@@ -497,18 +486,6 @@ typedef struct uct_md_mem_attach_params {
      * Shared memory key buffer.
      */
     const void                   *shared_mkey_buffer;
-
-    /**
-     * Local memory handle to access a memory buffer shared by a peer.
-     * This field is set by UCT layer.
-     */
-    uct_mem_h                    memh;
-
-    /**
-     * Address of a memory buffer which is a mapping of a buffer shared by a
-     * peer into a local virtual memory space.
-     */
-    void                         *address;
 } uct_md_mem_attach_params_t;
 
 
@@ -596,11 +573,13 @@ ucs_status_t uct_md_mkey_pack_v2(uct_md_h md, uct_mem_h memh,
  * @param [in]  md            Handle to memory domain.
  * @param [in]  params        Attach parameters, see @ref
  *                            uct_md_mem_attach_params_t.
+ * @param [in]  memh_p        Memory handle attached to a remote memory.
  *
  * @return                    Error code.
  */
 ucs_status_t
-uct_md_mem_attach(uct_md_h md, uct_md_mem_attach_params_t *params);
+uct_md_mem_attach(uct_md_h md, uct_md_mem_attach_params_t *params,
+                  uct_mem_h *memh_p);
 
 /**
  * @ingroup UCT_RESOURCE

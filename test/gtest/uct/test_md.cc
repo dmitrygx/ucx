@@ -819,7 +819,7 @@ UCS_TEST_SKIP_COND_P(test_md, shared_rkey,
 {
     static const size_t size = 1 * UCS_MBYTE;
     ucs_status_t status;
-    uct_mem_h memh;
+    uct_mem_h memh, imported_memh;
     void *ptr;
 
     int ret = ucs_posix_memalign(&ptr, ucs_get_page_size(), size,
@@ -842,25 +842,22 @@ UCS_TEST_SKIP_COND_P(test_md, shared_rkey,
     // Register imported part of shared MKEY
     uct_md_mem_attach_params_t attach_params;
     attach_params.field_mask         =
-            UCT_MD_MEM_ATTACH_FIELD_FLAGS |
-            UCT_MD_MEM_ATTACH_FIELD_SHARED_MKEY_BUFFER |
-            UCT_MD_MEM_ATTACH_FIELD_MEMH;
-    attach_params.flags              = UCT_MD_MEM_ATTACH_FLAG_SHARED;
+            UCT_MD_MEM_ATTACH_FIELD_SHARED_MKEY_BUFFER;
     attach_params.shared_mkey_buffer = shared_mkey_buf.data();
-    status                           = uct_md_mem_attach(md(), &attach_params);
-    ASSERT_UCS_OK(status);
-
-    // Deregister exported part of shared MKEY
-    status = uct_md_mem_dereg(md(), memh);
+    status                           = uct_md_mem_attach(md(), &attach_params,
+                                                         &imported_memh);
     ASSERT_UCS_OK(status);
 
     // Deregister imported part of shared MKEY
     uct_md_mem_dereg_params_t dereg_params;
     dereg_params.field_mask = UCT_MD_MEM_DEREG_FIELD_MEMH |
                               UCT_MD_MEM_DEREG_FIELD_ADDRESS;
-    dereg_params.memh       = attach_params.memh;
-    dereg_params.address    = attach_params.address;
+    dereg_params.memh       = imported_memh;
     status = uct_md_mem_dereg(md(), &dereg_params);
+    ASSERT_UCS_OK(status);
+
+    // Deregister exported part of shared MKEY
+    status = uct_md_mem_dereg(md(), memh);
     ASSERT_UCS_OK(status);
 }
 

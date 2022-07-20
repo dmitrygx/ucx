@@ -204,8 +204,6 @@ ucp_wireup_msg_prepare(ucp_ep_h ep, uint8_t type,
         msg_hdr->dst_ep_id = UCS_PTR_MAP_KEY_INVALID;
     }
 
-    UCS_STATIC_ASSERT((uint8_t)UCP_ERR_HANDLING_MODE_PEER ==
-                      (uint8_t)UCP_EP_CONFIG_KEY_FLAG_ERR_HANDLING_MODE_PEER);
     msg_hdr->flags = ucp_ep_config(ep)->key.flags;
 
     /* pack all addresses */
@@ -458,11 +456,11 @@ ucp_wireup_ep_init_flags(const ucp_wireup_msg_t *msg)
 {
     unsigned ep_init_flags = 0;
 
-    if (msg->flags == UCP_EP_CONFIG_KEY_FLAG_ERR_HANDLING_MODE_PEER) {
+    if (msg->flags & UCP_EP_CONFIG_KEY_FLAG_ERR_HANDLING_MODE_PEER) {
         ep_init_flags |= UCP_EP_INIT_ERR_MODE_PEER_FAILURE;
     }
 
-    if (msg->flags == UCP_EP_CONFIG_KEY_FLAG_SHARED_MKEY) {
+    if (msg->flags & UCP_EP_CONFIG_KEY_FLAG_SHARED_MKEY) {
         ep_init_flags |= UCP_EP_INIT_FLAG_SHARED_MKEY;
     }
 
@@ -1364,7 +1362,7 @@ ucs_status_t ucp_wireup_init_lanes(ucp_ep_h ep, unsigned ep_init_flags,
     ucs_log_indent(1);
 
     ucp_ep_config_key_reset(&key);
-    ucp_ep_config_key_set_err_mode(&key, ep_init_flags);
+    ucp_ep_config_key_set_modes(&key, ep_init_flags);
 
     status = ucp_wireup_select_lanes(ep, ep_init_flags, tl_bitmap,
                                      remote_address, addr_indices, &key, 1);

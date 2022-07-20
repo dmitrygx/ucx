@@ -502,11 +502,15 @@ void ucp_ep_release_id(ucp_ep_h ep)
     ep->ext->local_ep_id = UCS_PTR_MAP_KEY_INVALID;
 }
 
-void ucp_ep_config_key_set_err_mode(ucp_ep_config_key_t *key,
-                                    unsigned ep_init_flags)
+void ucp_ep_config_key_set_modes(ucp_ep_config_key_t *key,
+                                 unsigned ep_init_flags)
 {
     if (ep_init_flags & UCP_EP_INIT_ERR_MODE_PEER_FAILURE) {
         key->flags |= UCP_EP_CONFIG_KEY_FLAG_ERR_HANDLING_MODE_PEER;
+    }
+
+    if (ep_init_flags & UCP_EP_INIT_FLAG_SHARED_MKEY) {
+        key->flags |= UCP_EP_CONFIG_KEY_FLAG_SHARED_MKEY;
     }
 }
 
@@ -704,7 +708,7 @@ ucs_status_t ucp_ep_init_create_wireup(ucp_ep_h ep, unsigned ep_init_flags,
     ucs_assert(ucp_worker_num_cm_cmpts(ep->worker) != 0);
 
     ucp_ep_config_key_reset(&key);
-    ucp_ep_config_key_set_err_mode(&key, ep_init_flags);
+    ucp_ep_config_key_set_modes(&key, ep_init_flags);
 
     key.num_lanes = 1;
     /* all operations will use the first lane, which is a stub endpoint before

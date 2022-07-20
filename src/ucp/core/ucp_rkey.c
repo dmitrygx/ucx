@@ -30,11 +30,6 @@ typedef struct {
     ucs_fp8_t bandwidth;
 } UCS_S_PACKED ucp_rkey_packed_distance_t;
 
-static struct {
-    ucp_md_map_t md_map;
-    uint8_t      mem_type;
-} UCS_S_PACKED ucp_mem_dummy_buffer = {0, UCS_MEMORY_TYPE_HOST};
-
 const ucp_amo_proto_t *ucp_amo_proto_list[] = {
     [UCP_RKEY_BASIC_PROTO] = &ucp_amo_basic_proto,
     [UCP_RKEY_SW_PROTO]    = &ucp_amo_sw_proto
@@ -217,65 +212,17 @@ UCS_PROFILE_FUNC(ssize_t, ucp_rkey_pack_memh,
 ucs_status_t ucp_rkey_pack(ucp_context_h context, ucp_mem_h memh,
                            void **rkey_buffer_p, size_t *size_p)
 {
-    ucp_memory_info_t mem_info;
-    ucs_status_t status;
-    ssize_t packed_size;
-    void *rkey_buffer;
-    size_t size;
+    ucp_memh_pack_params_t params = {
+        .field_mask = UCP_MEMH_PACK_PARAM_FIELD_FLAGS,
+        .flags      = UCP_MEMH_PACK_FLAG_RKEY
+    };
 
-    /* always acquire context lock */
-    UCP_THREAD_CS_ENTER(&context->mt_lock);
-
-    ucs_trace("packing rkeys for buffer %p memh %p md_map 0x%"PRIx64,
-              ucp_memh_address(memh), memh, memh->md_map);
-
-    if (ucp_memh_is_zero_length(memh)) {
-        /* dummy memh, return dummy key */
-        *rkey_buffer_p = &ucp_mem_dummy_buffer;
-        *size_p        = sizeof(ucp_mem_dummy_buffer);
-        status         = UCS_OK;
-        goto out;
-    }
-
-    size        = ucp_rkey_packed_size(context, memh->md_map,
-                                       UCS_SYS_DEVICE_ID_UNKNOWN, 0);
-    rkey_buffer = ucs_malloc(size, "ucp_rkey_buffer");
-    if (rkey_buffer == NULL) {
-        status = UCS_ERR_NO_MEMORY;
-        goto out;
-    }
-
-    mem_info.type    = memh->mem_type;
-    mem_info.sys_dev = UCS_SYS_DEVICE_ID_UNKNOWN;
-
-    packed_size = ucp_rkey_pack_memh(context, memh->md_map, memh, &mem_info,
-                                     0, NULL, rkey_buffer);
-    if (packed_size < 0) {
-        status = (ucs_status_t)packed_size;
-        goto err_destroy;
-    }
-
-    ucs_assert(packed_size == size);
-
-    *rkey_buffer_p = rkey_buffer;
-    *size_p        = size;
-    status         = UCS_OK;
-    goto out;
-
-err_destroy:
-    ucs_free(rkey_buffer);
-out:
-    UCP_THREAD_CS_EXIT(&context->mt_lock);
-    return status;
+    return ucp_memh_pack(context, memh, &params, rkey_buffer_p, size_p);
 }
 
 void ucp_rkey_buffer_release(void *rkey_buffer)
 {
-    if (rkey_buffer == &ucp_mem_dummy_buffer) {
-        /* Dummy key, just return */
-        return;
-    }
-    ucs_free(rkey_buffer);
+    ucp_memh_buffer_release(rkey_buffer);
 }
 
 static void UCS_F_NOINLINE

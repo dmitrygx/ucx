@@ -222,7 +222,7 @@ ucp_cm_ep_client_initial_config_get(ucp_ep_h ucp_ep, unsigned ep_init_flags,
 
     ucs_assert(unpacked_addr.address_count <= UCP_MAX_RESOURCES);
     ucp_ep_config_key_reset(key);
-    ucp_ep_config_key_set_err_mode(key, wireup_ep->ep_init_flags);
+    ucp_ep_config_key_set_modes(key, wireup_ep->ep_init_flags);
     status = ucp_wireup_select_lanes(ucp_ep,
                                      wireup_ep->ep_init_flags | ep_init_flags,
                                      *tl_bitmap, &unpacked_addr, addr_indices,

@@ -671,8 +671,8 @@ ucs_status_ptr_t ucp_ep_flush_internal(ucp_ep_h ep, unsigned req_flags,
                                        ucp_request_callback_t flushed_cb,
                                        const char *debug_name);
 
-void ucp_ep_config_key_set_err_mode(ucp_ep_config_key_t *key,
-                                    unsigned ep_init_flags);
+void ucp_ep_config_key_set_modes(ucp_ep_config_key_t *key,
+                                 unsigned ep_init_flags);
 
 void ucp_ep_err_pending_purge(uct_pending_req_t *self, void *arg);
 

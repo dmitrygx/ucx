@@ -1614,7 +1614,7 @@ typedef struct ucp_mem_map_params {
      ucs_memory_type_t      memory_type;
 
     /* Shared memory key buffer */
-    void                   *shared_mkey_buffer;
+    const void              *shared_mkey_buffer;
 } ucp_mem_map_params_t;
 
 
@@ -2882,11 +2882,11 @@ ucs_status_t ucp_mem_advise(ucp_context_h context, ucp_mem_h memh,
 
 /**
  * @ingroup UCP_MEM
- * @brief UCP memory pack field mask.
+ * @brief UCP memory handle pack field mask.
  */
-enum ucp_mkey_pack_flags {
-    UCP_MKEY_PACK_FLAG_RKEY   = UCS_BIT(0), /**< Pack the remote key */
-    UCP_MKEY_PACK_FLAG_SHARED = UCS_BIT(1)  /**< Pack shared memory key */
+enum ucp_memh_pack_flags {
+    UCP_MEMH_PACK_FLAG_RKEY   = UCS_BIT(0), /**< Pack the remote key */
+    UCP_MEMH_PACK_FLAG_SHARED = UCS_BIT(1)  /**< Pack shared memory key */
 };
 
 
@@ -2895,44 +2895,44 @@ enum ucp_mkey_pack_flags {
  * @brief UCP memory key pack parameters field mask.
  *
  * The enumeration allows specifying which fields in
- * @ref ucp_mkey_pack_params_t are present. It is used to enable backward
+ * @ref ucp_memh_pack_params_t are present. It is used to enable backward
  * compatibility support.
  */
-enum ucp_mkey_pack_params_field {
-    UCP_MKEY_PACK_PARAM_FIELD_FLAGS = UCS_BIT(0) /**< Pack flags */
+enum ucp_memh_pack_params_field {
+    UCP_MEMH_PACK_PARAM_FIELD_FLAGS = UCS_BIT(0) /**< Pack flags */
 };
 
 
-typedef struct ucp_mkey_pack_params {
+typedef struct ucp_memh_pack_params {
     /**
      * Mask of valid fields in this structure, using bits from
-     * @ref ucp_mkey_pack_params_field. All fields are mandatory.
+     * @ref ucp_memh_pack_params_field. All fields are mandatory.
      * Provides ABI compatibility with respect to adding new fields.
      */
     uint64_t                field_mask;
 
     /**
      * Memory pack flags. This value is optional.
-     * If @ref UCP_MKEY_PACK_PARAM_FIELD_FLAGS is not set in the field_mask,
+     * If @ref UCP_MEMH_PACK_PARAM_FIELD_FLAGS is not set in the field_mask,
      * the value of this field will default to 0.
      */
     uint64_t                flags;
-} ucp_mkey_pack_params_t;
+} ucp_memh_pack_params_t;
 
 
-ucs_status_t ucp_mkey_pack(ucp_context_h context, ucp_mem_h memh,
-                           ucp_mkey_pack_params_t *params, void **buffer_p,
+ucs_status_t ucp_memh_pack(ucp_context_h context, ucp_mem_h memh,
+                           ucp_memh_pack_params_t *params, void **buffer_p,
                            size_t *buffer_size_p);
 
 /**
  * @ingroup UCP_MEM
- * @brief UCP memory key buffer release field mask.
+ * @brief UCP memory handle buffer release field mask.
  */
-enum ucp_mkey_buffer_release_flags {
-    UCP_MKEY_BUFFER_RELEASE_FLAG_RKEY   = UCS_BIT(0), /**< Release buffer where
+enum ucp_memh_buffer_release_flags {
+    UCP_MEMH_BUFFER_RELEASE_FLAG_RKEY   = UCS_BIT(0), /**< Release buffer where
                                                            a remote key was
                                                            packed */
-    UCP_MKEY_BUFFER_RELEASE_FLAG_SHARED = UCS_BIT(1)  /**< Release buffer where
+    UCP_MEMH_BUFFER_RELEASE_FLAG_SHARED = UCS_BIT(1)  /**< Release buffer where
                                                            a shared memory key
                                                            was packed */
 };
@@ -2940,109 +2940,51 @@ enum ucp_mkey_buffer_release_flags {
 
 /**
  * @ingroup UCP_MEM
- * @brief UCP memory key buffer release parameters field mask.
+ * @brief UCP memory handle buffer release parameters field mask.
  *
  * The enumeration allows specifying which fields in
- * @ref ucp_mkey_buffer_release_params_t are present. It is used to enable
+ * @ref ucp_memh_buffer_release_params_t are present. It is used to enable
  * backward compatibility support.
  */
-enum ucp_mkey_buffer_release_params_field {
-    UCP_MKEY_BUFFER_RELEASE_PARAM_FIELD_FLAGS = UCS_BIT(0) /**< Release flags */
+enum ucp_memh_buffer_release_params_field {
+    UCP_MEMH_BUFFER_RELEASE_PARAM_FIELD_FLAGS = UCS_BIT(0) /**< Release flags */
 };
 
 
-typedef struct ucp_mkey_buffer_release_params {
+typedef struct ucp_memh_buffer_release_params {
     /**
      * Mask of valid fields in this structure, using bits from
-     * @ref ucp_mkey_buffer_release_params_field. All fields are mandatory.
+     * @ref ucp_memh_buffer_release_params_field. All fields are mandatory.
      * Provides ABI compatibility with respect to adding new fields.
      */
     uint64_t                field_mask;
 
     /**
-     * Memory key release buffer flags. This value is optional.
-     * If @ref UCP_MKEY_BUFFER_RELEASE_PARAM_FIELD_FLAGS is not set in the
+     * Memory handle release buffer flags. This value is optional.
+     * If @ref UCP_MEMH_BUFFER_RELEASE_PARAM_FIELD_FLAGS is not set in the
      * field_mask, the value of this field will default to 0.
      */
     uint64_t                flags;
-} ucp_mkey_buffer_release_params_t;
+} ucp_memh_buffer_release_params_t;
 
 
 /**
  * @ingroup UCP_MEM
- * @brief Release packed memory key buffer.
+ * @brief Release packed memory handle buffer.
  *
- * This routine releases the buffer that was allocated using @ref ucp_mkey_pack
- * "ucp_mkey_pack()".
+ * This routine releases the buffer that was allocated using @ref ucp_memh_pack
+ * "ucp_memh_pack()".
  *
  * @warning
  * @li Once memory is released an access to the memory may cause a
  * failure.
  * @li If the input memory address was not allocated using
- * @ref ucp_mkey_pack "ucp_mkey_pack()" routine the behaviour of this routine
+ * @ref ucp_memh_pack "ucp_memh_pack()" routine the behaviour of this routine
  * is undefined.
  *
- * @param [in]  params        Release parameters of memory key buffer.
- * @param [in]  mkey_buffer   Buffer to release.
- *
- * @return Error code as defined by @ref ucs_status_t.
+ * @param [in]  buffer   Buffer to release.
  */
-ucs_status_t
-ucp_mkey_buffer_release(const ucp_mkey_buffer_release_params_t *params,
-                        void *buffer);
-
-
-/**
- * @ingroup UCP_MEM
- * @brief Pack memory region remote access key.
- *
- * This routine allocates memory buffer and packs into the buffer
- * a remote access key (RKEY) object. RKEY is an opaque object that provides
- * the information that is necessary for remote memory access.
- * This routine packs the RKEY object in a portable format such that the
- * object can be @ref ucp_ep_rkey_unpack "unpacked" on any platform supported by the
- * UCP library. In order to release the memory buffer allocated by this routine
- * the application is responsible for calling the @ref ucp_rkey_buffer_release
- * "ucp_rkey_buffer_release()" routine.
- *
- *
- * @note
- * @li RKEYs for InfiniBand and Cray Aries networks typically includes
- * InfiniBand and Aries key.
- * @li In order to enable remote direct memory access to the memory associated
- * with the memory handle the application is responsible for sharing the RKEY with
- * the peers that will initiate the access.
- *
- * @param [in]  context       Application @ref ucp_context_h "context" which was
- *                            used to allocate/map the memory.
- * @param [in]  memh          @ref ucp_mem_h "Handle" to memory region.
- * @param [out] rkey_buffer_p Memory buffer allocated by the library.
- *                            The buffer contains packed RKEY.
- * @param [out] size_p        Size (in bytes) of the packed RKEY.
- *
- * @return Error code as defined by @ref ucs_status_t
- */
-ucs_status_t ucp_rkey_pack(ucp_context_h context, ucp_mem_h memh,
-                           void **rkey_buffer_p, size_t *size_p);
-
-
-/**
- * @ingroup UCP_MEM
- * @brief Release packed remote key buffer.
- *
- * This routine releases the buffer that was allocated using @ref ucp_rkey_pack
- * "ucp_rkey_pack()".
- *
- * @warning
- * @li Once memory is released an access to the memory may cause a
- * failure.
- * @li If the input memory address was not allocated using
- * @ref ucp_rkey_pack "ucp_rkey_pack()" routine the behaviour of this routine
- * is undefined.
- *
- * @param [in]  rkey_buffer   Buffer to release.
- */
-void ucp_rkey_buffer_release(void *rkey_buffer);
+void ucp_memh_buffer_release(void *buffer);
 
 
 /**

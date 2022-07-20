@@ -113,7 +113,8 @@ typedef ucs_status_t
 
 typedef ucs_status_t
 (*uct_md_mem_attach_func_t)(uct_md_h md,
-                            uct_md_mem_attach_params_t *params);
+                            uct_md_mem_attach_params_t *params,
+                            uct_mem_h *memh_p);
 
 typedef ucs_status_t (*uct_md_mem_query_func_t)(uct_md_h md,
                                                 const void *address,

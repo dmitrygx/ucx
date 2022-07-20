@@ -111,7 +111,8 @@ ucs_status_t do_export(uct_md_h md, uct_component_h component,
     int ret;
 
     ret = posix_memalign(&ptr, cmd_args->align, cmd_args->size);
-    CHKERR_JUMP(0 != ret, "allocate memory", error_ret);
+    CHKERR_ACTION(0 != ret, "allocate memory",
+                  status = UCS_ERR_NO_MEMORY; goto error_ret);
 
     params.field_mask = UCT_MD_MEM_REG_FIELD_FLAGS;
     params.flags      = UCT_MD_MEM_FLAG_SHARED | UCT_MD_MEM_ACCESS_ALL;
@@ -138,7 +139,7 @@ ucs_status_t do_export(uct_md_h md, uct_component_h component,
     free(ptr);
 
 error_ret:
-    return status;;
+    return status;
 }
 
 ucs_status_t do_import(uct_md_h md, uct_component_h component,
@@ -147,25 +148,22 @@ ucs_status_t do_import(uct_md_h md, uct_component_h component,
     uct_md_mem_attach_params_t attach_params;
     uct_md_mem_dereg_params_t dereg_params;
     ucs_status_t status;
+    uct_mem_h memh;
 
     printf("unpacking mkey 0x%zx\n", cmd_args->mkey);
 
     attach_params.field_mask         =
-            UCT_MD_MEM_ATTACH_FIELD_FLAGS |
-            UCT_MD_MEM_ATTACH_FIELD_SHARED_MKEY_BUFFER |
-            UCT_MD_MEM_ATTACH_FIELD_MEMH;
-    attach_params.flags              = UCT_MD_MEM_ATTACH_FLAG_SHARED;
+            UCT_MD_MEM_ATTACH_FIELD_SHARED_MKEY_BUFFER;
     attach_params.shared_mkey_buffer = &cmd_args->mkey;
-    status                           = uct_md_mem_attach(md, &attach_params);
+    status                           = uct_md_mem_attach(md, &attach_params,
+                                                        &memh);
     CHKERR_ACTION(UCS_OK != status, "uct_md_mem_attach", return status);
 
-    printf("imported shared mkey: address=%p memh=%p\n",
-           attach_params.address, attach_params.memh);
+    printf("imported shared mkey: memh=%p\n", memh);
 
     dereg_params.field_mask = UCT_MD_MEM_DEREG_FIELD_MEMH |
                               UCT_MD_MEM_DEREG_FIELD_ADDRESS;
-    dereg_params.memh       = attach_params.memh;
-    dereg_params.address    = attach_params.address;
+    dereg_params.memh       = memh;
     status = uct_md_mem_dereg_v2(md, &dereg_params);
     CHKERR_ACTION(UCS_OK != status, "uct_md_mem_dereg", return status);
 
