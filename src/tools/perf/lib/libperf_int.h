@@ -105,6 +105,7 @@ struct ucx_perf_context {
             ucx_perf_thread_context_t* tctx;
             ucp_worker_h               worker;
             ucp_ep_h                   ep;
+            ucp_ep_h                   daemon_ep;
             ucp_rkey_h                 rkey;
             unsigned long              remote_addr;
             ucp_mem_h                  send_memh;

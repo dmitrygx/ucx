@@ -781,6 +781,8 @@ ucp_wireup_send_ep_removed(ucp_worker_h worker, const ucp_wireup_msg_t *msg,
         return;
     }
 
+    ucp_request_release(req);
+
 out_cleanup_lanes:
     ucp_ep_cleanup_lanes(reply_ep);
 out_delete_ep:
