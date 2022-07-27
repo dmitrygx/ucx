@@ -1098,22 +1098,18 @@ static void ucp_wireup_print_config(ucp_worker_h worker,
     }
 }
 
-int ucp_wireup_is_reachable(ucp_ep_h ep, unsigned ep_init_flags,
-                            ucp_rsc_index_t rsc_index,
+int ucp_wireup_is_reachable(ucp_ep_h ep, ucp_rsc_index_t rsc_index,
                             const ucp_address_entry_t *ae)
 {
     ucp_context_h context      = ep->worker->context;
     ucp_worker_iface_t *wiface = ucp_worker_iface(ep->worker, rsc_index);
 
     return (context->tl_rscs[rsc_index].tl_name_csum == ae->tl_name_csum) &&
-           (/* assume reachability is checked by CM, if EP selects lanes
-             * during CM phase */
-            (ep_init_flags & UCP_EP_INIT_CM_PHASE) ||
-            uct_iface_is_reachable(wiface->iface, ae->dev_addr, ae->iface_addr));
+           uct_iface_is_reachable(wiface->iface, ae->dev_addr, ae->iface_addr);
 }
 
 static void
-ucp_wireup_get_reachable_mds(ucp_ep_h ep, unsigned ep_init_flags,
+ucp_wireup_get_reachable_mds(ucp_ep_h ep,
                              const ucp_unpacked_address_t *remote_address,
                              ucp_ep_config_key_t *key)
 {
@@ -1131,7 +1127,7 @@ ucp_wireup_get_reachable_mds(ucp_ep_h ep, unsigned ep_init_flags,
     ae_dst_md_map = 0;
     UCS_BITMAP_FOR_EACH_BIT(context->tl_bitmap, rsc_index) {
         ucp_unpacked_address_for_each(ae, remote_address) {
-            if (ucp_wireup_is_reachable(ep, ep_init_flags, rsc_index, ae)) {
+            if (ucp_wireup_is_reachable(ep, rsc_index, ae)) {
                 ae_dst_md_map         |= UCS_BIT(ae->md_index);
                 dst_md_index           = context->tl_rscs[rsc_index].md_index;
                 ae_cmpts[ae->md_index] = context->tl_mds[dst_md_index].cmpt_index;
@@ -1364,7 +1360,7 @@ ucs_status_t ucp_wireup_init_lanes(ucp_ep_h ep, unsigned ep_init_flags,
      * current ep configuration
      */
     key.dst_md_cmpts = ucs_alloca(sizeof(*key.dst_md_cmpts) * UCP_MAX_MDS);
-    ucp_wireup_get_reachable_mds(ep, ep_init_flags, remote_address, &key);
+    ucp_wireup_get_reachable_mds(ep, remote_address, &key);
 
     /* Load new configuration */
     status = ucp_worker_get_ep_config(worker, &key, ep_init_flags,

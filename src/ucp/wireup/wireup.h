@@ -125,8 +125,7 @@ ucp_wireup_msg_prepare(ucp_ep_h ep, uint8_t type,
 
 int ucp_wireup_msg_ack_cb_pred(const ucs_callbackq_elem_t *elem, void *arg);
 
-int ucp_wireup_is_reachable(ucp_ep_h ep, unsigned ep_init_flags,
-                            ucp_rsc_index_t rsc_index,
+int ucp_wireup_is_reachable(ucp_ep_h ep, ucp_rsc_index_t rsc_index,
                             const ucp_address_entry_t *ae);
 void
 ucp_wireup_get_dst_rsc_indices(ucp_ep_h ep, ucp_ep_config_key_t *new_key,
