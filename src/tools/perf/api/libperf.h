@@ -99,8 +99,18 @@ enum {
 
 enum {
     UCP_PERF_DAEMON_AM_ID_INIT      = 0,
-    UCP_PERF_DAEMON_AM_ID_PEER_INIT = 1
+    UCP_PERF_DAEMON_AM_ID_PEER_INIT = 1,
+    UCP_PERF_DAEMON_AM_ID_REQ       = 2,
+    UCP_PERF_DAEMON_AM_ID_ACK       = 3,
+    UCP_PERF_DAEMON_AM_ID_OP        = 4
 };
+
+
+typedef enum {
+    UCP_PERF_DAEMON_SENDER,
+    UCP_PERF_DAEMON_RECEIVER,
+    UCP_PERF_DAEMON_LAST
+} ucp_perf_daemon_type_t;
 
 
 #define UCP_PERF_TEST_DAEMON_ADDRESS_MAX_NUMBER 2
@@ -234,6 +244,24 @@ typedef struct ucx_perf_params {
     } ucp;
 
 } ucx_perf_params_t;
+
+
+typedef struct {
+    uint8_t  type; /* ucp_perf_daemon_type_t */
+    uint8_t  cmd; /* ucx_perf_cmd_t */
+    uint8_t  atomic_op; /* ucp_atomic_op_t */
+    uint64_t addr;
+    uint64_t length;
+    uint64_t remote_addr;
+    uint64_t shared_memh_buf_size;
+    /* Shared memh buffer follow */
+} ucp_perf_daemon_req_t;
+
+
+typedef struct {
+    uint8_t  type; /* ucp_perf_daemon_type_t */
+    uint8_t  cmd; /* ucx_perf_cmd_t */
+} ucp_perf_daemon_ack_t;
 
 
 /* Allocators for each memory type */

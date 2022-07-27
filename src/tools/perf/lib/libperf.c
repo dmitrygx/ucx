@@ -942,19 +942,26 @@ static void ucp_perf_test_destroy_eps(ucx_perf_context_t *perf,
     unsigned num_in_prog     = 0;
     ucs_status_ptr_t **reqs  = ucs_alloca(thread_count * sizeof(*reqs));
     ucs_status_ptr_t *req;
+    ucp_ep_h ep;
 
     for (i = 0; i < thread_count; ++i) {
-        if (perf->ucp.tctx[i].perf.ucp.ep != NULL) {
-            req = ucp_ep_close_nb(perf->ucp.tctx[i].perf.ucp.ep,
-                                  UCP_EP_CLOSE_MODE_FLUSH);
+        if (daemon_eps) {
+            ep = perf->ucp.tctx[i].perf.ucp.daemon_ep;
+        } else {
+            ep = perf->ucp.tctx[i].perf.ucp.ep;
+        }
 
-            if (UCS_PTR_IS_PTR(req)) {
-                reqs[num_in_prog++] = req;
-            } else if (UCS_PTR_STATUS(req) != UCS_OK) {
-                ucs_warn("failed to close ep %p on thread %d: %s\n",
-                         perf->ucp.tctx[i].perf.ucp.ep, i,
-                         ucs_status_string(UCS_PTR_STATUS(req)));
-            }
+        if (ep == NULL) {
+            continue;
+        }
+
+        req = ucp_ep_close_nb(ep, UCP_EP_CLOSE_MODE_FLUSH);
+        if (UCS_PTR_IS_PTR(req)) {
+            reqs[num_in_prog++] = req;
+        } else if (UCS_PTR_STATUS(req) != UCS_OK) {
+            ucs_warn("failed to close ep %p on thread %d: %s\n",
+                     perf->ucp.tctx[i].perf.ucp.ep, i,
+                     ucs_status_string(UCS_PTR_STATUS(req)));
         }
     }
 
@@ -1227,21 +1234,24 @@ static void err_cb(void *arg, ucp_ep_h ep, ucs_status_t status)
 
 static ucs_status_t ucp_perf_setup_daemon_endpoints(ucx_perf_context_t *perf)
 {
-    unsigned i, thread_count = perf->params.thread_count;
-    unsigned group_index     = rte_call(perf, group_index);
-    unsigned num_in_prog     = 0;
-    ucs_status_ptr_t **reqs  = ucs_alloca(thread_count * sizeof(*reqs));
+    unsigned i, thread_count  = perf->params.thread_count;
+    unsigned group_index      = rte_call(perf, group_index);
+    unsigned peer_group_idnex = rte_peer_index(rte_call(perf, group_size),
+                                               group_index);
+    unsigned num_in_prog      = 0;
+    ucs_status_ptr_t **reqs   = ucs_alloca(thread_count * sizeof(*reqs));
     ucs_status_ptr_t *req;
     struct sockaddr_storage *connect_addr, *daemon_peer_addr;
     ucp_ep_params_t ep_params;
     ucp_request_param_t request_params;
     ucs_status_t status;
+    size_t daemon_peer_addr_length;
 
     if (perf->params.ucp.daemon_addrs_num == 0) {
         return UCS_OK;
     }
 
-    connect_addr = &perf->params.ucp.daemon_addrs[group_index];
+    connect_addr = &perf->params.ucp.daemon_addrs[group_index % 2];
 
     ep_params.field_mask       = UCP_EP_PARAM_FIELD_FLAGS       |
                                  UCP_EP_PARAM_FIELD_SOCK_ADDR   |
@@ -1261,29 +1271,34 @@ static ucs_status_t ucp_perf_setup_daemon_endpoints(ucx_perf_context_t *perf)
 
     for (i = 0; i < thread_count; i++) {
         ep_params.err_handler.arg = &perf->ucp.tctx[i].perf.ucp.daemon_ep;
-
-        status = ucp_ep_create(perf->ucp.tctx[i].perf.ucp.worker, &ep_params,
-                               &perf->ucp.tctx[i].perf.ucp.daemon_ep);
+        status                    = ucp_ep_create(
+                perf->ucp.tctx[i].perf.ucp.worker, &ep_params,
+                &perf->ucp.tctx[i].perf.ucp.daemon_ep);
         if (status != UCS_OK) {
             ucs_error("failed to create endpoint: %s",
                       ucs_status_string(status));
             goto err_destroy_eps;
         }
 
-        if ((group_index % 2) == 0) {
-            daemon_peer_addr = &perf->params.ucp.daemon_addrs[group_index + 1];
+        if ((group_index % 2) != 0) {
+            ucs_assert_always((peer_group_idnex % 2) == 0);
+            daemon_peer_addr        = &perf->params.ucp.daemon_addrs[0];
+            daemon_peer_addr_length = sizeof(*daemon_peer_addr);
+        } else {
+            daemon_peer_addr        = NULL;
+            daemon_peer_addr_length = 0;
+        }
 
-            req = ucp_am_send_nbx(perf->ucp.tctx[i].perf.ucp.daemon_ep,
-                                  UCP_PERF_DAEMON_AM_ID_INIT, NULL, 0,
-                                  daemon_peer_addr, sizeof(*daemon_peer_addr),
-                                  &request_params);
-            if (UCS_PTR_IS_PTR(req)) {
-                reqs[num_in_prog++] = req;
-            } else if (UCS_PTR_STATUS(req) != UCS_OK) {
-                ucs_warn("failed to send AM on ep %p on thread %d: %s\n",
-                         perf->ucp.tctx[i].perf.ucp.ep, i,
-                         ucs_status_string(UCS_PTR_STATUS(req)));
-            }
+        req = ucp_am_send_nbx(perf->ucp.tctx[i].perf.ucp.daemon_ep,
+                              UCP_PERF_DAEMON_AM_ID_INIT, NULL, 0,
+                              daemon_peer_addr, daemon_peer_addr_length,
+                              &request_params);
+        if (UCS_PTR_IS_PTR(req)) {
+            reqs[num_in_prog++] = req;
+        } else if (UCS_PTR_STATUS(req) != UCS_OK) {
+            ucs_warn("failed to send AM on ep %p on thread %d: %s\n",
+                     perf->ucp.tctx[i].perf.ucp.ep, i,
+                     ucs_status_string(UCS_PTR_STATUS(req)));
         }
     }
 
@@ -1853,6 +1868,7 @@ ucs_status_t ucx_perf_run(const ucx_perf_params_t *params,
         if (params->api == UCX_PERF_API_UCP) {
             perf->ucp.worker      = perf->ucp.tctx[0].perf.ucp.worker;
             perf->ucp.ep          = perf->ucp.tctx[0].perf.ucp.ep;
+            perf->ucp.daemon_ep   = perf->ucp.tctx[0].perf.ucp.daemon_ep;
             perf->ucp.remote_addr = perf->ucp.tctx[0].perf.ucp.remote_addr;
             perf->ucp.rkey        = perf->ucp.tctx[0].perf.ucp.rkey;
         }

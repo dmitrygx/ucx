@@ -110,6 +110,10 @@ struct ucx_perf_context {
             unsigned long              remote_addr;
             ucp_mem_h                  send_memh;
             ucp_mem_h                  recv_memh;
+            void                       *send_shared_memh_buf;
+            void                       *recv_shared_memh_buf;
+            size_t                     send_shared_memh_buf_size;
+            size_t                     recv_shared_memh_buf_size;
             ucp_dt_iov_t               *send_iov;
             ucp_dt_iov_t               *recv_iov;
             void                       *am_hdr;

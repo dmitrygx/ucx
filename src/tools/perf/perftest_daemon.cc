@@ -14,6 +14,7 @@
 #include <netinet/in.h>
 #include <unistd.h>
 #include <list>
+#include <queue>
 #include <set>
 #include <algorithm>
 
@@ -22,13 +23,15 @@ typedef struct ucp_perf ucp_perf_t;
 
 
 typedef struct ucp_perf_thread_context {
-    ucp_perf_t              *ucp;
-    ucp_worker_h            worker;
-    ucp_listener_h          listener;
-    std::set<ucp_ep_h>      unmatched_eps;
-    ucp_ep_h                ep;
-    ucp_ep_h                daemon_ep;
-    struct sockaddr_storage daemon_addr;
+    ucp_perf_t                         *ucp;
+    ucp_worker_h                       worker;
+    ucp_listener_h                     listener;
+    std::set<ucp_ep_h>                 unmatched_eps;
+    ucp_ep_h                           ep;
+    ucp_ep_h                           daemon_ep;
+    struct sockaddr_storage            daemon_addr;
+    std::queue<ucp_perf_daemon_req_t*> unhandled_daemon_reqs;
+    std::queue<void*>                  unhandled_am_recv_ops;
 
     ucp_perf_thread_context() : ucp(NULL), worker(NULL), listener(NULL),
                                 ep(NULL), daemon_ep(NULL)
@@ -43,7 +46,13 @@ struct ucp_perf {
 };
 
 typedef struct {
-    int completed;
+    int                   completed;
+    void                  *buffer;
+    struct {
+        ucp_perf_daemon_type_t type;
+        ucx_perf_cmd_t         cmd;
+        ucp_mem_h              memh;
+    } perftest_op;
 } request_t;
 
 
@@ -56,7 +65,11 @@ static void request_init(void *request)
 {
     request_t *context = (request_t*)request;
 
-    context->completed = 0;
+    context->completed  = 0;
+    context->buffer     = NULL;
+    context->perftest_op.memh = NULL;
+    context->perftest_op.type = UCP_PERF_DAEMON_LAST;
+    context->perftest_op.cmd  = UCX_PERF_CMD_LAST;
 }
 
 static void workers_destroy(ucp_perf_thread_context_t *tctx, unsigned count)
@@ -68,18 +81,10 @@ static void workers_destroy(ucp_perf_thread_context_t *tctx, unsigned count)
     }
 }
 
-static void ep_close(ucp_perf_t *ucp, ucp_ep_h ep, int force)
+static void ep_close(ucp_perf_thread_context_t *tctx, ucp_ep_h ep, int force)
 {
     unsigned mode = force ? UCP_EP_CLOSE_MODE_FORCE : UCP_EP_CLOSE_MODE_FLUSH;
     ucs_status_ptr_t req;
-
-    req = ucp_ep_close_nb(ep, mode);
-    ucp->reqs.push_back(req);
-}
-
-static void err_cb(void *arg, ucp_ep_h ep, ucs_status_t status)
-{
-    ucp_perf_thread_context_t *tctx = (ucp_perf_thread_context_t*)arg;
     std::set<ucp_ep_h>::iterator it;
 
     if (tctx->ep == ep) {
@@ -91,11 +96,19 @@ static void err_cb(void *arg, ucp_ep_h ep, ucs_status_t status)
     } else {
         it = tctx->unmatched_eps.find(ep);
         if (it != tctx->unmatched_eps.end()) {
+            printf("closed unmatched ep %p\n", ep);
             tctx->unmatched_eps.erase(it);
         }
     }
 
-    ep_close(tctx->ucp, ep, 1);
+    req = ucp_ep_close_nb(ep, mode);
+    tctx->ucp->reqs.push_back(req);
+}
+
+static void err_cb(void *arg, ucp_ep_h ep, ucs_status_t status)
+{
+    ucp_perf_thread_context_t *tctx = (ucp_perf_thread_context_t*)arg;
+    ep_close(tctx, ep, 1);
 }
 
 static void server_conn_handle_cb(ucp_conn_request_h conn_request, void *arg)
@@ -119,8 +132,6 @@ static void server_conn_handle_cb(ucp_conn_request_h conn_request, void *arg)
     if (status != UCS_OK) {
         ucs_error("failed to create an endpoint on the daemon: %s",
                   ucs_status_string(status));
-    } else {
-        printf("created ep %p to accept connection\n", ep);
     }
 
     tctx->unmatched_eps.insert(ep);
@@ -183,11 +194,52 @@ static int set_am_recv_handler(ucp_worker_h worker, unsigned id,
 }
 
 static void
-am_recv_data(ucp_perf_thread_context_t *tctx, void *desc, size_t length,
+send_daemon_ack_cb(void *request, ucs_status_t status, void *user_data)
+{
+    request_t *req                    = (request_t*)request;
+    ucp_perf_daemon_ack_t *daemon_ack = (ucp_perf_daemon_ack_t*)req->buffer;
+
+    delete [] (char*)daemon_ack;
+    ucp_request_free(request);
+}
+
+static void
+complete_daemon_req(ucp_perf_thread_context_t *tctx, uint8_t type, uint8_t cmd)
+{
+    ucp_perf_daemon_ack_t *daemon_ack =
+            (ucp_perf_daemon_ack_t*)new char[sizeof(*daemon_ack)];
+    ucs_status_ptr_t req;
+    ucp_request_param_t param;
+
+    daemon_ack->type = type;
+    daemon_ack->cmd  = cmd;
+
+    param.op_attr_mask = UCP_OP_ATTR_FIELD_CALLBACK;
+    param.cb.send      = send_daemon_ack_cb;
+
+    req = ucp_am_send_nbx(tctx->ep, UCP_PERF_DAEMON_AM_ID_ACK, NULL, 0,
+                          daemon_ack, sizeof(*daemon_ack), &param);
+    if (!UCS_PTR_IS_PTR(req)) {
+        /* coverity[overflow] */
+        if (UCS_PTR_STATUS(req) != UCS_OK) {
+            ucs_error("AM sending of daemon ACK failed: %s",
+                      ucs_status_string(UCS_PTR_STATUS(req)));
+        }
+
+        delete [] (char*)daemon_ack;
+        return;
+    }
+
+    ((request_t*)req)->buffer = daemon_ack;
+}
+
+static UCS_F_ALWAYS_INLINE ucs_status_ptr_t
+am_recv_data(ucp_perf_thread_context_t *tctx, void *desc, void *buffer,
+             size_t length, ucp_mem_h memh,
              ucp_am_recv_data_nbx_callback_t recv_cb)
 {
     ucp_request_param_t params;
-    void *req;
+    ucs_status_ptr_t req;
 
     params.op_attr_mask = UCP_OP_ATTR_FIELD_CALLBACK |
                           UCP_OP_ATTR_FIELD_DATATYPE |
@@ -197,9 +249,211 @@ am_recv_data(ucp_perf_thread_context_t *tctx, void *desc, size_t length,
     params.user_data    = tctx;
     params.cb.recv_am   = recv_cb;
 
-    req = ucp_am_recv_data_nbx(tctx->worker, desc, (void*)&tctx->daemon_addr,
-                               length, &params);
-    tctx->ucp->reqs.push_back(req);
+    if (memh != NULL) {
+        params.op_attr_mask |= UCP_OP_ATTR_FIELD_MEMH;
+        params.memh          = memh;
+    }
+
+    req = ucp_am_recv_data_nbx(tctx->worker, desc, buffer, length, &params);
+    ucs_assert(UCS_PTR_IS_PTR(req));
+
+    ((request_t*)req)->buffer = buffer;
+
+    return req;
+}
+
+static ucs_status_t
+shared_mem_import(ucp_perf_thread_context_t *tctx,
+                  ucp_perf_daemon_req_t *daemon_req, void **address_p,
+                  ucp_mem_h *memh_p)
+{
+    ucp_mem_map_params_t params;
+    ucs_status_t status;
+    ucp_mem_h memh;
+    ucp_mem_attr_t attr;
+
+    params.field_mask         = UCP_MEM_MAP_PARAM_FIELD_FLAGS |
+                                UCP_MEM_MAP_PARAM_FIELD_SHARED_MKEY_BUFFER;
+    params.flags              = UCP_MEM_MAP_SHARED;
+    params.shared_mkey_buffer = (void*)(daemon_req + 1);
+    status                    = ucp_mem_map(tctx->ucp->context, &params,
+                                            &memh);
+    if (status != UCS_OK) {
+        ucs_error("failed to import memory (%s)", ucs_status_string(status));
+        goto out;
+    }
+
+    attr.field_mask = UCP_MEM_ATTR_FIELD_ADDRESS | UCP_MEM_ATTR_FIELD_LENGTH;
+    status          = ucp_mem_query(memh, &attr);
+    if (status != UCS_OK) {
+        goto out_mem_unmap;
+    }
+
+    *address_p = attr.address;
+    *memh_p    = memh;
+    return UCS_OK;
+
+out_mem_unmap:
+    ucp_mem_unmap(tctx->ucp->context, memh);
+out:
+    return status;
+}
+
+static void send_daemon_cb(void *request, ucs_status_t status, void *user_data)
+{
+    ucp_perf_thread_context_t *tctx = (ucp_perf_thread_context_t*)user_data;
+    request_t *req                  = (request_t*)request;
+
+    ucp_mem_unmap(tctx->ucp->context, req->perftest_op.memh);
+    complete_daemon_req(tctx, req->perftest_op.type, req->perftest_op.cmd);
+    ucp_request_free(request);
+}
+
+static ucs_status_t
+perform_send_cmd_daemon_req(ucp_perf_thread_context_t *tctx,
+                            ucp_perf_daemon_req_t *daemon_req, void *address,
+                            ucp_mem_h memh)
+{
+    ucx_perf_cmd_t cmd = (ucx_perf_cmd_t)daemon_req->cmd;
+    ucp_request_param_t param;
+    request_t *req;
+
+    param.op_attr_mask = UCP_OP_ATTR_FIELD_MEMH |
+                         UCP_OP_ATTR_FIELD_CALLBACK |
+                         UCP_OP_ATTR_FIELD_USER_DATA;
+    param.memh         = memh;
+    param.cb.send      = send_daemon_cb;
+    param.user_data    = tctx;
+
+    switch (cmd) {
+    case UCX_PERF_CMD_AM:
+        req = (request_t*)ucp_am_send_nbx(tctx->daemon_ep,
+                                          UCP_PERF_DAEMON_AM_ID_OP, NULL,
+                                          0, address,
+                                          (size_t)daemon_req->length, &param);
+        break;
+    default:
+        ucs_fatal("unsupported command: %d", cmd);
+    }
+
+    if (!UCS_PTR_IS_PTR(req)) {
+        complete_daemon_req(tctx, daemon_req->type, daemon_req->cmd);
+        return UCS_PTR_STATUS(req);
+    }
+
+    req->perftest_op.memh = memh;
+    req->perftest_op.type = (ucp_perf_daemon_type_t)daemon_req->type;
+    req->perftest_op.cmd  = (ucx_perf_cmd_t)daemon_req->cmd;
+
+    return UCS_INPROGRESS;
+}
+
+static void am_recv_daemon_cb(void *request, ucs_status_t am_status,
+                              size_t length, void *user_data)
+{
+    ucp_perf_thread_context_t *tctx = (ucp_perf_thread_context_t*)user_data;
+    request_t *req                  = (request_t*)request;
+
+    ucp_mem_unmap(tctx->ucp->context, req->perftest_op.memh);
+    complete_daemon_req(tctx, req->perftest_op.type, req->perftest_op.cmd);
+    ucp_request_free(request);
+}
+
+static ucs_status_t
+perform_recv_cmd_daemon_req(ucp_perf_thread_context_t *tctx,
+                            ucp_perf_daemon_req_t *daemon_req,
+                            void *address, ucp_mem_h memh, int *release_p)
+{
+    ucx_perf_cmd_t cmd = (ucx_perf_cmd_t)daemon_req->cmd;
+    request_t *req;
+    void *am_recv_desc;
+
+    switch (cmd) {
+    case UCX_PERF_CMD_AM:
+        if (tctx->unhandled_am_recv_ops.empty()) {
+            tctx->unhandled_daemon_reqs.push(daemon_req);
+            *release_p = 0;
+            return UCS_INPROGRESS;
+        }
+
+        am_recv_desc = tctx->unhandled_am_recv_ops.front();
+        tctx->unhandled_am_recv_ops.pop();
+
+        req = (request_t*)am_recv_data(tctx, am_recv_desc, address,
+                                       (size_t)daemon_req->length, memh,
+                                       am_recv_daemon_cb);
+        break;
+    default:
+        ucs_fatal("unsupported command: %d", cmd);
+    }
+
+    if (!UCS_PTR_IS_PTR(req)) {
+        complete_daemon_req(tctx, daemon_req->type, daemon_req->cmd);
+        return UCS_PTR_STATUS(req);
+    }
+
+    req->perftest_op.memh = memh;
+    req->perftest_op.type = (ucp_perf_daemon_type_t)daemon_req->type;
+    req->perftest_op.cmd  = (ucx_perf_cmd_t)daemon_req->cmd;
+
+    return UCS_INPROGRESS;
+}
+
+static void perform_cmd_daemon_req(ucp_perf_thread_context_t *tctx,
+                                   ucp_perf_daemon_req_t *daemon_req,
+                                   int *release_p)
+{
+    ucp_perf_daemon_type_t type = (ucp_perf_daemon_type_t)daemon_req->type;
+    ucs_status_t status;
+    void *address;
+    ucp_mem_h memh;
+
+    status = shared_mem_import(tctx, daemon_req, &address, &memh);
+    if (status != UCS_OK) {
+        return;
+    }
+
+    switch (type) {
+    case UCP_PERF_DAEMON_SENDER:
+        status = perform_send_cmd_daemon_req(tctx, daemon_req, address, memh);
+        break;
+    case UCP_PERF_DAEMON_RECEIVER:
+        status = perform_recv_cmd_daemon_req(tctx, daemon_req, address, memh,
+                                             release_p);
+        break;
+    default:
+        ucs_fatal("unsupported type of command: %d", type);
+    }
+
+    if (status != UCS_INPROGRESS) {
+        if (UCS_STATUS_IS_ERR(status)) {
+            ucs_error("operation (type %u, cmd %u) failed: %s",
+                      daemon_req->type, daemon_req->cmd,
+                      ucs_status_string(status));
+        }
+        ucp_mem_unmap(tctx->ucp->context, memh);
+    }
+}
+
+static void handle_daemon_req(ucp_perf_thread_context_t *tctx,
+                              ucp_perf_daemon_req_t *daemon_req,
+                              int release)
+{
+    perform_cmd_daemon_req(tctx, daemon_req, &release);
+
+    if (release) {
+        delete [] (char*)daemon_req;
+    }
+}
+
+static void am_recv_perf_daemon_request_free(void *request)
+{
+    struct sockaddr_storage *daemon_addr;
+
+    daemon_addr = (struct sockaddr_storage*)((request_t*)request)->buffer;
+
+    delete [] (char*)daemon_addr;
+    ucp_request_free(request);
 }
 
 static void am_recv_perf_daemon_init_cb(void *request, ucs_status_t am_status,
@@ -210,11 +464,31 @@ static void am_recv_perf_daemon_init_cb(void *request, ucs_status_t am_status,
     ucp_request_param_t request_params;
     ucs_status_t status;
     ucs_status_ptr_t req;
+    struct sockaddr_storage *daemon_addr;
 
     if (am_status != UCS_OK) {
         ucs_error("failed to receive daemon initialization information from "
                   " a perftest: %s", ucs_status_string(am_status));
+        if (request != NULL) {
+            am_recv_perf_daemon_request_free(request);
+        }
         return;
+    }
+
+    if (request != NULL) {
+        daemon_addr = (struct sockaddr_storage*)((request_t*)request)->buffer;
+
+        if (tctx->daemon_ep != NULL) {
+            if (memcmp(daemon_addr, &tctx->daemon_addr, length) == 0) {
+                am_recv_perf_daemon_request_free(request);
+                return;
+            } else {
+                ep_close(tctx, tctx->daemon_ep, 0);
+            }
+        }
+
+        memcpy(&tctx->daemon_addr, daemon_addr, length);
+        am_recv_perf_daemon_request_free(request);
     }
 
     ep_params.field_mask       = UCP_EP_PARAM_FIELD_FLAGS       |
@@ -248,7 +522,7 @@ static void am_recv_perf_daemon_init_cb(void *request, ucs_status_t am_status,
 
 static ucs_status_t
 am_cb_init_ep(ucp_perf_thread_context_t *tctx, ucp_ep_h *ep_storage,
-              const ucp_am_recv_param_t *param)
+              const char *ep_peer_type, const ucp_am_recv_param_t *param)
 {
     std::set<ucp_ep_h>::iterator it;
     ucp_ep_h ep;
@@ -265,16 +539,19 @@ am_cb_init_ep(ucp_perf_thread_context_t *tctx, ucp_ep_h *ep_storage,
     }
 
     if (*ep_storage != NULL) {
-        ucs_error("ep %p to the perftest client has already been created on "
-                  "the daemon, ep %p won't be used", *ep_storage, ep);
+        ucs_error("ep %p to %s has already been created on the daemon, ep %p "
+                  "won't be used", *ep_storage, ep_peer_type, ep);
         goto err_ep_close;
+    } else {
+        printf("created ep %p to accept connection from %s\n", ep,
+               ep_peer_type);
     }
 
     *ep_storage = ep;
     return UCS_OK;
 
 err_ep_close:
-    ep_close(tctx->ucp, ep, 1);
+    ep_close(tctx, ep, 1);
     return UCS_ERR_NOT_CONNECTED;
 }
 
@@ -285,27 +562,47 @@ am_perf_daemon_init_cb(void *arg, const void *header, size_t header_length,
 {
     ucp_perf_thread_context_t *tctx = (ucp_perf_thread_context_t*)arg;
     ucs_status_t status;
+    struct sockaddr_storage *daemon_addr;
 
     ucs_assertv(header_length == 0, "header_length=%lu", header_length);
 
-    status = am_cb_init_ep(tctx, &tctx->ep, param);
+    status = am_cb_init_ep(tctx, &tctx->ep, "a perftest client", param);
     if (status != UCS_OK) {
         status = UCS_OK;
         goto out;
     }
 
-    if (param->recv_attr & UCP_AM_RECV_ATTR_FLAG_RNDV) {
-        am_recv_data(tctx, data, length,
-                     am_recv_perf_daemon_init_cb);
-        status = UCS_INPROGRESS;
-        goto out;
+    if (length > 0) {
+        ucs_assert_always(length == sizeof(*daemon_addr));
+
+        if (param->recv_attr & UCP_AM_RECV_ATTR_FLAG_RNDV) {
+            daemon_addr = (struct sockaddr_storage*)new char[length];
+            if (daemon_addr == NULL) {
+                status = UCS_ERR_NO_MEMORY;
+                goto out;
+            }
+
+            am_recv_data(tctx, data, daemon_addr, length, NULL,
+                         am_recv_perf_daemon_init_cb);
+            status = UCS_INPROGRESS;
+            goto out;
+        }
+
+        if (tctx->daemon_ep != NULL) {
+            daemon_addr = (struct sockaddr_storage*)data;
+            if (memcmp(daemon_addr, &tctx->daemon_addr, length) == 0) {
+                status = UCS_OK;
+                goto out;
+            } else {
+                ep_close(tctx, tctx->daemon_ep, 0);
+            }
+        }
+
+        memcpy(&tctx->daemon_addr, data, length);
+        am_recv_perf_daemon_init_cb(NULL, UCS_OK, length, tctx);
     }
 
-    memcpy(&tctx->daemon_addr, data,
-           std::min(length, sizeof(tctx->daemon_addr)));
     status = UCS_OK;
-
-    am_recv_perf_daemon_init_cb(NULL, UCS_OK, length, tctx);
 
 out:
     return status;
@@ -317,40 +614,157 @@ am_perf_daemon_peer_init_cb(void *arg, const void *header,
                             const ucp_am_recv_param_t *param)
 {
     ucp_perf_thread_context_t *tctx = (ucp_perf_thread_context_t*)arg;
+    ucp_perf_daemon_req_t *daemon_req;
     ucs_status_t status;
+    size_t size, i;
 
     ucs_assertv(header_length == 0, "header_length=%lu", header_length);
     ucs_assertv(length == 0, "length=%lu", length);
 
-    status = am_cb_init_ep(tctx, &tctx->daemon_ep, param);
+    status = am_cb_init_ep(tctx, &tctx->daemon_ep, "a daemon", param);
     ucs_assertv((status == UCS_OK) || (status == UCS_ERR_NOT_CONNECTED), "%s",
                 ucs_status_string(status));
 
+    i    = 0;
+    size = tctx->unhandled_daemon_reqs.size();
+    while (i++ != size) {
+        daemon_req = tctx->unhandled_daemon_reqs.front();
+        tctx->unhandled_daemon_reqs.pop();
+        handle_daemon_req(tctx, daemon_req, 1);
+    }
+
     return UCS_OK;
+}
+
+static void am_recv_perf_daemon_req_cb(void *request, ucs_status_t am_status,
+                                       size_t length, void *user_data)
+{
+    ucp_perf_thread_context_t *tctx = (ucp_perf_thread_context_t*)user_data;
+    ucp_perf_daemon_req_t *daemon_req;
+
+    if (am_status != UCS_OK) {
+        ucs_error("failed to receive daemon request from a perftest: %s",
+                  ucs_status_string(am_status));
+        if (request != NULL) {
+            am_recv_perf_daemon_request_free(request);
+        }
+        return;
+    }
+
+    daemon_req = (ucp_perf_daemon_req_t*)((request_t*)request)->buffer;
+    if (tctx->daemon_ep != NULL) {
+        handle_daemon_req(tctx, daemon_req, 1);
+    } else {
+        tctx->unhandled_daemon_reqs.push(daemon_req);
+    }
+
+    ucp_request_free(request);
+}
+
+static ucs_status_t
+am_perf_daemon_req_cb(void *arg, const void *header, size_t header_length,
+                      void *data, size_t length,
+                      const ucp_am_recv_param_t *param)
+{
+    ucp_perf_thread_context_t *tctx = (ucp_perf_thread_context_t*)arg;
+    ucs_status_t status;
+    ucp_perf_daemon_req_t *daemon_req;
+
+    ucs_assertv(header_length == 0, "header_length=%lu", header_length);
+    ucs_assertv(length >= sizeof(*daemon_req), "length=%lu", length);
+
+    if (param->recv_attr & UCP_AM_RECV_ATTR_FLAG_RNDV) {
+        daemon_req = (ucp_perf_daemon_req_t*)new char[length];
+        if (daemon_req == NULL) {
+            status = UCS_ERR_NO_MEMORY;
+            goto out;
+        }
+
+        am_recv_data(tctx, data, daemon_req, length, NULL,
+                     am_recv_perf_daemon_req_cb);
+        status = UCS_INPROGRESS;
+    } else {
+        daemon_req = (ucp_perf_daemon_req_t*)new char[length];
+        if (daemon_req == NULL) {
+            status = UCS_ERR_NO_MEMORY;
+            goto out;
+        }
+
+        memcpy(daemon_req, data, length);
+        status = UCS_OK;
+
+        if (tctx->daemon_ep != NULL) {
+            handle_daemon_req(tctx, daemon_req, 1);
+        } else {
+            tctx->unhandled_daemon_reqs.push(daemon_req);
+        }
+    }
+
+out:
+    return status;
+}
+
+static ucs_status_t
+am_perf_daemon_recv_op_cb(void *arg, const void *header, size_t header_length,
+                          void *data, size_t length,
+                          const ucp_am_recv_param_t *param)
+{
+    ucp_perf_thread_context_t *tctx = (ucp_perf_thread_context_t*)arg;
+    ucp_perf_daemon_req_t *daemon_req;
+
+    if (!(param->recv_attr & UCP_AM_RECV_ATTR_FLAG_RNDV)) {
+        ucs_error("unsupported to receive data as not a RNDV");
+        return UCS_OK;
+    }
+
+    tctx->unhandled_am_recv_ops.push(data);
+    if ((tctx->daemon_ep == NULL) ||
+        tctx->unhandled_daemon_reqs.empty()) {
+        return UCS_INPROGRESS;
+    }
+
+    daemon_req = tctx->unhandled_daemon_reqs.front();
+    tctx->unhandled_daemon_reqs.pop();
+    handle_daemon_req(tctx, daemon_req, 1);
+
+    return UCS_INPROGRESS;
 }
 
 static void cleanup(ucp_perf_t *ucp)
 {
     unsigned i;
-    std::set<ucp_ep_h>::iterator it;
+    std::set<ucp_ep_h>::iterator unmatched_ep_it;
 
     for (i = 0; i < thread_count; i++) {
         ucp_listener_destroy(ucp->tctx[i].listener);
 
         if (ucp->tctx[i].ep != NULL) {
-            ep_close(ucp, ucp->tctx[i].ep, 0);
+            ep_close(&ucp->tctx[i], ucp->tctx[i].ep, 0);
         }
 
         if (ucp->tctx[i].daemon_ep != NULL) {
-            ep_close(ucp, ucp->tctx[i].daemon_ep, 0);
+            ep_close(&ucp->tctx[i], ucp->tctx[i].daemon_ep, 0);
         }
 
-        it = ucp->tctx[i].unmatched_eps.begin();
-        while (it != ucp->tctx[i].unmatched_eps.end()) {
-            ucp_ep_h ep = *it;
+        unmatched_ep_it = ucp->tctx[i].unmatched_eps.begin();
+        while (unmatched_ep_it != ucp->tctx[i].unmatched_eps.end()) {
+            ucp_ep_h ep = *unmatched_ep_it++;
+            ep_close(&ucp->tctx[i], ep, 0);
+        }
 
-            ep_close(ucp, ep, 0);
-            it = ucp->tctx[i].unmatched_eps.erase(it);
+        while (!ucp->tctx[i].unhandled_daemon_reqs.empty()) {
+            ucp_perf_daemon_req_t *daemon_req =
+                    ucp->tctx[i].unhandled_daemon_reqs.front();
+
+            ucp->tctx[i].unhandled_daemon_reqs.back();
+            delete [] (char*)daemon_req;
+        }
+
+        while (!ucp->tctx[i].unhandled_am_recv_ops.empty()) {
+            void *recv_data = ucp->tctx[i].unhandled_am_recv_ops.front();
+
+            ucp->tctx[i].unhandled_am_recv_ops.back();
+            ucp_am_data_release(ucp->tctx[i].worker, recv_data);
         }
     }
 
@@ -447,6 +861,22 @@ static int init(ucp_perf_t *ucp)
             workers_destroy(ucp->tctx, i + 1);
             goto err_free_tctx;
         }
+
+        ret = set_am_recv_handler(ucp->tctx[i].worker,
+                                  UCP_PERF_DAEMON_AM_ID_REQ,
+                                  am_perf_daemon_req_cb, &ucp->tctx[i]);
+        if (ret != 0) {
+            workers_destroy(ucp->tctx, i + 1);
+            goto err_free_tctx;
+        }
+
+        ret = set_am_recv_handler(ucp->tctx[i].worker,
+                                  UCP_PERF_DAEMON_AM_ID_OP,
+                                  am_perf_daemon_recv_op_cb, &ucp->tctx[i]);
+        if (ret != 0) {
+            workers_destroy(ucp->tctx, i + 1);
+            goto err_free_tctx;
+        }
     }
 
     for (i = 0; i < thread_count; i++) {    
@@ -488,7 +918,30 @@ static void signal_terminate_handler(int signo)
     terminated = 1;
 }
 
-int main()
+static int parse_cmd(int argc, char *const argv[])
+{
+    int c = 0;
+    int parsed_port;
+
+    while ((c = getopt(argc, argv, "p:")) != -1) {
+        switch (c) {
+        case 'p':
+            parsed_port = atoi(optarg);
+            if ((parsed_port < 0) || (parsed_port > UINT16_MAX)) {
+                ucs_error("wrong server port number %d", parsed_port);
+                return -1;
+            }
+            port = parsed_port;
+            break;
+        default:
+            return -1;
+        }
+    }
+
+    return 0;
+}
+
+int main(int argc, char *const argv[])
 {
     ucp_perf_t ucp;
     struct sigaction new_sigaction;
@@ -496,6 +949,10 @@ int main()
     new_sigaction.sa_handler = signal_terminate_handler;
     new_sigaction.sa_flags   = 0;
     sigemptyset(&new_sigaction.sa_mask);
+
+    if (parse_cmd(argc, argv) != 0) {
+        abort();
+    }
 
     if (sigaction(SIGINT, &new_sigaction, NULL) != 0) {
         ucs_error("failed to set signal handler for SIGINT");
