@@ -288,9 +288,9 @@ public:
     static void
     send_daemon_req_cb(void *request, ucs_status_t status, void *user_data)
     {
-        ucp_perf_daemon_req_t *daemon_req = (ucp_perf_daemon_req_t*)user_data;
+        //ucp_perf_daemon_req_t *daemon_req = (ucp_perf_daemon_req_t*)user_data;
 
-        free(daemon_req);
+        //free(daemon_req);
         ucp_request_free(request);
     }
 
@@ -489,7 +489,8 @@ out:
     }
 
     UCS_F_ALWAYS_INLINE ucs_status_t
-    send_daemon_req(void *buffer, unsigned length, void *shared_memh_buf,
+    send_daemon_req(void *buffer, unsigned length, const void *am_header,
+                    size_t am_header_length, void *shared_memh_buf,
                     size_t shared_memh_buf_size, uint64_t remote_addr,
                     ucp_perf_daemon_type_t type)
     {
@@ -499,18 +500,20 @@ out:
         size_t daemon_req_length;
         ucs_status_ptr_t req;
 
-        daemon_req_length = sizeof(*daemon_req) + shared_memh_buf_size;
-        daemon_req        = (ucp_perf_daemon_req_t*)malloc(daemon_req_length);
+        if (type == UCP_PERF_DAEMON_SENDER) {
+            daemon_req        = m_perf.ucp.send_daemon_req;
+            daemon_req_length = m_perf.ucp.send_daemon_req_size;
+        } else {
+            daemon_req        = m_perf.ucp.recv_daemon_req;
+            daemon_req_length = m_perf.ucp.recv_daemon_req_size;
+        }
 
-        daemon_req->type                 = type;
-        daemon_req->cmd                  = CMD;
-        daemon_req->atomic_op            = m_atomic_op;
-        daemon_req->addr                 = (uint64_t)buffer;
-        daemon_req->length               = length;
-        daemon_req->remote_addr          = remote_addr;
-        daemon_req->shared_memh_buf_size = shared_memh_buf_size;
-
-        memcpy(daemon_req + 1, shared_memh_buf, shared_memh_buf_size);
+        daemon_req->type        = type;
+        daemon_req->cmd         = CMD;
+        daemon_req->atomic_op   = m_atomic_op;
+        daemon_req->addr        = (uint64_t)buffer;
+        daemon_req->length      = length;
+        daemon_req->remote_addr = remote_addr;
 
         param.op_attr_mask = UCP_OP_ATTR_FIELD_CALLBACK |
                              UCP_OP_ATTR_FIELD_USER_DATA;
@@ -521,7 +524,6 @@ out:
                               daemon_req, daemon_req_length, &param);
         if (!UCS_PTR_IS_PTR(req)) {
             /* coverity[overflow] */
-            free(daemon_req);
             return UCS_PTR_STATUS(req);
         }
 
@@ -543,6 +545,8 @@ out:
 
         if (m_perf.params.ucp.daemon_addrs_num > 0) {
             status = send_daemon_req(buffer, length,
+                                     m_perf.ucp.am_hdr,
+                                     m_perf.params.ucp.am_hdr_size,
                                      m_perf.ucp.send_shared_memh_buf,
                                      m_perf.ucp.send_shared_memh_buf_size,
                                      remote_addr, UCP_PERF_DAEMON_SENDER);
@@ -622,7 +626,7 @@ out:
 
         if (m_perf.params.ucp.daemon_addrs_num > 0) {
             wait_recv_window(1);
-            status = send_daemon_req(buffer, length,
+            status = send_daemon_req(buffer, length, NULL, 0,
                                      m_perf.ucp.send_shared_memh_buf,
                                      m_perf.ucp.send_shared_memh_buf_size,
                                      0lu, UCP_PERF_DAEMON_RECEIVER);

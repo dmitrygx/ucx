@@ -101,9 +101,10 @@ error_ret:
 ucs_status_t do_export(uct_md_h md, uct_component_h component,
                        const cmd_args_t *cmd_args)
 {
+    uct_md_attr_t md_attr;
     uct_md_mem_reg_params_t params;
     uct_md_mkey_pack_params_t mkey_pack_params;
-    uint8_t shared_mkey_buf[1024];
+    uint8_t *shared_mkey_buf;
     uint64_t shared_mkey;
     ucs_status_t status;
     uct_mem_h memh;
@@ -118,8 +119,13 @@ ucs_status_t do_export(uct_md_h md, uct_component_h component,
     params.flags      = UCT_MD_MEM_FLAG_SHARED | UCT_MD_MEM_ACCESS_ALL;
     status            = uct_md_mem_reg_v2(md, ptr, cmd_args->size, &params,
                                           &memh);
-    CHKERR_JUMP(UCS_OK != status, "uct_md_mem_reg_v2", error_ret);
+    CHKERR_JUMP(UCS_OK != status, "uct_md_mem_reg_v2", ptr_free);
 
+    status = uct_md_query(md, &md_attr);
+    CHKERR_JUMP(UCS_OK != status, "uct_md_querys", mem_dereg);
+
+    shared_mkey_buf             =
+            (uint8_t*)alloca(md_attr.shared_mkey_packed_size);
     mkey_pack_params.field_mask = UCT_MD_MKEY_PACK_FIELD_FLAGS;
     mkey_pack_params.flags      = UCT_MD_MKEY_PACK_FLAG_SHARED;
     status                      = uct_md_mkey_pack_v2(md, memh,
@@ -133,11 +139,11 @@ ucs_status_t do_export(uct_md_h md, uct_component_h component,
     printf("press any key to continue\n");
     getchar();
 
+mem_dereg:
     status = uct_md_mem_dereg(md, memh);
     CHKERR_JUMP(UCS_OK != status, "uct_md_mem_dereg", error_ret);
-
+ptr_free:
     free(ptr);
-
 error_ret:
     return status;
 }

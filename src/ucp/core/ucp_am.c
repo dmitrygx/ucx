@@ -1015,6 +1015,16 @@ UCS_PROFILE_FUNC(ucs_status_ptr_t, ucp_am_send_nbx,
                                 {ret = UCS_STATUS_PTR(UCS_ERR_NO_MEMORY);
                                  goto out;});
 
+    if (ucs_unlikely((attr_mask & UCP_OP_ATTR_FIELD_MEMH) && 
+                     (param->memh->flags & UCP_MEM_FLAG_IMPORTED))) {
+        if (ucs_unlikely(flags & UCP_AM_SEND_FLAG_EAGER)) {
+            ret = UCS_STATUS_PTR(UCS_ERR_INVALID_PARAM);
+            goto out;
+        }
+
+        flags |= UCP_AM_SEND_FLAG_RNDV;
+    }
+
     if (worker->context->config.ext.proto_enable) {
         req->send.msg_proto.am.am_id         = id;
         req->send.msg_proto.am.flags         = flags;

@@ -46,7 +46,9 @@ static ucs_status_t ucp_perf_mem_alloc(const ucx_perf_context_t *perf,
                                        ucs_memory_type_t mem_type,
                                        void **address_p, ucp_mem_h *memh_p,
                                        void **shared_memh_buf_p,
-                                       size_t *shared_memh_buf_size_p)
+                                       size_t *shared_memh_buf_size_p,
+                                       ucp_perf_daemon_req_t **daemon_req_p,
+                                       size_t *daemon_req_size_p)
 {
     ucp_mem_map_params_t params;
     ucp_memh_pack_params_t memh_pack_params;
@@ -90,23 +92,36 @@ static ucs_status_t ucp_perf_mem_alloc(const ucx_perf_context_t *perf,
         if (status != UCS_OK) {
             goto err_mem_unmap;
         }
+
+        *daemon_req_size_p = sizeof(**daemon_req_p) + *shared_memh_buf_size_p;
+        *daemon_req_p      =
+                (ucp_perf_daemon_req_t*)malloc(*daemon_req_size_p);
+        if (*daemon_req_p == NULL) {
+            goto err_memh_buffer_release;
+        }
+
+        (*daemon_req_p)->shared_memh_buf_size = *shared_memh_buf_size_p;
+        memcpy(*daemon_req_p + 1, *shared_memh_buf_p, *shared_memh_buf_size_p);
     }
 
     *address_p = attr.address;
     return UCS_OK;
 
+err_memh_buffer_release:
+    ucp_memh_buffer_release(*shared_memh_buf_p);
 err_mem_unmap:
     ucp_mem_unmap(perf->ucp.context, *memh_p);
     return status;
 }
 
 static void ucp_perf_mem_free(const ucx_perf_context_t *perf, ucp_mem_h memh,
-                              void *shared_memh_buf)
+                              void *shared_memh_buf,
+                              ucp_perf_daemon_req_t *daemon_req)
 {
     ucs_status_t status;
 
+    free(daemon_req);
     ucp_memh_buffer_release(shared_memh_buf);
-
     status = ucp_mem_unmap(perf->ucp.context, memh);
     if (status != UCS_OK) {
         ucs_warn("ucp_mem_unmap() failed: %s", ucs_status_string(status));
@@ -130,7 +145,9 @@ ucs_status_t ucp_perf_test_alloc_mem(ucx_perf_context_t *perf)
                                 params->send_mem_type, &perf->send_buffer,
                                 &perf->ucp.send_memh,
                                 &perf->ucp.send_shared_memh_buf,
-                                &perf->ucp.send_shared_memh_buf_size);
+                                &perf->ucp.send_shared_memh_buf_size,
+                                &perf->ucp.send_daemon_req,
+                                &perf->ucp.send_daemon_req_size);
     if (status != UCS_OK) {
         goto err;
     }
@@ -140,7 +157,9 @@ ucs_status_t ucp_perf_test_alloc_mem(ucx_perf_context_t *perf)
                                 params->recv_mem_type, &perf->recv_buffer,
                                 &perf->ucp.recv_memh,
                                 &perf->ucp.recv_shared_memh_buf,
-                                &perf->ucp.recv_shared_memh_buf_size);
+                                &perf->ucp.recv_shared_memh_buf_size,
+                                &perf->ucp.recv_daemon_req,
+                                &perf->ucp.recv_daemon_req_size);
     if (status != UCS_OK) {
         goto err_free_send_buffer;
     }
@@ -182,10 +201,12 @@ err_free_am_hdr:
     free(perf->ucp.am_hdr);
 err_free_buffers:
     ucp_perf_mem_free(perf, perf->ucp.recv_memh,
-                      perf->ucp.recv_shared_memh_buf);
+                      perf->ucp.recv_shared_memh_buf,
+                      perf->ucp.recv_daemon_req);
 err_free_send_buffer:
     ucp_perf_mem_free(perf, perf->ucp.send_memh,
-                      perf->ucp.send_shared_memh_buf);
+                      perf->ucp.send_shared_memh_buf,
+                      perf->ucp.send_daemon_req);
 err:
     return UCS_ERR_NO_MEMORY;
 }
@@ -196,9 +217,11 @@ void ucp_perf_test_free_mem(ucx_perf_context_t *perf)
     free(perf->ucp.send_iov);
     free(perf->ucp.am_hdr);
     ucp_perf_mem_free(perf, perf->ucp.recv_memh,
-                      perf->ucp.recv_shared_memh_buf);
+                      perf->ucp.recv_shared_memh_buf,
+                      perf->ucp.recv_daemon_req);
     ucp_perf_mem_free(perf, perf->ucp.send_memh,
-                      perf->ucp.send_shared_memh_buf);
+                      perf->ucp.send_shared_memh_buf,
+                      perf->ucp.send_daemon_req);
 }
 
 static void

@@ -1549,7 +1549,8 @@ ucs_status_t ucp_memh_pack(ucp_context_h context, ucp_mem_h memh,
 
     if (flags & UCP_MEMH_PACK_FLAG_RKEY) {
         status = ucp_remote_mkey_pack(context, memh, buffer_p, buffer_size_p);
-    } else if (flags & UCP_MEMH_PACK_FLAG_SHARED) {
+    } else {
+        ucs_assert(flags & UCP_MEMH_PACK_FLAG_SHARED);
         status = ucp_shared_mkey_pack(context, memh, buffer_p, buffer_size_p);
     }
 

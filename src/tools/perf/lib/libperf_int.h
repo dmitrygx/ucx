@@ -114,6 +114,10 @@ struct ucx_perf_context {
             void                       *recv_shared_memh_buf;
             size_t                     send_shared_memh_buf_size;
             size_t                     recv_shared_memh_buf_size;
+            ucp_perf_daemon_req_t      *send_daemon_req;
+            ucp_perf_daemon_req_t      *recv_daemon_req;
+            size_t                     send_daemon_req_size;
+            size_t                     recv_daemon_req_size;
             ucp_dt_iov_t               *send_iov;
             ucp_dt_iov_t               *recv_iov;
             void                       *am_hdr;
