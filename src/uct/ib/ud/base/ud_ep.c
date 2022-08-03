@@ -835,10 +835,6 @@ static void uct_ud_ep_rx_creq(uct_ud_iface_t *iface, uct_ud_neth_t *neth)
                        "creq->conn_sn=%d ep->conn_sn=%d",
                        ctl->conn_req.conn_sn, ep->conn_sn);
 
-    ucs_assertv_always(ctl->conn_req.path_index == ep->path_index,
-                       "creq->path_index=%d ep->path_index=%d",
-                       ctl->conn_req.path_index, ep->path_index);
-
     ucs_assertv_always(uct_ib_unpack_uint24(ctl->conn_req.ep_addr.ep_id) ==
                        ep->dest_ep_id,
                        "creq->ep_addr.ep_id=%d ep->dest_ep_id=%d",
