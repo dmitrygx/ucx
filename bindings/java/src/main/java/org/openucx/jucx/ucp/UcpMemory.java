@@ -69,7 +69,7 @@ public class UcpMemory extends UcxNativeStruct implements Closeable {
      * the peers that will initiate the access.
      */
     public ByteBuffer getRemoteKeyBuffer() {
-        ByteBuffer rKeyBuffer = getRkeyBufferNative(context.getNativeId(), getNativeId());
+        ByteBuffer rKeyBuffer = getRkeyBufferNative(getNativeId());
         // 1. Allocating java native ByteBuffer (managed by java's reference count cleaner).
         ByteBuffer result = ByteBuffer.allocateDirect(rKeyBuffer.capacity());
         // 2. Copy content of native ucp address to java's buffer.
@@ -111,7 +111,7 @@ public class UcpMemory extends UcxNativeStruct implements Closeable {
 
     private static native void unmapMemoryNative(long contextId, long memoryId);
 
-    private static native ByteBuffer getRkeyBufferNative(long contextId, long memoryId);
+    private static native ByteBuffer getRkeyBufferNative(long memoryId);
 
     private static native void releaseRkeyBufferNative(ByteBuffer rkey);
 

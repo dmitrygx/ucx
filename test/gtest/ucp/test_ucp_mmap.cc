@@ -165,6 +165,7 @@ bool test_ucp_mmap::resolve_rma_bw_put_zcopy(entity *e, ucp_rkey_h rkey)
 void test_ucp_mmap::test_rkey_management(ucp_mem_h memh, bool is_dummy,
                                          bool expect_rma_offload)
 {
+    ucp_memh_pack_params_t pack_params = {0};
     size_t rkey_size;
     void *rkey_buffer;
     ucs_status_t status;
@@ -172,7 +173,7 @@ void test_ucp_mmap::test_rkey_management(ucp_mem_h memh, bool is_dummy,
     /* Some transports don't support memory registration, so the memory
      * can be inaccessible remotely. But it should always be possible
      * to pack/unpack a key, even if empty. */
-    status = ucp_rkey_pack(sender().ucph(), memh, &rkey_buffer, &rkey_size);
+    status = ucp_memh_pack(memh, &pack_params, &rkey_buffer, &rkey_size);
     if ((status == UCS_ERR_UNSUPPORTED) && !is_dummy) {
         return;
     }
@@ -186,7 +187,8 @@ void test_ucp_mmap::test_rkey_management(ucp_mem_h memh, bool is_dummy,
     ucp_rkey_h rkey;
     status = ucp_ep_rkey_unpack(receiver().ep(), rkey_buffer, &rkey);
     if ((status == UCS_ERR_UNREACHABLE) && !is_dummy) {
-        ucp_rkey_buffer_release(rkey_buffer);
+        ucp_memh_buffer_release_params_t release_params = {0};
+        ucp_memh_buffer_release(rkey_buffer, &release_params);
         return;
     }
     ASSERT_UCS_OK(status);
@@ -251,7 +253,9 @@ void test_ucp_mmap::test_rkey_management(ucp_mem_h memh, bool is_dummy,
     }
 
     ucp_rkey_destroy(rkey);
-    ucp_rkey_buffer_release(rkey_buffer);
+
+    ucp_memh_buffer_release_params_t release_params = {0};
+    ucp_memh_buffer_release(rkey_buffer, &release_params);
 }
 
 bool test_ucp_mmap::enable_proto() const

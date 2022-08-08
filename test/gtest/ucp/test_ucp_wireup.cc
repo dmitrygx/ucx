@@ -202,24 +202,20 @@ void test_ucp_wireup::init()
 
 ucp_rkey_h test_ucp_wireup::get_rkey(ucp_ep_h ep, ucp_mem_h memh)
 {
+    ucp_memh_pack_params_t pack_params = {0};
     void *rkey_buffer;
     size_t rkey_size;
     ucs_status_t status;
     ucp_rkey_h rkey;
 
-    if (memh == m_memh_receiver) {
-        status = ucp_rkey_pack(receiver().ucph(), memh, &rkey_buffer, &rkey_size);
-    } else if (memh == m_memh_sender) {
-        status = ucp_rkey_pack(sender().ucph(), memh, &rkey_buffer, &rkey_size);
-    } else {
-        status = UCS_ERR_INVALID_PARAM;
-    }
+    status = ucp_memh_pack(memh, &pack_params, &rkey_buffer, &rkey_size);
     ASSERT_UCS_OK(status);
 
     status = ucp_ep_rkey_unpack(ep, rkey_buffer, &rkey);
     ASSERT_UCS_OK(status);
 
-    ucp_rkey_buffer_release(rkey_buffer);
+    ucp_memh_buffer_release_params_t release_params = {0};
+    ucp_memh_buffer_release(rkey_buffer, &release_params);
 
     return rkey;
 }

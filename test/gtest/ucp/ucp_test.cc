@@ -1196,14 +1196,17 @@ ucp_test::mapped_buffer::mapped_buffer(size_t size, const entity& entity,
     ASSERT_UCS_OK(status);
 
     size_t rkey_buffer_size;
-    status = ucp_rkey_pack(m_entity.ucph(), m_memh, &m_rkey_buffer,
+    ucp_memh_pack_params_t pack_params{0};
+    status = ucp_memh_pack(m_memh, &pack_params, &m_rkey_buffer,
                            &rkey_buffer_size);
     ASSERT_UCS_OK(status);
 }
 
 ucp_test::mapped_buffer::~mapped_buffer()
 {
-    ucp_rkey_buffer_release(m_rkey_buffer);
+    ucp_memh_buffer_release_params_t release_params = {0};
+    ucp_memh_buffer_release(m_rkey_buffer, &release_params);
+
     ucs_status_t status = ucp_mem_unmap(m_entity.ucph(), m_memh);
     if (status != UCS_OK) {
         ucs_warn("failed to unmap memh=%p: %s", m_memh,

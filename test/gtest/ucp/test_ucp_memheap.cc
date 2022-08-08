@@ -55,15 +55,17 @@ void test_ucp_memheap::test_xfer(send_func_t send_func, size_t size,
     /* Unpack remote key */
     void *rkey_buffer;
     size_t rkey_buffer_size;
-    status = ucp_rkey_pack(receiver().ucph(), memheap_memh, &rkey_buffer,
-                           &rkey_buffer_size);
+    ucp_memh_pack_params_t pack_params{0};
+    status                 = ucp_memh_pack(memheap_memh, &pack_params,
+                                           &rkey_buffer, &rkey_buffer_size);
     ASSERT_UCS_OK(status);
 
     ucp_rkey_h rkey;
     status = ucp_ep_rkey_unpack(sender().ep(), rkey_buffer, &rkey);
     ASSERT_UCS_OK(status);
 
-    ucp_rkey_buffer_release(rkey_buffer);
+    ucp_memh_buffer_release_params_t release_params = {0};
+    ucp_memh_buffer_release(rkey_buffer, &release_params);
 
     mem_buffer expected_data(memheap.size(), send_mem_type);
 

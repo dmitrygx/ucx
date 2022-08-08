@@ -2388,7 +2388,7 @@ protected:
     void register_mem(entity* initiator, entity* target, void *buffer,
                       size_t length, ucp_mem_h *memh_p, ucp_rkey_h *rkey_p)
     {
-        ucp_mem_map_params_t params = {0};
+        ucp_mem_map_params_t params;
         params.field_mask = UCP_MEM_MAP_PARAM_FIELD_ADDRESS |
                             UCP_MEM_MAP_PARAM_FIELD_LENGTH;
         params.address    = buffer;
@@ -2397,16 +2397,18 @@ protected:
         ucs_status_t status = ucp_mem_map(target->ucph(), &params, memh_p);
         ASSERT_UCS_OK(status);
 
+        ucp_memh_pack_params_t pack_params = {0};
         void *rkey_buffer;
         size_t rkey_buffer_size;
-        status = ucp_rkey_pack(target->ucph(), *memh_p, &rkey_buffer,
+        status = ucp_memh_pack(*memh_p, &pack_params, &rkey_buffer,
                                &rkey_buffer_size);
         ASSERT_UCS_OK(status);
 
         status = ucp_ep_rkey_unpack(initiator->ep(), rkey_buffer, rkey_p);
         ASSERT_UCS_OK(status);
 
-        ucp_rkey_buffer_release(rkey_buffer);
+        ucp_memh_buffer_release_params_t release_params = {0};
+        ucp_memh_buffer_release(rkey_buffer, &release_params);
     }
 
     void test_rma(size_t size, rma_nb_func_t rma_func)

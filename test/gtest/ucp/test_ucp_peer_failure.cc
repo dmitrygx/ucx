@@ -269,7 +269,9 @@ void test_ucp_peer_failure::get_rkey(ucp_ep_h ep, entity& dst, mem_handle_t& mem
 
     void *rkey_buffer;
     size_t rkey_buffer_size;
-    status = ucp_rkey_pack(dst.ucph(), memh, &rkey_buffer, &rkey_buffer_size);
+    ucp_memh_pack_params_t pack_params{0};
+    status = ucp_memh_pack(memh, &pack_params, &rkey_buffer,
+                           &rkey_buffer_size);
     ASSERT_UCS_OK(status);
 
     ucp_rkey_h ucp_rkey;
@@ -277,7 +279,8 @@ void test_ucp_peer_failure::get_rkey(ucp_ep_h ep, entity& dst, mem_handle_t& mem
     ASSERT_UCS_OK(status);
     rkey.reset(ucp_rkey, ucp_rkey_destroy);
 
-    ucp_rkey_buffer_release(rkey_buffer);
+    ucp_memh_buffer_release_params_t release_params = {0};
+    ucp_memh_buffer_release(rkey_buffer, &release_params);
 }
 
 void test_ucp_peer_failure::set_rkeys() {

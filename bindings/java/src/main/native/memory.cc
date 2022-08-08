@@ -20,12 +20,13 @@ Java_org_openucx_jucx_ucp_UcpMemory_unmapMemoryNative(JNIEnv *env, jclass cls,
 
 JNIEXPORT jobject JNICALL
 Java_org_openucx_jucx_ucp_UcpMemory_getRkeyBufferNative(JNIEnv *env, jclass cls,
-                                                        jlong context_ptr, jlong mem_ptr)
+                                                        jlong mem_ptr)
 {
+    ucp_memh_pack_params_t pack_params = {0};
     void *rkey_buffer;
     size_t rkey_size;
 
-    ucs_status_t status = ucp_rkey_pack((ucp_context_h)context_ptr, (ucp_mem_h)mem_ptr,
+    ucs_status_t status = ucp_memh_pack((ucp_mem_h)mem_ptr, &pack_params,
                                         &rkey_buffer, &rkey_size);
     if (status != UCS_OK) {
         JNU_ThrowExceptionByStatus(env, status);
@@ -36,7 +37,9 @@ Java_org_openucx_jucx_ucp_UcpMemory_getRkeyBufferNative(JNIEnv *env, jclass cls,
 JNIEXPORT void JNICALL
 Java_org_openucx_jucx_ucp_UcpMemory_releaseRkeyBufferNative(JNIEnv *env, jclass cls, jobject rkey_buf)
 {
-    ucp_rkey_buffer_release(env->GetDirectBufferAddress(rkey_buf));
+    ucp_memh_buffer_release_params_t release_params = {0};
+    ucp_memh_buffer_release(env->GetDirectBufferAddress(rkey_buf),
+                            &release_params);
 }
 
 JNIEXPORT void JNICALL

@@ -60,7 +60,8 @@ UCS_TEST_P(test_ucp_rma_mt, put_get) {
     void *rkey_buffer;
     size_t rkey_buffer_size;
 
-    st = ucp_rkey_pack(receiver().ucph(), memh, &rkey_buffer, &rkey_buffer_size);
+    ucp_memh_pack_params_t pack_params{0};
+    st = ucp_memh_pack(memh, &pack_params, &rkey_buffer, &rkey_buffer_size);
     ASSERT_UCS_OK(st);
 
     std::vector<ucp_rkey_h> rkey;
@@ -80,7 +81,8 @@ UCS_TEST_P(test_ucp_rma_mt, put_get) {
     }
 #endif
 
-    ucp_rkey_buffer_release(rkey_buffer);
+    ucp_memh_buffer_release_params_t release_params = {0};
+    ucp_memh_buffer_release(rkey_buffer, &release_params);
 
     /* test blocking PUT */
 

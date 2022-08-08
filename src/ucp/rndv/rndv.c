@@ -1067,8 +1067,10 @@ ucp_rndv_send_frag_update_get_rkey(ucp_worker_h worker, ucp_request_t *freq,
                                    ucp_mem_desc_t *mdesc,
                                    ucs_memory_type_t mem_type)
 {
-    ucp_rkey_h *rkey_p  = &freq->send.rndv.rkey;
-    uint8_t *rkey_index = freq->send.rndv.rkey_index;
+    ucp_memh_pack_params_t pack_params              = {0};
+    ucp_memh_buffer_release_params_t release_params = {0};
+    ucp_rkey_h *rkey_p                              = &freq->send.rndv.rkey;
+    uint8_t *rkey_index                             = freq->send.rndv.rkey_index;
     void *rkey_buffer;
     size_t rkey_size;
     ucs_status_t status;
@@ -1088,13 +1090,13 @@ ucp_rndv_send_frag_update_get_rkey(ucp_worker_h worker, ucp_request_t *freq,
         return;
     }
 
-    status = ucp_rkey_pack(mem_type_ep->worker->context, mdesc->memh,
-                           &rkey_buffer, &rkey_size);
+    status = ucp_memh_pack(mdesc->memh, &pack_params, &rkey_buffer,
+                           &rkey_size);
     ucs_assert_always(status == UCS_OK);
 
     status = ucp_ep_rkey_unpack(mem_type_ep, rkey_buffer, rkey_p);
     ucs_assert_always(status == UCS_OK);
-    ucp_rkey_buffer_release(rkey_buffer);
+    ucp_memh_buffer_release(rkey_buffer, &release_params);
 
     memset(rkey_index, 0, UCP_MAX_LANES * sizeof(uint8_t));
 }

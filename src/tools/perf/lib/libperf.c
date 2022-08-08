@@ -977,14 +977,15 @@ static ucs_status_t ucp_perf_test_rkey_pack(ucx_perf_context_t *perf,
                                             void **rkey_buffer,
                                             size_t *rkey_size)
 {
+    ucp_memh_pack_params_t pack_params = {0};
     ucs_status_t status;
 
     if (features & (UCP_FEATURE_RMA | UCP_FEATURE_AMO32 | UCP_FEATURE_AMO64)) {
-        status = ucp_rkey_pack(perf->ucp.context, perf->ucp.recv_memh,
-                               rkey_buffer, rkey_size);
+        status = ucp_memh_pack(perf->ucp.recv_memh, &pack_params, rkey_buffer,
+                               rkey_size);
         if (status != UCS_OK) {
             if (perf->params.flags & UCX_PERF_TEST_FLAG_VERBOSE) {
-                ucs_error("ucp_rkey_pack() failed: %s",
+                ucs_error("ucp_memh_pack() failed: %s",
                            ucs_status_string(status));
             }
 
@@ -1105,10 +1106,11 @@ err:
 static ucs_status_t ucp_perf_test_send_local_data(ucx_perf_context_t *perf,
                                                   uint64_t features)
 {
-    unsigned i, j, thread_count = perf->params.thread_count;
-    size_t address_length       = 0;
-    void *rkey_buffer           = NULL;
-    void *req                   = NULL;
+    ucp_memh_buffer_release_params_t release_params = {0};
+    unsigned i, j, thread_count                     = perf->params.thread_count;
+    size_t address_length                           = 0;
+    void *rkey_buffer                               = NULL;
+    void *req                                       = NULL;
     ucx_perf_ep_info_t *info;
     ucp_address_t *address;
     ucs_status_t status;
@@ -1170,7 +1172,7 @@ static ucs_status_t ucp_perf_test_send_local_data(ucx_perf_context_t *perf,
     rte_call(perf, exchange_vec, req);
 
     if (features & (UCP_FEATURE_RMA|UCP_FEATURE_AMO32|UCP_FEATURE_AMO64)) {
-        ucp_rkey_buffer_release(rkey_buffer);
+        ucp_memh_buffer_release(rkey_buffer, &release_params);
     }
 
     for (i = 0; i < thread_count; i++) {
@@ -1190,7 +1192,7 @@ err_free_workers_vec:
     free(vec);
 err_rkey_release:
     if (features & (UCP_FEATURE_RMA|UCP_FEATURE_AMO32|UCP_FEATURE_AMO64)) {
-        ucp_rkey_buffer_release(rkey_buffer);
+        ucp_memh_buffer_release(rkey_buffer, &release_params);
     }
 err:
     return status;
