@@ -31,6 +31,7 @@ ucp_mem_dummy_handle_t ucp_mem_dummy_handle = {
     .uct = { UCT_MEM_HANDLE_NULL }
 };
 
+
 ucs_status_t ucp_mem_rereg_mds(ucp_context_h context, ucp_md_map_t reg_md_map,
                                void *address, size_t length, unsigned uct_flags,
                                uct_md_h alloc_md, ucs_memory_type_t mem_type,
@@ -393,11 +394,13 @@ static size_t ucp_memh_size(ucp_context_h context)
     return sizeof(ucp_mem_t) + (sizeof(uct_mem_h) * context->num_mds);
 }
 
-static void ucp_memh_set(ucp_mem_h memh, void* address, size_t length,
-                         ucs_memory_type_t mem_type, uct_alloc_method_t method)
+static void ucp_memh_set(ucp_mem_h memh, ucp_context_h context, void* address,
+                         size_t length, ucs_memory_type_t mem_type,
+                         uct_alloc_method_t method)
 {
     memh->super.super.start = (uintptr_t)address;
     memh->super.super.end   = (uintptr_t)address + length;
+    memh->context           = context;
     memh->mem_type          = mem_type;
     memh->alloc_method      = method;
     memh->alloc_md_index    = UCP_NULL_RESOURCE;
@@ -414,7 +417,8 @@ ucp_memh_create(ucp_context_h context, void *address, size_t length,
         return UCS_ERR_NO_MEMORY;
     }
 
-    ucp_memh_set(memh, address, length, mem_type, UCT_ALLOC_METHOD_LAST);
+    ucp_memh_set(memh, context, address, length, mem_type,
+                 UCT_ALLOC_METHOD_LAST);
 
     if (context->rcache == NULL) {
         /* Point to self */
@@ -451,7 +455,8 @@ ucp_memh_init_from_mem(ucp_context_h context, ucp_mem_h memh,
 {
     ucp_md_index_t md_index;
 
-    ucp_memh_set(memh, mem->address, mem->length, mem->mem_type, mem->method);
+    ucp_memh_set(memh, context, mem->address, mem->length, mem->mem_type,
+                 mem->method);
 
     if (mem->method != UCT_ALLOC_METHOD_MD) {
         return;
@@ -886,7 +891,7 @@ ucp_mem_advise(ucp_context_h context, ucp_mem_h memh,
     return status;
 }
 
-static ucs_status_t
+static inline ucs_status_t
 ucp_mpool_malloc(ucp_worker_h worker, ucs_mpool_t *mp, size_t *size_p, void **chunk_p)
 {
     /* Need to get default flags from ucp_mem_map_params2uct_flags() */
@@ -1078,13 +1083,16 @@ void ucp_mem_print_info(const char *mem_size, ucp_context_h context, FILE *strea
     }
 }
 
-static ucs_status_t ucp_mem_rcache_mem_reg_cb(void *context, ucs_rcache_t *rcache,
-                                             void *arg, ucs_rcache_region_t *rregion,
-                                             uint16_t rcache_mem_reg_flags)
+static ucs_status_t
+ucp_mem_rcache_mem_reg_cb(void *ctx, ucs_rcache_t *rcache, void *arg,
+                          ucs_rcache_region_t *rregion,
+                          uint16_t rcache_mem_reg_flags)
 {
-    ucp_mem_h memh       = ucs_derived_of(rregion, ucp_mem_t);
-    ucp_mem_attr_t *attr = arg;
+    ucp_context_h context = (ucp_context_h)ctx;
+    ucp_mem_h memh        = ucs_derived_of(rregion, ucp_mem_t);
+    ucp_mem_attr_t *attr  = arg;
 
+    memh->context        = context;
     memh->md_map         = 0;
     memh->alloc_md_index = UCP_NULL_RESOURCE;
     memh->alloc_method   = UCT_ALLOC_METHOD_LAST;
