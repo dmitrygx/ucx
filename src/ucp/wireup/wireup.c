@@ -1073,6 +1073,7 @@ static void ucp_wireup_print_config(ucp_worker_h worker,
     char wireup_msg_lane_str[8];
     char cm_lane_str[8];
     char keepalive_lane_str[8];
+    char keepalive_builtin_lane_str[8];
     ucp_lane_index_t lane;
 
     if (!ucs_log_is_enabled(log_level)) {
@@ -1081,7 +1082,7 @@ static void ucp_wireup_print_config(ucp_worker_h worker,
 
     ucs_log(log_level,
             "%s: am_lane %s wireup_msg_lane %s cm_lane %s keepalive_lane %s"
-            " reachable_mds 0x%" PRIx64,
+            " keepalive_builtin_lane %s reachable_mds 0x%" PRIx64,
             title,
             ucp_wireup_get_lane_index_str(key->am_lane, am_lane_str,
                                           sizeof(am_lane_str)),
@@ -1092,6 +1093,9 @@ static void ucp_wireup_print_config(ucp_worker_h worker,
                                           sizeof(cm_lane_str)),
             ucp_wireup_get_lane_index_str(key->keepalive_lane, keepalive_lane_str,
                                           sizeof(keepalive_lane_str)),
+            ucp_wireup_get_lane_index_str(key->keepalive_builtin_lane,
+                                          keepalive_builtin_lane_str,
+                                          sizeof(keepalive_builtin_lane_str)),
             key->reachable_md_map);
 
     for (lane = 0; lane < key->num_lanes; ++lane) {
@@ -1420,7 +1424,7 @@ ucs_status_t ucp_wireup_init_lanes(ucp_ep_h ep, unsigned ep_init_flags,
 
     snprintf(str, sizeof(str), "ep %p", ep);
     ucp_wireup_print_config(worker, &ucp_ep_config(ep)->key, str,
-                            addr_indices, cm_idx, UCS_LOG_LEVEL_DEBUG);
+                            addr_indices, cm_idx, UCS_LOG_LEVEL_INFO);
 
     /* establish connections on all underlying endpoints */
     for (lane = 0; lane < ucp_ep_num_lanes(ep); ++lane) {

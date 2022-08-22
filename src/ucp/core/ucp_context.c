@@ -506,8 +506,8 @@ static ucp_tl_alias_t ucp_tl_aliases[] = {
   { "rc_v",  { "rc_verbs", "ud_verbs:aux", NULL } },
   { "rc_x",  { "rc_mlx5", "ud_mlx5:aux", NULL } },
   { "rc",    { "rc_mlx5", "ud_mlx5:aux", "rc_verbs", "ud_verbs:aux", NULL } },
-  { "dc",    { "dc_mlx5", "ud_mlx5:aux", NULL } },
-  { "dc_x",  { "dc_mlx5", "ud_mlx5:aux", NULL } },
+  { "dc",    { "dc_mlx5", NULL } },
+  { "dc_x",  { "dc_mlx5", NULL } },
   { "ugni",  { "ugni_smsg", "ugni_udt:aux", "ugni_rdma", NULL } },
   { "cuda",  { "cuda_copy", "cuda_ipc", "gdr_copy", NULL } },
   { "rocm",  { "rocm_copy", "rocm_ipc", "rocm_gdr", NULL } },
@@ -2172,6 +2172,10 @@ ucp_context_dev_tl_bitmap(ucp_context_h context, const char *dev_name,
     UCS_BITMAP_CLEAR(tl_bitmap);
     UCS_BITMAP_FOR_EACH_BIT(context->tl_bitmap, tl_idx) {
         if (strcmp(context->tl_rscs[tl_idx].tl_rsc.dev_name, dev_name)) {
+            continue;
+        }
+
+        if (strcmp(context->tl_rscs[tl_idx].tl_rsc.tl_name, "dc_mlx5") == 0) {
             continue;
         }
 

@@ -2026,10 +2026,14 @@ ucp_wireup_construct_lanes(const ucp_wireup_select_params_t *select_params,
             key->tag_lane = lane;
         }
         if (select_ctx->lane_descs[lane].lane_types &
-                    UCS_BIT(UCP_LANE_TYPE_KEEPALIVE) &&
-            !ucp_wireup_is_built_in_keepalive(ep->worker, lane, select_params, key)) {
-            ucs_assert(key->keepalive_lane == UCP_NULL_LANE);
-            key->keepalive_lane = lane;
+                    UCS_BIT(UCP_LANE_TYPE_KEEPALIVE)) {
+            if (ucp_wireup_is_built_in_keepalive(ep->worker, lane, select_params, key)) {
+                ucs_assert(key->keepalive_builtin_lane == UCP_NULL_LANE);
+                key->keepalive_builtin_lane = lane;
+            } else {
+                ucs_assert(key->keepalive_lane == UCP_NULL_LANE);
+                key->keepalive_lane = lane;
+            }
         }
     }
 

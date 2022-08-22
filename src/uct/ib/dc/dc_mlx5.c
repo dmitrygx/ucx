@@ -231,6 +231,8 @@ static void uct_dc_mlx5_iface_progress_enable(uct_iface_h tl_iface, unsigned fla
 {
     uct_rc_iface_t *iface = ucs_derived_of(tl_iface, uct_rc_iface_t);
 
+    ucs_assert_always(0);
+
     uct_base_iface_progress_enable_cb(&iface->super.super, iface->progress, flags);
 }
 
