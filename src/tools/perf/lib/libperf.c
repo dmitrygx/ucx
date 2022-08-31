@@ -1239,9 +1239,10 @@ static ucs_status_t ucp_perf_setup_daemon_endpoints(ucx_perf_context_t *perf)
     unsigned peer_group_idnex = rte_peer_index(rte_call(perf, group_size),
                                                group_index);
     unsigned num_in_prog      = 0;
-    ucs_status_ptr_t **reqs   = ucs_alloca(thread_count * sizeof(*reqs));
+    ucs_status_ptr_t **reqs;
     ucs_status_ptr_t *req;
     struct sockaddr_storage *connect_addr, *daemon_peer_addr;
+    ucp_perf_daemon_init_t *init_packets;
     ucp_ep_params_t ep_params;
     ucp_request_param_t request_params;
     ucs_status_t status;
@@ -1250,6 +1251,10 @@ static ucs_status_t ucp_perf_setup_daemon_endpoints(ucx_perf_context_t *perf)
     if (perf->params.ucp.daemon_addrs_num == 0) {
         return UCS_OK;
     }
+
+    reqs         = ucs_alloca(thread_count * sizeof(*reqs));
+    init_packets = ucs_alloca(thread_count * (sizeof(*init_packets) +
+                                              sizeof(*daemon_peer_addr)));
 
     connect_addr = &perf->params.ucp.daemon_addrs[group_index % 2];
 
@@ -1289,9 +1294,14 @@ static ucs_status_t ucp_perf_setup_daemon_endpoints(ucx_perf_context_t *perf)
             daemon_peer_addr_length = 0;
         }
 
+        init_packets[i].params.am_hdr_size      = perf->params.ucp.am_hdr_size;
+        init_packets[i].daemon_peer_addr_length = daemon_peer_addr_length;
+        memcpy(init_packets + 1, daemon_peer_addr, daemon_peer_addr_length);
+
         req = ucp_am_send_nbx(perf->ucp.tctx[i].perf.ucp.daemon_ep,
                               UCP_PERF_DAEMON_AM_ID_INIT, NULL, 0,
-                              daemon_peer_addr, daemon_peer_addr_length,
+                              &init_packets[i],
+                              sizeof(*init_packets) + daemon_peer_addr_length,
                               &request_params);
         if (UCS_PTR_IS_PTR(req)) {
             reqs[num_in_prog++] = req;

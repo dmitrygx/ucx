@@ -288,9 +288,6 @@ public:
     static void
     send_daemon_req_cb(void *request, ucs_status_t status, void *user_data)
     {
-        //ucp_perf_daemon_req_t *daemon_req = (ucp_perf_daemon_req_t*)user_data;
-
-        //free(daemon_req);
         ucp_request_free(request);
     }
 
@@ -508,6 +505,11 @@ out:
             daemon_req_length = m_perf.ucp.recv_daemon_req_size;
         }
 
+        if (CMD != UCX_PERF_CMD_AM) {
+            am_header        = NULL;
+            am_header_length = 0;
+        }
+
         daemon_req->type        = type;
         daemon_req->cmd         = CMD;
         daemon_req->atomic_op   = m_atomic_op;
@@ -520,8 +522,9 @@ out:
         param.cb.send      = send_daemon_req_cb;
         param.user_data    = daemon_req;
 
-        req = ucp_am_send_nbx(ep, UCP_PERF_DAEMON_AM_ID_REQ, NULL, 0,
-                              daemon_req, daemon_req_length, &param);
+        req = ucp_am_send_nbx(ep, UCP_PERF_DAEMON_AM_ID_REQ, am_header,
+                              am_header_length, daemon_req, daemon_req_length,
+                              &param);
         if (!UCS_PTR_IS_PTR(req)) {
             /* coverity[overflow] */
             return UCS_PTR_STATUS(req);

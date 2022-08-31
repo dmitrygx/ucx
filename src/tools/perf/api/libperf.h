@@ -247,6 +247,17 @@ typedef struct ucx_perf_params {
 
 
 typedef struct {
+    uint64_t am_hdr_size;
+} ucp_perf_daemon_params_t;
+
+
+typedef struct {
+    ucp_perf_daemon_params_t params;
+    uint64_t                 daemon_peer_addr_length;
+    /* "struct sockaddr_storage" of peer daemon follows, if exists */
+} ucp_perf_daemon_init_t;
+
+typedef struct {
     uint8_t  type; /* ucp_perf_daemon_type_t */
     uint8_t  cmd; /* ucx_perf_cmd_t */
     uint8_t  atomic_op; /* ucp_atomic_op_t */
@@ -254,7 +265,10 @@ typedef struct {
     uint64_t length;
     uint64_t remote_addr;
     uint64_t shared_memh_buf_size;
-    /* Shared memh buffer follow */
+    /* - Shared memh buffer follows, if packet is sent from a client to
+     *   a daemon;
+     * - Shared memh buffer and reserver memory for AM header follow, if it is
+     *   a copy of a client's buffer received on a daemon. */
 } ucp_perf_daemon_req_t;
 
 

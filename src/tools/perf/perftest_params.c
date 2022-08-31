@@ -322,7 +322,7 @@ out:
     return UCS_OK;
 }
 
-static void daemon_addrs_init(struct perftest_context *ctx)
+static ucs_status_t daemon_addrs_init(struct perftest_context *ctx)
 {
     struct sockaddr *addr;
     struct sockaddr_in *sa_in;
@@ -356,6 +356,29 @@ static void daemon_addrs_init(struct perftest_context *ctx)
                sizeof(ctx->params.super.ucp.daemon_addrs[0]));
         ++ctx->params.super.ucp.daemon_addrs_num;
     }
+
+    if (ctx->params.super.ucp.daemon_addrs_num == 0) {
+        return UCS_OK;
+    }
+
+    if ((ctx->params.super.ucp.send_datatype != UCP_PERF_DATATYPE_CONTIG) ||
+        (ctx->params.super.ucp.recv_datatype != UCP_PERF_DATATYPE_CONTIG)) {
+        ucs_error("only contiguous datatype is supported in offloaded mode");
+        return UCS_ERR_UNSUPPORTED;
+    }
+
+    if ((ctx->params.super.send_mem_type != UCS_MEMORY_TYPE_HOST) ||
+        (ctx->params.super.recv_mem_type != UCS_MEMORY_TYPE_HOST)) {
+        ucs_error("only HOST memory type is supported in offloaded mode");
+        return UCS_ERR_UNSUPPORTED;
+    }
+
+    if (ctx->params.super.command != UCX_PERF_CMD_AM) {
+        ucs_error("only UCP AM API is supported in offloaded mode");
+        return UCS_ERR_UNSUPPORTED;
+    }
+
+    return UCS_OK;
 }
 
 ucs_status_t parse_test_params(perftest_params_t *params, char opt,
@@ -723,7 +746,5 @@ ucs_status_t parse_opts(struct perftest_context *ctx, int mpi_initialized,
         }
     }
 
-    daemon_addrs_init(ctx);
-
-    return UCS_OK;
+    return daemon_addrs_init(ctx);
 }
