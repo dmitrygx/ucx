@@ -769,6 +769,8 @@ enum uct_md_mem_flags {
                                                    In some cases registration failure
                                                    is not an error (e. g. for merged
                                                    memory regions). */
+    UCT_MD_MEM_FLAG_EXPORTED    = UCS_BIT(4), /**< Memory is shared between processes
+                                                   which use the same memory domain */
 
     /* memory access flags */
     UCT_MD_MEM_ACCESS_REMOTE_PUT    = UCS_BIT(5), /**< enable remote put access */

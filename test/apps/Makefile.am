@@ -21,7 +21,8 @@ noinst_PROGRAMS = \
 	test_link_map \
 	test_dlopen_cfg_print \
 	test_init_mt \
-	test_memtrack_limit
+	test_memtrack_limit \
+	test_uct_exported_mkey
 
 objdir = $(shell sed -n -e 's/^objdir=\(.*\)$$/\1/p' $(LIBTOOL))
 
@@ -63,6 +64,11 @@ test_init_mt_SOURCES  = test_init_mt.c
 test_init_mt_CPPFLAGS = $(BASE_CPPFLAGS)
 test_init_mt_CFLAGS   = $(BASE_CFLAGS) $(OPENMP_CFLAGS)
 test_init_mt_LDADD    = $(top_builddir)/src/ucp/libucp.la
+
+test_uct_exported_mkey_SOURCES  = test_uct_exported_mkey.c
+test_uct_exported_mkey_CPPFLAGS = $(BASE_CPPFLAGS)
+test_uct_exported_mkey_CFLAGS   = $(BASE_CFLAGS)
+test_uct_exported_mkey_LDADD    = $(top_builddir)/src/uct/libuct.la
 
 if HAVE_CUDA
 noinst_PROGRAMS                += test_cuda_hook_dynamic

@@ -287,7 +287,7 @@ typedef enum {
      * The flag is used to indicate that the memory region could be accessed
      * by another process using the same device to perform UCT operations.
      */
-    UCT_MD_MKEY_PACK_FLAG_EXPORT     = UCS_BIT(1)
+    UCT_MD_MKEY_PACK_FLAG_EXPORTED   = UCS_BIT(1)
 } uct_md_mkey_pack_flags_t;
 
 
