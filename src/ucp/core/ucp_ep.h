@@ -144,26 +144,68 @@ enum {
  * Endpoint init flags
  */
 enum {
-    UCP_EP_INIT_FLAG_MEM_TYPE          = UCS_BIT(0),  /**< Endpoint for local mem type transfers */
-    UCP_EP_INIT_CREATE_AM_LANE         = UCS_BIT(1),  /**< Endpoint requires an AM lane */
-    UCP_EP_INIT_CM_WIREUP_CLIENT       = UCS_BIT(2),  /**< Endpoint wireup protocol is based on CM,
-                                                           client side */
-    UCP_EP_INIT_CM_WIREUP_SERVER       = UCS_BIT(3),  /**< Endpoint wireup protocol is based on CM,
-                                                           server side */
-    UCP_EP_INIT_ERR_MODE_PEER_FAILURE  = UCS_BIT(4),  /**< Endpoint requires an
-                                                           @ref UCP_ERR_HANDLING_MODE_PEER */
-    UCP_EP_INIT_CM_PHASE               = UCS_BIT(5),  /**< Endpoint connection to a peer is on
-                                                           CM phase */
-    UCP_EP_INIT_FLAG_INTERNAL          = UCS_BIT(6),  /**< Endpoint for internal usage
-                                                           (e.g. memtype, reply on keepalive) */
-    UCP_EP_INIT_CONNECT_TO_IFACE_ONLY  = UCS_BIT(7),  /**< Select transports which
-                                                           support CONNECT_TO_IFACE
-                                                           mode only */
-    UCP_EP_INIT_CREATE_AM_LANE_ONLY    = UCS_BIT(8),  /**< Endpoint requires an AM lane only */
-    UCP_EP_INIT_KA_FROM_EXIST_LANES    = UCS_BIT(9),  /**< Use only existing lanes to create
-                                                           keepalive lane */
-    UCP_EP_INIT_ALLOW_AM_AUX_TL        = UCS_BIT(10)  /**< Endpoint allows selecting of auxiliary
-                                                           transports for AM lane */
+    /**
+     * Endpoint for local mem type transfers
+     */
+    UCP_EP_INIT_FLAG_MEM_TYPE          = UCS_BIT(0),
+
+    /**
+     * Endpoint requires an AM lane
+     */
+    UCP_EP_INIT_CREATE_AM_LANE         = UCS_BIT(1),
+
+    /**
+     * Endpoint wireup protocol is based on CM, client side
+     */
+    UCP_EP_INIT_CM_WIREUP_CLIENT       = UCS_BIT(2),
+
+    /**
+     * Endpoint wireup protocol is based on CM, server side
+     */
+    UCP_EP_INIT_CM_WIREUP_SERVER       = UCS_BIT(3),
+
+    /**
+     * Endpoint requires an @ref UCP_ERR_HANDLING_MODE_PEER
+     */
+    UCP_EP_INIT_ERR_MODE_PEER_FAILURE  = UCS_BIT(4),
+
+    /**
+     * Endpoint connection to a peer is on CM phase
+     */
+    UCP_EP_INIT_CM_PHASE               = UCS_BIT(5),  
+
+    /**
+     * Endpoint for internal usage (e.g. memtype, reply on keepalive)
+     */
+    UCP_EP_INIT_FLAG_INTERNAL          = UCS_BIT(6),
+
+    /**
+     * Select transports which support CONNECT_TO_IFACE mode only
+     */
+    UCP_EP_INIT_CONNECT_TO_IFACE_ONLY  = UCS_BIT(7),
+
+    /**
+     * Endpoint requires an AM lane only
+     */
+    UCP_EP_INIT_CREATE_AM_LANE_ONLY    = UCS_BIT(8),
+
+    /**
+     * Use only existing lanes to create keepalive lane
+     */
+    UCP_EP_INIT_KA_FROM_EXIST_LANES    = UCS_BIT(9),
+
+    /**
+     * Endpoint allows selecting of auxiliary transports for AM lane
+     */
+    UCP_EP_INIT_ALLOW_AM_AUX_TL        = UCS_BIT(10),
+
+    /**
+     * Endpoint requires selection transports with
+     * @ref UCT_MD_FLAG_EXPORTED_MKEY capability to be able perform local
+     * operation using a peer's memory buffer and memory handle associated with
+     * it and created with @ref UCP_MEM_MAP_EXPORT capability
+     */
+    UCP_EP_INIT_FLAG_EXPORTED_MEMH     = UCS_BIT(11)
 };
 
 
@@ -181,6 +223,12 @@ typedef struct ucp_ep_config_key_lane {
     size_t               seg_size; /* Maximal fragment size which can be
                                       received by the peer */
 } ucp_ep_config_key_lane_t;
+
+
+typedef enum ucp_ep_config_key_flags {
+    UCP_EP_CONFIG_KEY_FLAG_ERR_HANDLING_MODE_PEER = UCS_BIT(0),
+    UCP_EP_CONFIG_KEY_FLAG_EXPORTED_MKEY          = UCS_BIT(1)
+} ucp_ep_config_key_flags_t;
 
 
 /*
@@ -232,8 +280,8 @@ struct ucp_ep_config_key {
      * reachable_md_map */
     ucp_rsc_index_t          *dst_md_cmpts;
 
-    /* Error handling mode */
-    ucp_err_handling_mode_t  err_mode;
+    /* Flags which influence an endpoint configuration */
+    uint8_t                  flags;
 };
 
 
@@ -656,6 +704,7 @@ ucp_ep_create_to_worker_addr(ucp_worker_h worker,
                              unsigned *addr_indices, ucp_ep_h *ep_p);
 
 ucs_status_t ucp_ep_create_server_accept(ucp_worker_h worker,
+                                         const ucp_ep_params_t *params,
                                          const ucp_conn_request_h conn_request,
                                          ucp_ep_h *ep_p);
 
@@ -665,8 +714,8 @@ ucs_status_ptr_t ucp_ep_flush_internal(ucp_ep_h ep, unsigned req_flags,
                                        ucp_request_callback_t flushed_cb,
                                        const char *debug_name);
 
-void ucp_ep_config_key_set_err_mode(ucp_ep_config_key_t *key,
-                                    unsigned ep_init_flags);
+void ucp_ep_config_key_set_modes(ucp_ep_config_key_t *key,
+                                 unsigned ep_init_flags);
 
 void ucp_ep_err_pending_purge(uct_pending_req_t *self, void *arg);
 

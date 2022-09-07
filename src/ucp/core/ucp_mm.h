@@ -19,6 +19,20 @@
 #include <inttypes.h>
 
 
+enum {
+    UCP_MEM_FLAG_REGISTERED = UCS_BIT(0), /* Memory handle was registered
+                                           */
+    UCP_MEM_FLAG_IMPORTED   = UCS_BIT(1), /* Memory handle was imported and
+                                           * points to some peer's memory buffer
+                                           */
+    UCP_MEM_FLAG_EXPORTED   = UCS_BIT(2), /* Memory handle was created as
+                                           * exported to be shared with a peer
+                                           */
+    UCP_MEM_FLAG_IN_RCACHE  = UCS_BIT(3)  /* Memory handle was stored in RCACHE
+                                           */
+};
+
+
 /**
  * Memory handle.
  * Contains general information, and a list of UCT handles.
@@ -27,11 +41,20 @@
  */
 typedef struct ucp_mem {
     ucs_rcache_region_t super;
+    uint8_t             flags;          /* Memory handle flags */
     ucp_context_h       context;        /* UCP context that owns a memory handle */
     uct_alloc_method_t  alloc_method;   /* Method used to allocate the memory */
     ucs_memory_type_t   mem_type;       /* Type of allocated or registered memory */
     ucp_md_index_t      alloc_md_index; /* Index of MD used to allocate the memory */
+    uint64_t            remote_uuid;    /* Remote UUID */
     ucp_md_map_t        md_map;         /* Which MDs have valid memory handles */
+    union {
+        /* Which MDs with EXPORTED_MKEY capability have valid memory handles */
+        ucp_md_map_t export_md_map;
+        /* Which MDs with EXPORTED_MKEY capability were exported and packed to
+           an exported_mkey_buffer and then used by a memh to import it */
+        ucp_md_map_t remote_import_md_map;
+    };
     ucp_mem_h           parent;         /* - NULL if entry should be returned to rcache
                                            - pointer to self if rcache disabled
                                            - pointer to rcache memh if entry is a user memh */
@@ -70,6 +93,7 @@ typedef struct ucp_rndv_mpool_priv {
 typedef struct {
     ucp_mem_t memh;
     uct_mem_h uct[UCP_MD_INDEX_BITS];
+    uct_mem_h uct_exported[UCP_MD_INDEX_BITS];
 } ucp_mem_dummy_handle_t;
 
 
@@ -132,8 +156,9 @@ void ucp_mem_type_unreg_buffers(ucp_worker_h worker, ucs_memory_type_t mem_type,
 
 ucs_status_t ucp_memh_get_slow(ucp_context_h context, void *address,
                                size_t length, ucs_memory_type_t mem_type,
-                               ucp_md_map_t reg_md_map, unsigned uct_flags,
-                               ucp_mem_h *memh_p);
+                               ucp_md_map_t reg_md_map,
+                               ucp_md_map_t export_md_map, unsigned uct_flags,
+                               uint8_t memh_flags, ucp_mem_h *memh_p);
 
 void ucp_memh_cleanup(ucp_context_h context, ucp_mem_h memh);
 

@@ -982,6 +982,15 @@ static void ucp_wireup_fill_peer_err_criteria(ucp_wireup_criteria_t *criteria,
     }
 }
 
+static void
+ucp_wireup_fill_exported_memh_criteria(ucp_wireup_criteria_t *criteria,
+                                       unsigned ep_init_flags)
+{
+    if (ep_init_flags & UCP_EP_INIT_FLAG_EXPORTED_MEMH) {
+        criteria->local_md_flags |= UCT_MD_FLAG_EXPORTED_MKEY;
+    }
+}
+
 static double ucp_wireup_aux_score_func(const ucp_worker_iface_t *wiface,
                                         const uct_md_attr_v2_t *md_attr,
                                         const ucp_address_entry_t *remote_addr,
@@ -1046,7 +1055,8 @@ static void ucp_wireup_criteria_init(ucp_wireup_criteria_t *criteria)
  */
 static int ucp_wireup_allow_am_emulation_layer(unsigned ep_init_flags)
 {
-    return !(ep_init_flags & UCP_EP_INIT_FLAG_MEM_TYPE);
+    return !(ep_init_flags & UCP_EP_INIT_FLAG_MEM_TYPE) &&
+           !(ep_init_flags & UCP_EP_INIT_FLAG_EXPORTED_MEMH);
 }
 
 static unsigned
@@ -1112,6 +1122,7 @@ ucp_wireup_add_rma_lanes(const ucp_wireup_select_params_t *select_params,
     }
     criteria.calc_score             = ucp_wireup_rma_score_func;
     ucp_wireup_fill_peer_err_criteria(&criteria, ep_init_flags);
+    ucp_wireup_fill_exported_memh_criteria(&criteria, ep_init_flags);
 
     tl_bitmap = ucp_tl_bitmap_max;
     for (mem_type = 0; mem_type < UCS_MEMORY_TYPE_LAST; ++mem_type) {
@@ -1164,6 +1175,7 @@ ucp_wireup_add_amo_lanes(const ucp_wireup_select_params_t *select_params,
     ucp_wireup_init_select_flags(&criteria.local_iface_flags,
                                  UCT_IFACE_FLAG_PENDING, 0);
     ucp_wireup_fill_peer_err_criteria(&criteria, ep_init_flags);
+    ucp_wireup_fill_exported_memh_criteria(&criteria, ep_init_flags);
     ucp_context_uct_atomic_iface_flags(context, &criteria.remote_atomic_flags);
 
     /* We can use only non-p2p resources or resources which are explicitly
@@ -1627,6 +1639,7 @@ ucp_wireup_add_rma_bw_lanes(const ucp_wireup_select_params_t *select_params,
     ucp_wireup_init_select_flags(&bw_info.criteria.local_iface_flags,
                                  UCT_IFACE_FLAG_PENDING, 0);
     ucp_wireup_fill_peer_err_criteria(&bw_info.criteria, ep_init_flags);
+    ucp_wireup_fill_exported_memh_criteria(&bw_info.criteria, ep_init_flags);
 
     if (ucs_test_all_flags(ucp_ep_get_context_features(ep),
                            UCP_FEATURE_TAG | UCP_FEATURE_WAKEUP)) {
@@ -1651,6 +1664,9 @@ ucp_wireup_add_rma_bw_lanes(const ucp_wireup_select_params_t *select_params,
         bw_info.criteria.local_md_flags |= UCT_MD_FLAG_RKEY_PTR;
         bw_info.criteria.lane_type       = UCP_LANE_TYPE_RKEY_PTR;
         bw_info.max_lanes                = 1;
+        ucp_wireup_fill_peer_err_criteria(&bw_info.criteria, ep_init_flags);
+        ucp_wireup_fill_exported_memh_criteria(&bw_info.criteria,
+                                               ep_init_flags);
 
         ucp_context_get_mem_access_tls(context, UCS_MEMORY_TYPE_HOST,
                                        &tl_bitmap);
@@ -1662,6 +1678,8 @@ ucp_wireup_add_rma_bw_lanes(const ucp_wireup_select_params_t *select_params,
     bw_info.criteria.lane_type      = UCP_LANE_TYPE_RMA_BW;
     bw_info.max_lanes               = context->config.ext.max_rndv_lanes;
     bw_info.criteria.local_md_flags = md_reg_flag;
+    ucp_wireup_fill_peer_err_criteria(&bw_info.criteria, ep_init_flags);
+    ucp_wireup_fill_exported_memh_criteria(&bw_info.criteria, ep_init_flags);
 
     /* If error handling is requested we require memory invalidation
      * support to provide correct data integrity in case of error */
@@ -1688,6 +1706,9 @@ ucp_wireup_add_rma_bw_lanes(const ucp_wireup_select_params_t *select_params,
         /* Set the new iface RMA flags */
         ucp_wireup_criteria_iface_flags_add(&bw_info.criteria, &iface_rma_flags,
                                             &peer_rma_flags);
+        ucp_wireup_fill_peer_err_criteria(&bw_info.criteria, ep_init_flags);
+        ucp_wireup_fill_exported_memh_criteria(&bw_info.criteria,
+                                               ep_init_flags);
 
         /* Add lanes that can access the memory by short operations */
         added_lanes = 0;
@@ -2143,6 +2164,8 @@ ucp_wireup_select_lanes(ucp_ep_h ep, unsigned ep_init_flags,
                         unsigned *addr_indices, ucp_ep_config_key_t *key,
                         int show_error)
 {
+    ucp_err_handling_mode_t err_mode   =
+            ucp_ep_config_key_err_handling_mode(key);
     ucp_worker_h worker                = ep->worker;
     ucp_tl_bitmap_t scalable_tl_bitmap = worker->scalable_tl_bitmap;
     ucp_wireup_select_context_t select_ctx;
@@ -2154,7 +2177,7 @@ ucp_wireup_select_lanes(ucp_ep_h ep, unsigned ep_init_flags,
     if (!UCS_BITMAP_IS_ZERO_INPLACE(&scalable_tl_bitmap)) {
         ucp_wireup_select_params_init(&select_params, ep, ep_init_flags,
                                       remote_address, scalable_tl_bitmap, 0);
-        status = ucp_wireup_search_lanes(&select_params, key->err_mode,
+        status = ucp_wireup_search_lanes(&select_params, err_mode,
                                          &select_ctx);
         if (status == UCS_OK) {
             goto out;
@@ -2167,8 +2190,7 @@ ucp_wireup_select_lanes(ucp_ep_h ep, unsigned ep_init_flags,
 
     ucp_wireup_select_params_init(&select_params, ep, ep_init_flags,
                                   remote_address, tl_bitmap, show_error);
-    status = ucp_wireup_search_lanes(&select_params, key->err_mode,
-                                     &select_ctx);
+    status = ucp_wireup_search_lanes(&select_params, err_mode, &select_ctx);
     if (status != UCS_OK) {
         return status;
     }

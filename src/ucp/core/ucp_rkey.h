@@ -21,6 +21,15 @@ enum {
 };
 
 
+/**
+ * 
+ */
+enum {
+    UCP_MEMH_BUFFER_RKEY     = UCS_BIT(0),
+    UCP_MEMH_BUFFER_EXPORTED = UCS_BIT(1)
+};
+
+
 typedef uint8_t ucp_rkey_proto_index_t;
 
 

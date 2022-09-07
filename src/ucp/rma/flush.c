@@ -17,9 +17,11 @@
 
 static void ucp_ep_flush_error(ucp_request_t *req, ucs_status_t status)
 {
-    ucs_log_level_t level = (ucp_ep_config(req->send.ep)->key.err_mode ==
-                             UCP_ERR_HANDLING_MODE_PEER) ?
-                             UCS_LOG_LEVEL_TRACE_REQ : UCS_LOG_LEVEL_ERROR;
+    ucp_err_handling_mode_t err_mode =
+            ucp_ep_config_err_handling_mode(ucp_ep_config(req->send.ep));
+    ucs_log_level_t level            =
+            (err_mode == UCP_ERR_HANDLING_MODE_PEER) ?
+            UCS_LOG_LEVEL_TRACE_REQ : UCS_LOG_LEVEL_ERROR;
 
     req->status = status;
     --req->send.state.uct_comp.count;

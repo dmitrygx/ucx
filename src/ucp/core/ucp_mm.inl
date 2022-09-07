@@ -18,10 +18,43 @@ ucp_memh_is_zero_length(const ucp_mem_h memh)
     return memh == &ucp_mem_dummy_handle.memh;
 }
 
+static UCS_F_ALWAYS_INLINE int
+ucp_memh_rcache_is_suitable(ucp_mem_h memh, void *address, size_t length,
+                            uint8_t memh_flags, ucp_md_map_t reg_md_map,
+                            ucp_md_map_t export_md_map)
+{
+    ucp_md_map_t memh_md_map;
+    ucp_md_map_t md_map;
+    const char *type;
+
+    if (memh_flags & (UCP_MEM_FLAG_REGISTERED | UCP_MEM_FLAG_IMPORTED)) {
+        memh_md_map = memh->md_map;
+        md_map      = reg_md_map;
+        type        = "registration";
+    } else if (memh_flags & UCP_MEM_FLAG_EXPORTED) {
+        memh_md_map = memh->export_md_map;
+        md_map      = export_md_map;
+        type        = "exporting";
+    } else {
+        ucs_fatal("unexpected memory handle flags 0x%x", memh_flags);
+    }
+
+    if (ucs_likely(ucs_test_all_flags(memh_md_map, md_map))) {
+        ucs_trace("memh %p: address %p/%p length %zu/%zu md_map %" PRIx64 "/%"
+                  PRIx64 " obtained from rcache for %s", memh, address,
+                  ucp_memh_address(memh), length, ucp_memh_length(memh),
+                  md_map, memh_md_map, type);
+        return 1;
+    }
+
+    return 0;
+}
+
 static UCS_F_ALWAYS_INLINE ucs_status_t
 ucp_memh_get(ucp_context_h context, void *address, size_t length,
              ucs_memory_type_t mem_type, ucp_md_map_t reg_md_map,
-             unsigned uct_flags, ucp_mem_h *memh_p)
+             ucp_md_map_t export_md_map, unsigned uct_flags,
+             uint8_t memh_flags, ucp_mem_h *memh_p)
 {
     ucs_rcache_region_t *rregion;
     ucs_status_t status;
@@ -46,15 +79,18 @@ ucp_memh_get(ucp_context_h context, void *address, size_t length,
 
         memh = ucs_derived_of(rregion, ucp_mem_t);
 
-        if (ucs_likely(ucs_test_all_flags(memh->md_map, reg_md_map))) {
-            ucs_trace("memh %p: address %p/%p length %zu/%zu md_map %" PRIx64
-                      "/%" PRIx64 " obtained from rcache", memh, address,
-                      ucp_memh_address(memh), length, ucp_memh_length(memh),
-                      reg_md_map, memh->md_map);
+        if (ucs_likely(ucp_memh_rcache_is_suitable(memh, address, length,
+                                                   memh_flags, reg_md_map,
+                                                   export_md_map))) {
             *memh_p = memh;
             status = UCS_OK;
             goto out_unlock;
         }
+
+        /* If the memory handle was already registered or shared, we should
+         * restore these registrations */
+        memh_flags |= (memh->flags & (UCP_MEM_FLAG_REGISTERED |
+                                      UCP_MEM_FLAG_EXPORTED));
 
         ucs_rcache_region_put_unsafe(context->rcache, rregion);
 not_found:
@@ -62,7 +98,7 @@ not_found:
     }
 
     return ucp_memh_get_slow(context, address, length, mem_type, reg_md_map,
-                             uct_flags, memh_p);
+                             export_md_map, uct_flags, memh_flags, memh_p);
 out_unlock:
     UCP_THREAD_CS_EXIT(&context->mt_lock);
     return status;
