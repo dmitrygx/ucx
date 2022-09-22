@@ -1050,6 +1050,8 @@ static ucs_status_t uct_ib_mlx5_devx_md_open(struct ibv_device *ibv_device,
                                                         log_max_dci_stream_channels);
     md->log_max_dci_stream_channels = ucs_min(md->log_max_dci_stream_channels,
                                               UCT_IB_MLX5_MD_MAX_DCI_CHANNELS);
+    md->super.vhca_id               = UCT_IB_MLX5DV_GET(cmd_hca_cap, cap,
+                                                        vhca_id);
 
     if (UCT_IB_MLX5DV_GET(cmd_hca_cap, cap, log_max_msg) !=
         UCT_IB_MLX5_LOG_MAX_MSG_SIZE) {
