@@ -267,6 +267,7 @@ typedef struct {
 static ucs_status_t uct_ib_md_query(uct_md_h uct_md, uct_md_attr_v2_t *md_attr)
 {
     uct_ib_md_t *md = ucs_derived_of(uct_md, uct_ib_md_t);
+    uint64_t guid   = IBV_DEV_ATTR(&md->dev, sys_image_guid);
 
     md_attr->max_alloc                 = ULONG_MAX; /* TODO query device */
     md_attr->max_reg                   = ULONG_MAX; /* TODO query device */
@@ -277,13 +278,13 @@ static ucs_status_t uct_ib_md_query(uct_md_h uct_md, uct_md_attr_v2_t *md_attr)
     md_attr->dmabuf_mem_types          = 0;
     md_attr->reg_mem_types             = md->reg_mem_types;
     md_attr->cache_mem_types           = md->reg_mem_types;
-    md_attr->rkey_packed_size          = UCT_IB_MD_PACKED_MKEY_SIZE;
+    md_attr->rkey_packed_size          = UCT_IB_MD_PACKED_RKEY_SIZE;
     md_attr->reg_cost                  = md->reg_cost;
-    md_attr->exported_mkey_packed_size = UCT_IB_MD_PACKED_MKEY_SIZE;
+    md_attr->exported_mkey_packed_size = sizeof(uct_ib_md_packed_mkey_t);
     ucs_sys_cpuset_copy(&md_attr->local_cpus, &md->dev.local_cpus);
 
-    UCS_STATIC_ASSERT(sizeof(md->dev.guid) <= UCT_MD_GLOBAL_ID_MAX);
-    memcpy(md_attr->global_id, &md->dev.guid, sizeof(md->dev.guid));
+    UCS_STATIC_ASSERT(sizeof(guid) <= UCT_MD_GLOBAL_ID_MAX);
+    memcpy(md_attr->global_id, &guid, sizeof(guid));
 
     return UCS_OK;
 }
@@ -579,9 +580,27 @@ static void uct_ib_memh_free(uct_ib_mem_t *memh)
     ucs_free(memh);
 }
 
-static uct_ib_mem_t *uct_ib_memh_alloc(uct_ib_md_t *md)
+static void uct_ib_mem_init(uct_ib_mem_t *memh, uint32_t flags)
 {
-    return ucs_calloc(1, md->memh_struct_size, "ib_memh");
+    memh->lkey          = UCT_IB_INVALID_MKEY;
+    memh->exported_lkey = UCT_IB_INVALID_MKEY;
+    memh->rkey          = UCT_IB_INVALID_MKEY;
+    memh->atomic_rkey   = UCT_IB_INVALID_MKEY;
+    memh->indirect_rkey = UCT_IB_INVALID_MKEY;
+    memh->flags         = flags;
+}
+
+static uct_ib_mem_t *uct_ib_memh_alloc(uct_ib_md_t *md, uint32_t flags)
+{
+    uct_ib_mem_t *memh;
+
+    memh = ucs_calloc(1, md->memh_struct_size, "ib_memh");
+    if (memh == NULL) {
+        return NULL;
+    }
+
+    uct_ib_mem_init(memh, flags);
+    return memh;
 }
 
 static uint64_t uct_ib_md_access_flags(uct_ib_md_t *md, unsigned flags,
@@ -694,16 +713,6 @@ static ucs_status_t uct_ib_mem_set_numa_policy(uct_ib_md_t *md, void *address,
 }
 #endif /* UCT_MD_DISABLE_NUMA */
 
-static void uct_ib_mem_init(uct_ib_mem_t *memh, uint32_t flags)
-{
-    memh->lkey          = UCT_IB_INVALID_MKEY;
-    memh->exported_lkey = UCT_IB_INVALID_MKEY;
-    memh->rkey          = UCT_IB_INVALID_MKEY;
-    memh->atomic_rkey   = UCT_IB_INVALID_MKEY;
-    memh->indirect_rkey = UCT_IB_INVALID_MKEY;
-    memh->flags         = flags;
-}
-
 static ucs_status_t uct_ib_mem_reg_internal(uct_md_h uct_md, void *address,
                                             size_t length, unsigned flags,
                                             int silent, uct_ib_mem_t *memh)
@@ -768,14 +777,12 @@ uct_ib_mem_reg(uct_md_h uct_md, void *address, size_t length,
     ucs_status_t status;
     uct_ib_mem_t *memh;
 
-    memh = uct_ib_memh_alloc(md);
+    memh = uct_ib_memh_alloc(md, 0);
     if (memh == NULL) {
         uct_md_log_mem_reg_error(flags,
                                  "md %p: failed to allocate memory handle", md);
         return UCS_ERR_NO_MEMORY;
     }
-
-    uct_ib_mem_init(memh, 0);
 
     status = uct_ib_mem_reg_internal(uct_md, address, length, flags, 0, memh);
     if (status != UCS_OK) {
@@ -815,20 +822,13 @@ static ucs_status_t
 uct_ib_md_mem_attach(uct_md_h uct_md, const void *mkey_buffer,
                      uct_md_mem_attach_params_t *params, uct_mem_h *memh_p)
 {
-    const uint64_t *mkey = (const uint64_t*)mkey_buffer;
-    uint64_t flags       = UCT_MD_MEM_ATTACH_FIELD_VALUE(params, flags,
-                                                         FIELD_FLAGS, 0);
     uct_ib_md_t *md      = ucs_derived_of(uct_md, uct_ib_md_t);
+    const uint64_t flags = UCT_MD_MEM_ATTACH_FIELD_VALUE(params, flags,
+                                                         FIELD_FLAGS, 0);
     uct_ib_mem_t *ib_memh;
     ucs_status_t status;
 
-    if (mkey == NULL) {
-        uct_md_log_mem_reg_error(flags,
-                                 "exported_mkey_buffer shouldn't be NULL");
-        return UCS_ERR_INVALID_PARAM;
-    }
-
-    ib_memh = uct_ib_memh_alloc(md);
+    ib_memh = uct_ib_memh_alloc(md, UCT_IB_MEM_FLAG_NO_RCACHE);
     if (ib_memh == NULL) {
         uct_md_log_mem_attach_error(flags,
                                     "md %p: failed to allocate memory handle",
@@ -836,16 +836,15 @@ uct_ib_md_mem_attach(uct_md_h uct_md, const void *mkey_buffer,
         return UCS_ERR_NO_MEMORY;
     }
 
-    uct_ib_mem_init(ib_memh, UCT_IB_MEM_FLAG_NO_RCACHE);
-
-    status = md->ops->import_exported_key(md, flags, uct_ib_md_vhca_id(*mkey),
-                                          uct_ib_md_lkey(*mkey), ib_memh);
+    status = md->ops->import_exported_key(md, flags,
+                                          uct_ib_md_vhca_id(mkey_buffer),
+                                          uct_ib_md_lkey(mkey_buffer),
+                                          ib_memh);
     if (status != UCS_OK) {
         goto out_memh_free;
     }
 
     *memh_p = ib_memh;
-
     return UCS_OK;
 
 out_memh_free:
@@ -994,7 +993,7 @@ uct_ib_mkey_pack(uct_md_h uct_md, uct_mem_h uct_memh,
     }
 
     if (flags & UCT_MD_MKEY_PACK_FLAG_EXPORT) {
-        uct_ib_md_pack_exported_mkey(mkey, md->vhca_id, mkey_buffer);
+        uct_ib_md_pack_exported_mkey(md, mkey, mkey_buffer);
     } else {
         uct_ib_md_pack_rkey(mkey, atomic_rkey, mkey_buffer);
     }
@@ -1344,7 +1343,7 @@ uct_ib_md_global_odp_init(uct_ib_md_t *md, uct_mem_h *memh_p)
     uct_ib_mr_t *mr;
     ucs_status_t status;
 
-    global_odp = (uct_ib_verbs_mem_t *)uct_ib_memh_alloc(md);
+    global_odp = (uct_ib_verbs_mem_t *)uct_ib_memh_alloc(md, 0);
     if (global_odp == NULL) {
         return UCS_ERR_NO_MEMORY;
     }

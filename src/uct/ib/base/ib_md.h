@@ -17,7 +17,7 @@
 #include <ucs/memory/rcache.h>
 
 #define UCT_IB_MD_MAX_MR_SIZE        0x80000000UL
-#define UCT_IB_MD_PACKED_MKEY_SIZE   sizeof(uint64_t)
+#define UCT_IB_MD_PACKED_RKEY_SIZE   sizeof(uint64_t)
 #define UCT_IB_MD_INVALID_FLUSH_RKEY 0xff
 
 #define UCT_IB_MD_DEFAULT_GID_INDEX 0   /**< The gid index used by default for an IB/RoCE port */
@@ -156,8 +156,14 @@ typedef struct uct_ib_md {
      * means that flush_rkey is invalid and flush_remote operation could not
      * be initiated.  */
     uint32_t                 flush_rkey;
-    uint32_t                 vhca_id;
+    uct_ib_uint128_t         vhca_id;
 } uct_ib_md_t;
+
+
+typedef struct uct_ib_md_packed_mkey {
+    uint32_t         lkey;
+    uct_ib_uint128_t vhca_id;
+} uct_ib_md_packed_mkey_t;
 
 
 /**
@@ -376,16 +382,17 @@ typedef ucs_status_t (*uct_ib_md_reg_exported_key_func_t)(
  *
  * @param [in]  ib_md          Memory domain.
  * @param [in]  flags          UCT memory attach flags.
- * @param [in]  target_gvmi_id Target GVMI ID.
+ * @param [in]  target_vhca_id Target vHCA ID.
  * @param [in]  target_mkey    Target mkey this mkey refers to.
  * @param [out] ib_memh        Memory region handle.
  *                             Method should initialize lkey and rkey.
  *
  * @return UCS_OK on success or error code in case of failure.
  */
-typedef ucs_status_t (*uct_ib_md_import_exported_key_func_t)(
-        uct_ib_md_t *ib_md, uint64_t flags, uint32_t target_gvmi_id,
-        uint32_t target_mkey, uct_ib_mem_t *ib_memh);
+typedef ucs_status_t (*uct_ib_md_import_key_func_t)(
+        uct_ib_md_t *ib_md, uint64_t flags,
+        const uct_ib_uint128_t *target_vhca_id, uint32_t target_mkey,
+        uct_ib_mem_t *ib_memh);
 
 
 typedef struct uct_ib_md_ops {
@@ -401,7 +408,7 @@ typedef struct uct_ib_md_ops {
     uct_ib_md_mem_prefetch_func_t        mem_prefetch;
     uct_ib_md_get_atomic_mr_id_func_t    get_atomic_mr_id;
     uct_ib_md_reg_exported_key_func_t    reg_exported_key;
-    uct_ib_md_import_exported_key_func_t import_exported_key;
+    uct_ib_md_import_key_func_t          import_exported_key;
 } uct_ib_md_ops_t;
 
 
@@ -444,15 +451,21 @@ static UCS_F_ALWAYS_INLINE uint32_t uct_ib_md_direct_rkey(uct_rkey_t uct_rkey)
 }
 
 
-static UCS_F_ALWAYS_INLINE uint32_t uct_ib_md_lkey(uint64_t exported_mkey)
+static UCS_F_ALWAYS_INLINE uint32_t
+uct_ib_md_lkey(const void *exported_mkey_buffer)
 {
-    return (uint32_t)exported_mkey;
+    const uct_ib_md_packed_mkey_t *mkey =
+            (const uct_ib_md_packed_mkey_t*)exported_mkey_buffer;
+    return mkey->lkey;
 }
 
 
-static UCS_F_ALWAYS_INLINE uint32_t uct_ib_md_vhca_id(uint64_t exported_mkey)
+static UCS_F_ALWAYS_INLINE const uct_ib_uint128_t*
+uct_ib_md_vhca_id(const void *exported_mkey_buffer)
 {
-    return exported_mkey >> 32;
+    const uct_ib_md_packed_mkey_t *mkey =
+            (const uct_ib_md_packed_mkey_t*)exported_mkey_buffer;
+    return &mkey->vhca_id;
 }
 
 
@@ -474,12 +487,15 @@ uct_ib_md_pack_rkey(uint32_t rkey, uint32_t atomic_rkey, void *rkey_buffer)
 
 
 static UCS_F_ALWAYS_INLINE void
-uct_ib_md_pack_exported_mkey(uint32_t lkey, uint32_t vhca_id, void *buffer)
+uct_ib_md_pack_exported_mkey(uct_ib_md_t *md, uint32_t lkey, void *buffer)
 {
-    uint64_t *mkey_p = (uint64_t*)buffer;
+    uct_ib_md_packed_mkey_t *mkey = (uct_ib_md_packed_mkey_t*)buffer;
 
-    *mkey_p = (((uint64_t)vhca_id) << 32) | lkey;
-    ucs_trace("packed exported mkey: lkey 0x%x vhca_id 0x%x", lkey, vhca_id);
+    mkey->lkey = lkey;
+    memcpy(mkey->vhca_id, md->vhca_id, sizeof(md->vhca_id));
+
+    ucs_trace("packed exported mkey on %s: lkey 0x%x",
+              uct_ib_device_name(&md->dev), lkey);
 }
 
 
