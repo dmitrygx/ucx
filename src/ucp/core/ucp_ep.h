@@ -313,6 +313,8 @@ typedef struct ucp_rndv_zcopy {
     ucp_lane_index_t lanes[UCP_MAX_LANES];
     /* BW based scale factor for zcopy lanes */
     double           scale[UCP_MAX_LANES];
+    /* Bitmap of memory types that Memory Domain can be registered with */
+    uint64_t         reg_mem_types;
 } ucp_ep_rndv_zcopy_config_t;
 
 

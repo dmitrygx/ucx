@@ -116,12 +116,15 @@ static int ucp_rndv_is_recv_pipeline_needed(ucp_request_t *rndv_req,
 }
 
 static UCS_F_ALWAYS_INLINE int
-ucp_rndv_is_put_pipeline_needed(uintptr_t remote_address, size_t length,
+ucp_rndv_is_put_pipeline_needed(ucp_context_h context,
+                                uintptr_t remote_address, size_t length,
                                 const void *rkey_buf,
                                 const ucp_ep_rndv_zcopy_config_t *get_zcopy,
                                 const ucp_ep_rndv_zcopy_config_t *put_zcopy,
                                 int is_get_zcopy_failed)
 {
+    ucs_memory_type_t frag_mem_type = context->config.ext.rndv_frag_mem_type;
+
     if (ucp_rkey_packed_mem_type(rkey_buf) == UCS_MEMORY_TYPE_HOST) {
         return 0;
     }
@@ -131,7 +134,8 @@ ucp_rndv_is_put_pipeline_needed(uintptr_t remote_address, size_t length,
            ((remote_address == 0) || (get_zcopy->max == 0) ||
             (length < get_zcopy->min) || is_get_zcopy_failed) &&
            /* AND can do PUT assuming that configurations are symmetric */
-           ((put_zcopy->max != 0) && (length >= put_zcopy->min));
+           ((put_zcopy->max != 0) && (length >= put_zcopy->min) &&
+            (put_zcopy->reg_mem_types & UCS_BIT(frag_mem_type)));
 }
 
 size_t ucp_rndv_rts_pack(ucp_request_t *sreq, ucp_rndv_rts_hdr_t *rndv_rts_hdr,
@@ -1746,7 +1750,8 @@ UCS_PROFILE_FUNC_VOID(ucp_rndv_receive, (worker, rreq, rndv_rts_hdr, rkey_buf),
                                              is_get_zcopy_failed)) {
             put_zcopy = &ep_config->rndv.put_zcopy;
             ucp_rndv_recv_data_init(rreq, rndv_rts_hdr->size);
-            if (ucp_rndv_is_put_pipeline_needed(rndv_rts_hdr->address,
+            if (ucp_rndv_is_put_pipeline_needed(worker->context,
+                                                rndv_rts_hdr->address,
                                                 rndv_rts_hdr->size, rkey_buf,
                                                 get_zcopy, put_zcopy,
                                                 is_get_zcopy_failed)) {

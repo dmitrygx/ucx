@@ -2240,6 +2240,8 @@ static void ucp_ep_config_rndv_zcopy_set(
         rndv_zcopy->scale[lane]               = scale;
         break;
     }
+
+    rndv_zcopy->reg_mem_types &= md_attr->reg_mem_types;
 }
 
 void ucp_ep_config_rndv_zcopy_commit(ucp_lane_index_t lanes_count,
@@ -2429,23 +2431,25 @@ ucs_status_t ucp_ep_config_init(ucp_worker_h worker, ucp_ep_config_t *config,
     } else {
         config->bcopy_thresh = context->config.ext.bcopy_thresh;
     }
-    config->tag.lane                    = UCP_NULL_LANE;
-    config->tag.proto                   = &ucp_tag_eager_proto;
-    config->tag.sync_proto              = &ucp_tag_eager_sync_proto;
-    config->tag.rndv.rma_thresh.remote  = SIZE_MAX;
-    config->tag.rndv.rma_thresh.local   = SIZE_MAX;
-    config->tag.rndv.am_thresh          = config->tag.rndv.rma_thresh;
-    config->rndv.rma_thresh             = config->tag.rndv.rma_thresh;
-    config->rndv.am_thresh              = config->tag.rndv.am_thresh;
+    config->tag.lane                     = UCP_NULL_LANE;
+    config->tag.proto                    = &ucp_tag_eager_proto;
+    config->tag.sync_proto               = &ucp_tag_eager_sync_proto;
+    config->tag.rndv.rma_thresh.remote   = SIZE_MAX;
+    config->tag.rndv.rma_thresh.local    = SIZE_MAX;
+    config->tag.rndv.am_thresh           = config->tag.rndv.rma_thresh;
+    config->rndv.rma_thresh              = config->tag.rndv.rma_thresh;
+    config->rndv.am_thresh               = config->tag.rndv.am_thresh;
     /* use 1 instead of 0, since messages passed to RNDV PUT/GET Zcopy are always > 0
      * and make sure that multi-rail chunks are adjusted to not be 0-length */
-    config->rndv.get_zcopy.min          = 1;
-    config->rndv.get_zcopy.max          = SIZE_MAX;
-    config->rndv.put_zcopy.min          = 1;
-    config->rndv.put_zcopy.max          = SIZE_MAX;
-    config->rndv.rkey_size              = ucp_rkey_packed_size(context,
-                                                               config->key.rma_bw_md_map,
-                                                               UCS_SYS_DEVICE_ID_UNKNOWN, 0);
+    config->rndv.get_zcopy.min           = 1;
+    config->rndv.get_zcopy.max           = SIZE_MAX;
+    config->rndv.get_zcopy.reg_mem_types = UCS_MASK(UCS_MEMORY_TYPE_LAST);
+    config->rndv.put_zcopy.min           = 1;
+    config->rndv.put_zcopy.max           = SIZE_MAX;
+    config->rndv.put_zcopy.reg_mem_types = UCS_MASK(UCS_MEMORY_TYPE_LAST);
+    config->rndv.rkey_size               = ucp_rkey_packed_size(context,
+                                                                config->key.rma_bw_md_map,
+                                                                UCS_SYS_DEVICE_ID_UNKNOWN, 0);
     for (lane = 0; lane < UCP_MAX_LANES; ++lane) {
         config->rndv.get_zcopy.lanes[lane] =
                 config->rndv.put_zcopy.lanes[lane] = UCP_NULL_LANE;
