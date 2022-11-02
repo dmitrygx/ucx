@@ -63,6 +63,7 @@ typedef struct {
     uint64_t              remote_dev_bitmap;
     ucp_md_map_t          md_map;
     unsigned              max_lanes;
+    uint64_t              onetime_md_flags;
 } ucp_wireup_select_bw_info_t;
 
 
@@ -106,6 +107,7 @@ static const char *ucp_wireup_md_flags[] = {
     [ucs_ilog2(UCT_MD_FLAG_ALLOC)]               = "memory allocation",
     [ucs_ilog2(UCT_MD_FLAG_REG)]                 = "memory registration",
     [ucs_ilog2(UCT_MD_FLAG_INVALIDATE)]          = "memory invalidation",
+    [ucs_ilog2(UCT_MD_FLAG_EXPORTED_MKEY)]       = "exported memh support"
 };
 
 static const char *ucp_wireup_iface_flags[] = {
@@ -1009,15 +1011,16 @@ static void ucp_wireup_fill_peer_err_criteria(ucp_wireup_criteria_t *criteria,
     }
 }
 
-static void
-ucp_wireup_fill_exported_memh_criteria(ucp_context_h context,
-                                       unsigned ep_init_flags,
-                                       ucp_wireup_criteria_t *criteria)
+static uint64_t
+ucp_wireup_exported_memh_criteria(ucp_context_h context,
+                                  unsigned ep_init_flags)
 {
     if ((context->config.features & UCP_FEATURE_EXPORTED_MEMH) &&
         !(ep_init_flags & UCP_EP_INIT_FLAG_MEM_TYPE)) {
-        criteria->local_md_flags |= UCT_MD_FLAG_EXPORTED_MKEY;
+        return UCT_MD_FLAG_EXPORTED_MKEY;
     }
+
+    return 0;
 }
 
 static double ucp_wireup_aux_score_func(const ucp_worker_iface_t *wiface,
@@ -1152,9 +1155,9 @@ ucp_wireup_add_rma_lanes(const ucp_wireup_select_params_t *select_params,
                                      UCT_IFACE_FLAG_GET_BCOPY |
                                      UCT_IFACE_FLAG_PENDING, 0);
     }
-    criteria.calc_score             = ucp_wireup_rma_score_func;
     ucp_wireup_fill_peer_err_criteria(&criteria, ep_init_flags);
-    ucp_wireup_fill_exported_memh_criteria(context, ep_init_flags, &criteria);
+    criteria.calc_score      = ucp_wireup_rma_score_func;
+    criteria.local_md_flags |= ucp_wireup_exported_memh_criteria(context, ep_init_flags);
 
     tl_bitmap = ucp_tl_bitmap_max;
     for (mem_type = 0; mem_type < UCS_MEMORY_TYPE_LAST; ++mem_type) {
@@ -1455,17 +1458,22 @@ ucp_wireup_add_bw_lanes(const ucp_wireup_select_params_t *select_params,
     unsigned addr_index;
     int show_error;
 
-    num_lanes             = 0;
-    md_map                = bw_info->md_map;
-    local_dev_bitmap      = bw_info->local_dev_bitmap;
-    remote_dev_bitmap     = bw_info->remote_dev_bitmap;
-    bw_info->criteria.arg = &dev_count;
+    num_lanes                         = 0;
+    md_map                            = bw_info->md_map;
+    local_dev_bitmap                  = bw_info->local_dev_bitmap;
+    remote_dev_bitmap                 = bw_info->remote_dev_bitmap;
+    bw_info->criteria.arg             = &dev_count;
+    bw_info->criteria.local_md_flags |= bw_info->onetime_md_flags;
 
     /* lookup for requested number of lanes or limit of MD map
      * (we have to limit MD's number to avoid malloc in
      * memory registration) */
     while ((num_lanes < bw_info->max_lanes) &&
            (ucs_popcount(md_map) < UCP_MAX_OP_MDS)) {
+        if (num_lanes > 0) {
+            bw_info->criteria.local_md_flags &= ~bw_info->onetime_md_flags;
+        }
+
         if (excl_lane == UCP_NULL_LANE) {
             status = ucp_wireup_select_transport(select_ctx, select_params,
                                                  &bw_info->criteria, tl_bitmap,
@@ -1670,8 +1678,8 @@ ucp_wireup_add_rma_bw_lanes(const ucp_wireup_select_params_t *select_params,
     ucp_wireup_init_select_flags(&bw_info.criteria.local_iface_flags,
                                  UCT_IFACE_FLAG_PENDING, 0);
     ucp_wireup_fill_peer_err_criteria(&bw_info.criteria, ep_init_flags);
-    ucp_wireup_fill_exported_memh_criteria(context, ep_init_flags,
-                                           &bw_info.criteria);
+    bw_info.onetime_md_flags = ucp_wireup_exported_memh_criteria(context,
+                                                                 ep_init_flags);
 
     if (ucs_test_all_flags(ucp_ep_get_context_features(ep),
                            UCP_FEATURE_TAG | UCP_FEATURE_WAKEUP)) {
@@ -1707,8 +1715,6 @@ ucp_wireup_add_rma_bw_lanes(const ucp_wireup_select_params_t *select_params,
     bw_info.criteria.lane_type        = UCP_LANE_TYPE_RMA_BW;
     bw_info.max_lanes                 = context->config.ext.max_rndv_lanes;
     bw_info.criteria.local_cmpt_flags = 0;
-    ucp_wireup_fill_exported_memh_criteria(context, ep_init_flags,
-                                           &bw_info.criteria);
 
     /* If error handling is requested we require memory invalidation
      * support to provide correct data integrity in case of error */
