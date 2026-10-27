@@ -612,10 +612,34 @@ static ucs_status_t uct_tcp_iface_server_init(uct_tcp_iface_t *iface)
 
         status = ucs_socket_server_init((struct sockaddr*)&bind_addr, addr_len,
                                         ucs_socket_max_conn(), retry, 0,
+                                        uct_tcp_iface_vrf_name(iface),
                                         &iface->listen_fd);
     } while (retry && (status == UCS_ERR_BUSY));
 
     return status;
+}
+
+static void uct_tcp_iface_vrf_init(uct_tcp_iface_t *iface)
+{
+    unsigned if_index = if_nametoindex(iface->if_name);
+    int vrf_index;
+
+    iface->config.vrf_name[0] = '\0';
+    if (if_index == 0) {
+        return;
+    }
+
+    /* Addresses of a VRF slave can be used only by sockets bound to the VRF,
+     * so bind all sockets of the interface to the VRF device */
+    vrf_index = ucs_netlink_get_vrf_master_index(if_index);
+    if ((vrf_index == -1) ||
+        (if_indextoname(vrf_index, iface->config.vrf_name) == NULL)) {
+        iface->config.vrf_name[0] = '\0';
+        return;
+    }
+
+    ucs_debug("tcp_iface %p: %s is enslaved to VRF %s", iface, iface->if_name,
+              iface->config.vrf_name);
 }
 
 static ucs_status_t uct_tcp_iface_listener_init(uct_tcp_iface_t *iface)
@@ -851,6 +875,8 @@ static UCS_CLASS_INIT_FUNC(uct_tcp_iface_t, uct_md_h md, uct_worker_h worker,
     if (status != UCS_OK) {
         return status;
     }
+
+    uct_tcp_iface_vrf_init(self);
 
     ucs_list_head_init(&self->ep_list);
     ucs_conn_match_init(&self->conn_match_ctx, self->config.sockaddr_len,

@@ -684,6 +684,14 @@ static ucs_status_t uct_tcp_ep_create_socket_and_connect(uct_tcp_ep_t *ep)
         goto err;
     }
 
+    if (uct_tcp_iface_vrf_name(iface) != NULL) {
+        status = ucs_socket_bind_to_device(ep->fd,
+                                           uct_tcp_iface_vrf_name(iface));
+        if (status != UCS_OK) {
+            goto err;
+        }
+    }
+
     status = uct_tcp_ep_bind_src_iface(ep);
     if (status != UCS_OK) {
         goto err;
