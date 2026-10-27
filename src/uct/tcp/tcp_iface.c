@@ -977,6 +977,14 @@ out:
     return ret;
 }
 
+static int uct_tcp_is_vrf_slave(const char *if_name)
+{
+    unsigned if_index = if_nametoindex(if_name);
+
+    return (if_index != 0) &&
+           (ucs_netlink_get_vrf_master_index(if_index) != -1);
+}
+
 ucs_status_t uct_tcp_query_devices(uct_md_h md,
                                    uct_tl_device_resource_t **devices_p,
                                    unsigned *num_devices_p)
@@ -1034,6 +1042,12 @@ ucs_status_t uct_tcp_query_devices(uct_md_h md,
         if (!tcp_md->config.bridge_enable &&
             uct_tcp_is_bridge((*entry)->d_name)) {
             ucs_debug("filtered out bridge device %s", (*entry)->d_name);
+            continue;
+        }
+
+        if (!tcp_md->config.vrf_enable &&
+            uct_tcp_is_vrf_slave((*entry)->d_name)) {
+            ucs_debug("filtered out VRF slave device %s", (*entry)->d_name);
             continue;
         }
 
