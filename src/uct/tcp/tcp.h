@@ -526,6 +526,13 @@ ucs_status_t uct_tcp_netif_is_default(const char *if_name, int *result_p);
 /* Index of the VRF device which the interface is enslaved to, or -1 */
 int uct_tcp_netif_vrf_index(const char *if_name);
 
+/* Fill vrf_name (IFNAMSIZ bytes) with the VRF of the interface or of the local
+ * address. Return vrf_name, or NULL if it is not enslaved to a VRF. */
+const char *uct_tcp_netif_vrf_name(const char *if_name, char *vrf_name);
+
+const char *uct_tcp_sockaddr_vrf_name(const struct sockaddr *saddr,
+                                      char *vrf_name);
+
 int uct_tcp_sockaddr_cmp(const struct sockaddr *sa1,
                          const struct sockaddr *sa2);
 

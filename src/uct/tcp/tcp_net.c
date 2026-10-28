@@ -152,3 +152,33 @@ int uct_tcp_netif_vrf_index(const char *if_name)
 
     return ucs_netlink_get_vrf_master_index(if_index);
 }
+
+const char *uct_tcp_netif_vrf_name(const char *if_name, char *vrf_name)
+{
+    int vrf_index = uct_tcp_netif_vrf_index(if_name);
+
+    if (vrf_index == -1) {
+        return NULL;
+    }
+
+    if (if_indextoname(vrf_index, vrf_name) == NULL) {
+        ucs_diag("failed to get name of VRF device index %d of %s: %m",
+                 vrf_index, if_name);
+        return NULL;
+    }
+
+    return vrf_name;
+}
+
+const char *uct_tcp_sockaddr_vrf_name(const struct sockaddr *saddr,
+                                      char *vrf_name)
+{
+    char if_name[IFNAMSIZ];
+
+    if (ucs_sockaddr_get_ifname_by_addr(saddr, if_name, sizeof(if_name)) !=
+        UCS_OK) {
+        return NULL;
+    }
+
+    return uct_tcp_netif_vrf_name(if_name, vrf_name);
+}

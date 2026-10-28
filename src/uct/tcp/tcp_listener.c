@@ -9,6 +9,7 @@
 #endif
 
 #include "tcp_sockcm_ep.h"
+#include "tcp.h"
 
 #include <ucs/sys/sock.h>
 #include <ucs/async/async.h>
@@ -99,6 +100,7 @@ UCS_CLASS_INIT_FUNC(uct_tcp_listener_t, uct_cm_h cm,
 {
     ucs_async_context_t *async_ctx;
     char ip_port_str[UCS_SOCKADDR_STRING_LEN];
+    char vrf_name[IFNAMSIZ];
     ucs_status_t status;
     int backlog;
 
@@ -116,7 +118,8 @@ UCS_CLASS_INIT_FUNC(uct_tcp_listener_t, uct_cm_h cm,
 
     status = ucs_socket_server_init(saddr, socklen, backlog, 0,
                                     self->sockcm->super.config.reuse_addr,
-                                    NULL, &self->listen_fd);
+                                    uct_tcp_sockaddr_vrf_name(saddr, vrf_name),
+                                    &self->listen_fd);
     if (status != UCS_OK) {
         goto err;
     }

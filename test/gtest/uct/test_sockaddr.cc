@@ -14,7 +14,11 @@ extern "C" {
 #include <ucs/sys/string.h>
 #include <ucs/type/param.h>
 #include <ucs/arch/atomic.h>
+#include <ucs/sys/netlink.h>
+#include <uct/tcp/tcp_listener.h>
 }
+
+#include <net/if.h>
 
 #include <queue>
 #include <thread>
@@ -1130,6 +1134,35 @@ UCS_TEST_P(test_uct_sockaddr, concurrent_handle_conn_req_and_close_listener)
 
     EXPECT_FALSE(m_state & TEST_STATE_SERVER_CONNECTED);
     EXPECT_FALSE(m_state & TEST_STATE_CLIENT_CONNECTED);
+}
+
+UCS_TEST_P(test_uct_sockaddr, listener_vrf_bind_to_device)
+{
+    const struct sockaddr *listen_addr = m_listen_addr.get_sock_addr_ptr();
+    char bound_if_name[IFNAMSIZ]       = {};
+    socklen_t len                      = sizeof(bound_if_name);
+    std::string expected_vrf_name;
+    char vrf_name[IFNAMSIZ];
+    int vrf_index, fd;
+
+    if (GetParam()->component_name != "tcp") {
+        UCS_TEST_SKIP_R("not a TCP sockcm");
+    }
+
+    /* A listener on an address of a VRF slave must be bound to the VRF */
+    vrf_index = ucs_netlink_get_vrf_master_index(
+            if_nametoindex(GetParam()->dev_name.c_str()));
+    if (!ucs_sockaddr_is_inaddr_any(listen_addr) && (vrf_index != -1)) {
+        ASSERT_NE(nullptr, if_indextoname(vrf_index, vrf_name));
+        expected_vrf_name = vrf_name;
+    }
+
+    start_listen(test_uct_sockaddr::conn_request_cb);
+
+    fd = ucs_derived_of(m_server->listener(), uct_tcp_listener_t)->listen_fd;
+    ASSERT_EQ(0, getsockopt(fd, SOL_SOCKET, SO_BINDTODEVICE, bound_if_name,
+                            &len));
+    EXPECT_EQ(expected_vrf_name, bound_if_name);
 }
 
 UCT_INSTANTIATE_SOCKADDR_TEST_CASE(test_uct_sockaddr)

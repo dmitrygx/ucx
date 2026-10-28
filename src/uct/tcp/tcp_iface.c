@@ -621,20 +621,10 @@ static ucs_status_t uct_tcp_iface_server_init(uct_tcp_iface_t *iface)
 
 static void uct_tcp_iface_vrf_init(uct_tcp_iface_t *iface)
 {
-    int vrf_index;
-
-    iface->config.vrf_name[0] = '\0';
-
     /* Addresses of a VRF slave can be used only by sockets bound to the VRF,
      * so bind all sockets of the interface to the VRF device */
-    vrf_index = uct_tcp_netif_vrf_index(iface->if_name);
-    if (vrf_index == -1) {
-        return;
-    }
-
-    if (if_indextoname(vrf_index, iface->config.vrf_name) == NULL) {
-        ucs_diag("tcp_iface %p: failed to get name of VRF device index %d: %m",
-                 iface, vrf_index);
+    if (uct_tcp_netif_vrf_name(iface->if_name, iface->config.vrf_name) ==
+        NULL) {
         iface->config.vrf_name[0] = '\0';
         return;
     }

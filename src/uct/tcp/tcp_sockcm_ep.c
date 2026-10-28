@@ -862,7 +862,9 @@ static ucs_status_t uct_tcp_sockcm_ep_client_init(uct_tcp_sockcm_ep_t *cep,
     uct_tcp_sockcm_t *tcp_sockcm = uct_tcp_sockcm_ep_get_cm(cep);
     uct_cm_base_ep_t *cm_ep      = &cep->super;
     char ip_port_str[UCS_SOCKADDR_STRING_LEN];
+    char vrf_name[IFNAMSIZ];
     const struct sockaddr *server_addr;
+    const char *bind_vrf_name;
     ucs_async_context_t *async_ctx;
     ucs_status_t status;
     int ret;
@@ -896,6 +898,16 @@ static ucs_status_t uct_tcp_sockcm_ep_client_init(uct_tcp_sockcm_ep_t *cep,
     }
 
     if (params->field_mask & UCT_EP_PARAM_FIELD_LOCAL_SOCKADDR) {
+        /* VRF slave addresses are usable only by sockets bound to the VRF */
+        bind_vrf_name = uct_tcp_sockaddr_vrf_name(
+                params->local_sockaddr->addr, vrf_name);
+        if (bind_vrf_name != NULL) {
+            status = ucs_socket_bind_to_device(cep->fd, bind_vrf_name);
+            if (status != UCS_OK) {
+                goto err_close_socket;
+            }
+        }
+
         ret = bind(cep->fd, (const struct sockaddr *)params->local_sockaddr->addr,
                    params->local_sockaddr->addrlen);
         if (ret < 0) {
