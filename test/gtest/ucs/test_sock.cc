@@ -837,3 +837,21 @@ UCS_TEST_F(test_socket, bind_to_device) {
     EXPECT_EQ("", socket_bound_device(fd));
     ucs_close_fd(&fd);
 }
+
+UCS_TEST_F(test_socket, get_ifname_by_addr) {
+    struct sockaddr_in sin = {};
+    char if_name[IFNAMSIZ];
+
+    sin.sin_family      = AF_INET;
+    sin.sin_port        = htons(1234); /* the port must be ignored */
+    sin.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    ASSERT_UCS_OK(ucs_sockaddr_get_ifname_by_addr((struct sockaddr*)&sin,
+                                                  if_name, sizeof(if_name)));
+    EXPECT_STREQ("lo", if_name);
+
+    /* TEST-NET-1 address (RFC 5737) is not assigned to any interface */
+    sin.sin_addr.s_addr = htonl(0xc0000201);
+    EXPECT_EQ(UCS_ERR_NO_DEVICE,
+              ucs_sockaddr_get_ifname_by_addr((struct sockaddr*)&sin, if_name,
+                                              sizeof(if_name)));
+}

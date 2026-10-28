@@ -631,6 +631,22 @@ ucs_sockaddr_get_ifname(int fd, char *ifname_str, size_t max_strlen);
 
 
 /**
+ * Same as @ref ucs_sockaddr_get_ifname, but for a given IP address instead of
+ * a socket. The port is ignored.
+ *
+ * @param [in]   saddr       Pointer to the IP address.
+ * @param [out]  ifname_str  A string filled with the interface name.
+ * @param [in]   max_strlen  Maximum length of ifname_str.
+ *
+ * @return UCS_OK on success, UCS_ERR_NO_DEVICE if no interface has the
+ *         address, or an error code on failure.
+ */
+ucs_status_t ucs_sockaddr_get_ifname_by_addr(const struct sockaddr *saddr,
+                                             char *ifname_str,
+                                             size_t max_strlen);
+
+
+/**
  * Return size of a given sockaddr structure.
  *
  * @param [in]   af         Address family to check.
