@@ -184,6 +184,53 @@ static ucs_status_t uct_rc_mlx5_iface_query(uct_iface_h tl_iface, uct_iface_attr
     return UCS_OK;
 }
 
+/*
+ * Return the sn of the send op which completes the failed WQE. An SGL operation
+ * posts one WQE per element and keeps its send op and CQ update on the last WQE
+ * of the chain only, so a failure inside the chain must complete that send op
+ * with the endpoint status. Other unsignaled RDMA WQEs carry an inline payload.
+ */
+static uint16_t
+uct_rc_mlx5_iface_failed_op_sn(uct_rc_mlx5_base_ep_t *ep, uint16_t pi)
+{
+    const struct mlx5_wqe_ctrl_seg *ctrl = uct_ib_mlx5_txwq_get_wqe(&ep->tx.wq,
+                                                                    pi);
+    const size_t rdma_wqe_size           = sizeof(struct mlx5_wqe_ctrl_seg) +
+                                           sizeof(struct mlx5_wqe_raddr_seg);
+    const struct mlx5_wqe_inl_data_seg *inl;
+    uct_rc_iface_send_op_t *op;
+    uint8_t opcode;
+
+    opcode = uct_ib_mlx5_wqe_opcode(ctrl);
+    if ((ctrl->fm_ce_se & MLX5_WQE_CTRL_CQ_UPDATE) ||
+        ((opcode != MLX5_OPCODE_RDMA_WRITE) &&
+         (opcode != MLX5_OPCODE_RDMA_READ))) {
+        return pi;
+    }
+
+    if (uct_ib_mlx5_wqe_size(ctrl) > rdma_wqe_size) {
+        inl = UCS_PTR_BYTE_OFFSET(ctrl, rdma_wqe_size);
+        if (inl->byte_count & htonl(MLX5_INLINE_SEG)) {
+            return pi;
+        }
+    }
+
+    ucs_queue_for_each(op, &ep->super.txqp.outstanding, queue) {
+        if (UCS_CIRCULAR_COMPARE16(op->sn, <=, pi)) {
+            continue;
+        }
+
+        if ((op->handler == uct_rc_ep_put_sgl_zcopy_completion_handler) ||
+            (op->handler == uct_rc_ep_get_sgl_zcopy_completion_handler)) {
+            return op->sn;
+        }
+
+        break;
+    }
+
+    return pi;
+}
+
 void uct_rc_mlx5_iface_handle_failure(uct_ib_iface_t *ib_iface, void *arg,
                                       ucs_status_t ep_status)
 {
@@ -252,7 +299,9 @@ void uct_rc_mlx5_iface_handle_failure(uct_ib_iface_t *ib_iface, void *arg,
 
 out_update_tx_res:
     if (!(ep->err_handler_inprogress)) {
-        uct_rc_txqp_purge_outstanding(iface, &ep->super.txqp, ep_status, pi, 0);
+        uct_rc_txqp_purge_outstanding(iface, &ep->super.txqp, ep_status,
+                                      uct_rc_mlx5_iface_failed_op_sn(ep, pi),
+                                      0);
         uct_rc_mlx5_ep_update_tx_qp_res(ep, pi);
     }
 
