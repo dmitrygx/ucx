@@ -9,6 +9,7 @@
 
 #include "topo.h"
 
+#include <ucs/config/types.h>
 #include <ucs/datastruct/static_bitmap.h>
 
 BEGIN_C_DECLS
@@ -56,6 +57,10 @@ typedef struct {
      * Several DEVs can share one auxiliary device (e.g. planes of a multiplane
      * NIC), and several MEMs can sit behind it (e.g. MPS MLOPart aliases). */
     ucs_sys_device_bitmap_t siblings;
+
+    /* Whether peer-to-peer traffic between PCI devices under the same root
+     * port goes through the root complex, UCS_AUTO until detected */
+    ucs_ternary_auto_value_t p2p_redirect;
 } ucs_topo_sys_device_info_t;
 
 
@@ -78,6 +83,22 @@ int ucs_topo_sys_device_info_cmp(const ucs_topo_sys_device_info_t *device1,
  */
 ucs_status_t ucs_topo_bus_id_to_sysfs_path(const ucs_sys_bus_id_t *bus_id,
                                            char *path, size_t max);
+
+
+/**
+ * Check in sysfs whether peer-to-peer traffic between PCI devices under the
+ * same PCIe root port goes through the root complex. Any other device under the
+ * root port is a peer, except bridges and the functions of the device itself.
+ *
+ * @param [in] pci_devices_dir  Directory with links to all PCI devices, such
+ *                              as /sys/bus/pci/devices.
+ * @param [in] dev_path         Canonical sysfs path of the device.
+ *
+ * @return Nonzero if the traffic between the device and a peer under its root
+ *         port goes through the root complex, 0 otherwise.
+ */
+int ucs_topo_sysfs_is_p2p_redirected(const char *pci_devices_dir,
+                                     const char *dev_path);
 
 
 END_C_DECLS
