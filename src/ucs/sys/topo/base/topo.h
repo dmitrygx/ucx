@@ -631,6 +631,23 @@ int ucs_topo_device_has_sibling(ucs_sys_device_t sys_dev);
 
 
 /**
+ * Check whether PCIe peer-to-peer traffic between a device and an accelerator
+ * (e.g. GPU) under the same PCIe root port goes through the root complex,
+ * because of ACS redirect or IOMMU address translation. In this case, the link
+ * of the root port carries the peer-to-peer traffic of the accelerator
+ * together with the host memory traffic of the device.
+ *
+ * The UCX_TOPO_P2P_REDIRECT configuration can override the detection.
+ *
+ * @param [in] sys_dev  System device to check.
+ *
+ * @return Nonzero if the peer-to-peer traffic goes through the root complex,
+ *         0 otherwise.
+ */
+int ucs_topo_sys_device_is_p2p_redirected(ucs_sys_device_t sys_dev);
+
+
+/**
  * Get the number of registered system devices.
  *
  * @return Number of system devices.

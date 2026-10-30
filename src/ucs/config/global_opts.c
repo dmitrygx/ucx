@@ -50,6 +50,7 @@ ucs_global_opts_t ucs_global_opts = {
     .stats_filter          = { NULL, 0 },
     .stats_format          = UCS_STATS_FULL,
     .topo_prio             = { NULL, 0 },
+    .topo_p2p_redirect     = UCS_CONFIG_AUTO,
     .vfs_enable            = 1,
     .vfs_thread_affinity   = 0,
     .rcache_check_pfn      = 0,
@@ -213,6 +214,20 @@ static ucs_config_field_t ucs_global_opts_table[] = {
   "Comma-separated list of providers for detecting system topology.\n"
   "The list order decides the priority of the providers.",
   ucs_offsetof(ucs_global_opts_t, topo_prio), UCS_CONFIG_TYPE_STRING_ARRAY},
+
+ {"TOPO_P2P_REDIRECT", "auto",
+  "Whether PCIe peer-to-peer traffic between a device and an accelerator\n"
+  "(e.g. GPU) under the same PCIe root port goes through the root complex,\n"
+  "because of ACS redirect or IOMMU address translation. Then a network\n"
+  "device accessing host memory shares the root port link with that traffic,\n"
+  "and same-host endpoints avoid lanes which loop back through such a device.\n"
+  " - auto : detect from the IOMMU groups of the devices and their domain\n"
+  "          type.\n"
+  " - on   : assume it for every device.\n"
+  " - off  : assume it for no device.\n"
+  "Must be the same in all processes on a node.",
+  ucs_offsetof(ucs_global_opts_t, topo_p2p_redirect),
+  UCS_CONFIG_TYPE_ON_OFF_AUTO},
 
  {"DISTANCE_LAT", "phb:300ns,node:300ns,sys:500ns",
   "Estimated latency between system devices", 0,

@@ -9,6 +9,8 @@
 
 #include "topo.h"
 
+#include <ucs/config/types.h>
+
 BEGIN_C_DECLS
 
 /* Possible role of a current device wrt its sibling */
@@ -45,6 +47,10 @@ typedef struct {
     ucs_topo_sibling_role_t sibling_role; /* Role of the current device */
     /* MEM role: matched DEV. DEV role: one representative matched MEM. */
     ucs_sys_device_t        sibling_sys_dev;
+
+    /* Whether peer-to-peer traffic with an accelerator under the same root
+     * port goes through the root complex, UCS_AUTO until detected */
+    ucs_ternary_auto_value_t p2p_redirect;
 } ucs_topo_sys_device_info_t;
 
 
@@ -67,6 +73,20 @@ int ucs_topo_sys_device_info_cmp(const ucs_topo_sys_device_info_t *device1,
  */
 ucs_status_t ucs_topo_bus_id_to_sysfs_path(const ucs_sys_bus_id_t *bus_id,
                                            char *path, size_t max);
+
+
+/**
+ * Check in sysfs whether peer-to-peer traffic between a PCI device and an
+ * accelerator under the same PCIe root port goes through the root complex.
+ *
+ * @param [in] pci_devices_dir  Directory with links to all PCI devices, such
+ *                              as /sys/bus/pci/devices.
+ * @param [in] dev_path         Canonical sysfs path of the device.
+ *
+ * @return Nonzero if such an accelerator exists, 0 otherwise.
+ */
+int ucs_topo_sysfs_is_p2p_redirected(const char *pci_devices_dir,
+                                     const char *dev_path);
 
 
 END_C_DECLS
