@@ -18,6 +18,7 @@
 #include <ucs/datastruct/array.h>
 #include <ucs/datastruct/queue.h>
 #include <ucs/sys/sock.h>
+#include <ucs/sys/topo/base/topo.h>
 #include <ucp/core/ucp_ep.inl>
 #include <string.h>
 #include <inttypes.h>
@@ -28,6 +29,15 @@
 #define UCP_WIREUP_PATH_INDEX_UNDEFINED    UINT_MAX
 #define UCP_WIREUP_KA_SCORE_TOLERANCE      0.02
 #define UCP_WIREUP_NO_SCORE_TIEBREAK       (-1.0)
+
+/* Minimal peer release version which lowers the score of loopback lanes with
+ * redirected peer-to-peer traffic, both peers must do it to match the lanes */
+#define UCP_WIREUP_P2P_REDIRECT_MIN_DST_VERSION 24
+
+/* Bandwidth ratio of such loopback lanes. It outweighs the bandwidth
+ * differences of device distances, e.g. to the GPU of the process, so these
+ * lanes are selected only when no other pair of devices is available. */
+#define UCP_WIREUP_P2P_REDIRECT_BW_RATIO        1e-3
 
 /* 6 for the string format constant length */
 #define UCP_WIREUP_TLS_INFO_SIZE       (UCP_WIREUP_UCT_INFO_SIZE + \
@@ -1457,6 +1467,58 @@ ucp_wireup_is_connect_all_to_all(const ucp_worker_h worker,
            (unpacked_addr->dst_version >= 19);
 }
 
+/* Check whether the remote address is on the same device as the local iface */
+static int ucp_wireup_is_same_device(const ucp_worker_iface_t *wiface,
+                                     const ucp_address_entry_t *ae)
+{
+    uct_iface_is_reachable_params_t params = {
+        .field_mask         = UCT_IFACE_IS_REACHABLE_FIELD_DEVICE_ADDR |
+                              UCT_IFACE_IS_REACHABLE_FIELD_IFACE_ADDR |
+                              UCT_IFACE_IS_REACHABLE_FIELD_SCOPE |
+                              UCT_IFACE_IS_REACHABLE_FIELD_DEVICE_ADDR_LENGTH |
+                              UCT_IFACE_IS_REACHABLE_FIELD_IFACE_ADDR_LENGTH,
+        .device_addr        = ae->dev_addr,
+        .iface_addr         = ae->iface_addr,
+        .device_addr_length = ae->dev_addr_len,
+        .iface_addr_length  = ae->iface_addr_len,
+        .scope              = UCT_IFACE_REACHABILITY_SCOPE_DEVICE
+    };
+
+    return (wiface->attr.device_addr_len != 0) &&
+           uct_iface_is_reachable_v2(wiface->iface, &params);
+}
+
+/*
+ * When the peer-to-peer traffic between a network device and an accelerator
+ * under its root port goes through the root complex, a lane looping back
+ * through the device between host memory and the accelerator moves the data
+ * over the root port link twice. Lowering the score of such lanes pairs
+ * different devices on same-host endpoints. Both ends of a loopback lane are
+ * the same device, so both peers lower the score of the same lanes.
+ */
+static double
+ucp_wireup_p2p_redirect_ratio(const ucp_worker_iface_t *wiface,
+                              const ucp_unpacked_address_t *unpacked_addr,
+                              const ucp_address_entry_t *remote_addr)
+{
+    ucp_context_h context    = wiface->worker->context;
+    ucs_sys_device_t sys_dev =
+            context->tl_rscs[wiface->rsc_index].tl_rsc.sys_device;
+
+    if ((unpacked_addr->dst_version <
+         UCP_WIREUP_P2P_REDIRECT_MIN_DST_VERSION) ||
+        !ucs_topo_sys_device_is_p2p_redirected(sys_dev) ||
+        !ucp_wireup_is_same_device(wiface, remote_addr)) {
+        return 1.0;
+    }
+
+    ucs_trace(UCT_TL_RESOURCE_DESC_FMT " : loopback with redirected "
+              "peer-to-peer traffic, lowering bandwidth",
+              UCT_TL_RESOURCE_DESC_ARG(
+                      &context->tl_rscs[wiface->rsc_index].tl_rsc));
+    return UCP_WIREUP_P2P_REDIRECT_BW_RATIO;
+}
+
 static double
 ucp_wireup_iface_avail_bandwidth(const ucp_worker_iface_t *wiface,
                                  const ucp_unpacked_address_t *unpacked_addr,
@@ -1548,15 +1610,18 @@ ucp_wireup_rma_bw_score_func(const ucp_worker_iface_t *wiface,
     ucp_wireup_dev_usage_count *dev_count = arg;
     ucp_context_t *context                = wiface->worker->context;
     ucs_linear_func_t mem_reg_cost;
+    double avail_bw;
 
     mem_reg_cost = ucp_wireup_mem_reg_cost(context, unpacked_addr, md_attr);
+    avail_bw     = ucp_wireup_iface_avail_bandwidth(wiface, unpacked_addr,
+                                                    remote_addr, dev_count);
+    avail_bw    *= ucp_wireup_p2p_redirect_ratio(wiface, unpacked_addr,
+                                                 remote_addr);
 
     /* highest bandwidth with lowest overhead - test a message size of 256KB,
      * a size which is likely to be used for high-bw memory access protocol, for
      * how long it would take to transfer it with a certain transport. */
-    return 1 / ((UCP_WIREUP_RMA_BW_TEST_MSG_SIZE /
-                 ucp_wireup_iface_avail_bandwidth(wiface, unpacked_addr,
-                                                  remote_addr, dev_count)) +
+    return 1 / ((UCP_WIREUP_RMA_BW_TEST_MSG_SIZE / avail_bw) +
                 ucp_wireup_tl_iface_latency(wiface, unpacked_addr,
                                             &remote_addr->iface_attr,
                                             is_prioritized_ep) +
@@ -2800,12 +2865,10 @@ static ucs_status_t ucp_wireup_select_set_locality_flags(
         unsigned *addr_indices, ucp_ep_config_key_t *key)
 {
     ucp_worker_h worker = select_params->ep->worker;
-    ucp_worker_iface_t *wiface;
     ucp_rsc_index_t rsc_index;
     ucp_address_entry_t *ae;
     ucp_lane_index_t lane;
     unsigned addr_index;
-    uct_iface_is_reachable_params_t params;
 
     if (select_params->address->uuid == worker->uuid) {
         key->flags |= UCP_EP_CONFIG_KEY_FLAG_SELF;
@@ -2839,23 +2902,8 @@ static ucs_status_t ucp_wireup_select_set_locality_flags(
         addr_index = addr_indices[lane];
         ae         = &select_params->address->address_list[addr_index];
 
-        wiface = ucp_worker_iface(worker, rsc_index);
-        if (wiface->attr.device_addr_len == 0) {
-            continue;
-        }
-
-        params.field_mask         = UCT_IFACE_IS_REACHABLE_FIELD_DEVICE_ADDR |
-                                    UCT_IFACE_IS_REACHABLE_FIELD_IFACE_ADDR |
-                                    UCT_IFACE_IS_REACHABLE_FIELD_SCOPE |
-                                    UCT_IFACE_IS_REACHABLE_FIELD_DEVICE_ADDR_LENGTH |
-                                    UCT_IFACE_IS_REACHABLE_FIELD_IFACE_ADDR_LENGTH;
-        params.device_addr        = ae->dev_addr;
-        params.iface_addr         = ae->iface_addr;
-        params.device_addr_length = ae->dev_addr_len;
-        params.iface_addr_length  = ae->iface_addr_len;
-        params.scope              = UCT_IFACE_REACHABILITY_SCOPE_DEVICE;
-
-        if (uct_iface_is_reachable_v2(wiface->iface, &params)) {
+        if (ucp_wireup_is_same_device(ucp_worker_iface(worker, rsc_index),
+                                      ae)) {
             key->flags |= UCP_EP_CONFIG_KEY_FLAG_INTRA_NODE;
             return UCS_OK;
         }
