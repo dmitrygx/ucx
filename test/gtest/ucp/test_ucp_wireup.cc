@@ -12,6 +12,7 @@
 #include "ucp/ucp_test.h"
 
 #include <algorithm>
+#include <map>
 #include <memory>
 #include <set>
 
@@ -1451,6 +1452,59 @@ UCS_TEST_P(select_transport_rma_bw, select_rc, "NUM_EPS=56", "NUM_PPN=28")
 }
 
 UCP_INSTANTIATE_TEST_CASE_TLS(select_transport_rma_bw, tcp_ib, "tcp,ib")
+
+class test_ucp_wireup_p2p_redirect : public test_ucp_wireup {
+public:
+    static void get_test_variants(std::vector<ucp_test_variant> &variants)
+    {
+        add_variant_with_value(variants, UCP_FEATURE_RMA, TEST_RMA, "rma");
+    }
+};
+
+/* Same-host RMA_BW lanes avoid looping back through one network device when
+ * its peer-to-peer traffic goes through the root complex */
+UCS_TEST_P(test_ucp_wireup_p2p_redirect, cross_devices, "TOPO_P2P_REDIRECT=on",
+           "MAX_RMA_RAILS=2")
+{
+    ucp_context_h context = sender().ucph();
+    std::map<ucs_sys_device_t, std::set<std::string>> net_devices;
+
+    skip_loopback();
+    for (ucp_rsc_index_t i = 0; i < context->num_tls; ++i) {
+        const uct_tl_resource_desc_t &tl_rsc = context->tl_rscs[i].tl_rsc;
+        if ((tl_rsc.dev_type == UCT_DEVICE_TYPE_NET) &&
+            (ucp_worker_iface_get_attr(sender().worker(), i)->cap.flags &
+             UCT_IFACE_FLAG_PUT_ZCOPY)) {
+            net_devices[tl_rsc.sys_device].insert(tl_rsc.dev_name);
+        }
+    }
+
+    if (net_devices.size() < 2) {
+        UCS_TEST_SKIP_R("less than two network devices");
+    }
+
+    for (const auto &net_device : net_devices) {
+        if (net_device.second.size() > 1) {
+            UCS_TEST_SKIP_R("network devices share a system device");
+        }
+    }
+
+    sender().connect(&receiver(), get_ep_params());
+    send_recv(sender().ep(), receiver().worker(), receiver().ep(),
+              BUFFER_LENGTH, 1);
+
+    /* The best lane connects different devices. The entities share the
+     * topology, so their system devices are comparable. */
+    const ucp_ep_config_key_t &key = ucp_ep_config(sender().ep())->key;
+    ucp_lane_index_t lane          = key.rma_bw_lanes[0];
+    ASSERT_NE(UCP_NULL_LANE, lane);
+    EXPECT_NE(context->tl_rscs[key.lanes[lane].rsc_index].tl_rsc.sys_device,
+              key.lanes[lane].dst_sys_dev);
+    flush_worker(sender());
+}
+
+UCP_INSTANTIATE_TEST_CASE_TLS(test_ucp_wireup_p2p_redirect, rcx, "rc_x")
+UCP_INSTANTIATE_TEST_CASE_TLS(test_ucp_wireup_p2p_redirect, rcv, "rc_v")
 
 class test_ucp_wireup_fallback_amo : public test_ucp_wireup {
 protected:
