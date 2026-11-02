@@ -1687,6 +1687,16 @@ out:
     return search.is_redirected;
 }
 
+int ucs_topo_sysfs_is_same_root_port(const char *path1, const char *path2)
+{
+    size_t root_port_length = ucs_topo_sysfs_root_port_length(path1);
+
+    return (root_port_length > 0) &&
+           (strncmp(path1, path2, root_port_length) == 0) &&
+           ((path2[root_port_length] == '/') ||
+            (path2[root_port_length] == '\0'));
+}
+
 int ucs_topo_sys_device_is_p2p_redirected(ucs_sys_device_t sys_dev)
 {
     ucs_ternary_auto_value_t p2p_redirect;
@@ -1740,6 +1750,37 @@ int ucs_topo_sys_device_is_p2p_redirected(ucs_sys_device_t sys_dev)
               ucs_topo_sys_device_get_name(sys_dev),
               is_redirected ? "goes" : "does not go");
     return is_redirected;
+}
+
+int ucs_topo_is_same_root_port(ucs_sys_device_t sys_dev1,
+                               ucs_sys_device_t sys_dev2)
+{
+    char *path1, *path2, *common_path;
+    ucs_status_t status;
+    int result;
+
+    if ((sys_dev1 == UCS_SYS_DEVICE_ID_UNKNOWN) ||
+        (sys_dev2 == UCS_SYS_DEVICE_ID_UNKNOWN)) {
+        return 0;
+    }
+
+    if (sys_dev1 == sys_dev2) {
+        return 1;
+    }
+
+    ucs_spin_lock(&ucs_topo_global_ctx.lock);
+    status = ucs_topo_get_common_path(sys_dev1, sys_dev2, &path1, &path2,
+                                      &common_path);
+    ucs_spin_unlock(&ucs_topo_global_ctx.lock);
+    if (status != UCS_OK) {
+        return 0;
+    }
+
+    result = ucs_topo_sysfs_is_same_root_port(path1, path2);
+    ucs_free(common_path);
+    ucs_free(path2);
+    ucs_free(path1);
+    return result;
 }
 
 uintptr_t ucs_topo_sys_device_get_user_value(ucs_sys_device_t sys_dev)

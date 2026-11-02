@@ -101,6 +101,17 @@ int ucs_topo_sysfs_is_p2p_redirected(const char *pci_devices_dir,
                                      const char *dev_path);
 
 
+/**
+ * Check whether two PCI devices are under the same PCIe root port.
+ *
+ * @param [in] path1  Canonical sysfs path of the first device.
+ * @param [in] path2  Canonical sysfs path of the second device.
+ *
+ * @return Nonzero if both devices are behind the same root port, 0 otherwise.
+ */
+int ucs_topo_sysfs_is_same_root_port(const char *path1, const char *path2);
+
+
 END_C_DECLS
 
 #endif

@@ -1183,6 +1183,21 @@ UCS_TEST_F(test_topo, p2p_redirect_config) {
     EXPECT_FALSE(ucs_topo_sys_device_is_p2p_redirected(sys_dev));
 }
 
+UCS_TEST_F(test_topo, same_root_port) {
+    const ucs_sys_bus_id_t bus_id1 = {0xffff, 0xff, 0x1f, 5};
+    const ucs_sys_bus_id_t bus_id2 = {0xffff, 0xff, 0x1f, 6};
+    ucs_sys_device_t sys_dev1, sys_dev2;
+
+    ASSERT_UCS_OK(ucs_topo_find_device_by_bus_id(&bus_id1, &sys_dev1));
+    ASSERT_UCS_OK(ucs_topo_find_device_by_bus_id(&bus_id2, &sys_dev2));
+
+    EXPECT_TRUE(ucs_topo_is_same_root_port(sys_dev1, sys_dev1));
+    /* The devices are not found in sysfs */
+    EXPECT_FALSE(ucs_topo_is_same_root_port(sys_dev1, sys_dev2));
+    EXPECT_FALSE(ucs_topo_is_same_root_port(sys_dev1,
+                                            UCS_SYS_DEVICE_ID_UNKNOWN));
+}
+
 class test_topo_p2p_redirect : public ucs::test {
 protected:
     static constexpr unsigned PCI_CLASS_BRIDGE = 0x060400;
@@ -1345,6 +1360,24 @@ UCS_TEST_F(test_topo_p2p_redirect, nic_peer) {
 
     EXPECT_TRUE(is_redirected(m_nic));
     EXPECT_TRUE(is_redirected(m_peer));
+}
+
+UCS_TEST_F(test_topo_p2p_redirect, same_root_port) {
+    add_topology(1, 2);
+
+    EXPECT_TRUE(ucs_topo_sysfs_is_same_root_port(m_nic.c_str(),
+                                                 m_peer.c_str()));
+    EXPECT_TRUE(ucs_topo_sysfs_is_same_root_port(m_peer.c_str(),
+                                                 m_nic.c_str()));
+    EXPECT_TRUE(ucs_topo_sysfs_is_same_root_port(m_nic.c_str(),
+                                                 m_nic.c_str()));
+    EXPECT_FALSE(ucs_topo_sysfs_is_same_root_port(m_nic.c_str(),
+                                                  m_other_nic.c_str()));
+    EXPECT_FALSE(ucs_topo_sysfs_is_same_root_port(m_other_nic.c_str(),
+                                                  m_peer.c_str()));
+    /* The host bridge is not behind a root port */
+    EXPECT_FALSE(ucs_topo_sysfs_is_same_root_port(host_bridge().c_str(),
+                                                  m_nic.c_str()));
 }
 
 UCS_TEST_F(test_topo_p2p_redirect, not_peers) {
