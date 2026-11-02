@@ -16,6 +16,7 @@
 #include "proto_debug.h"
 #include "proto_multi.inl"
 
+#include <ucp/core/ucp_rkey.inl>
 #include <ucs/algorithm/qsort_r.h>
 #include <ucs/debug/assert.h>
 #include <ucs/debug/log.h>
@@ -91,6 +92,17 @@ out:
               ucp_proto_id_field(init_params->proto_id, name), owner_sys_dev,
               ucs_topo_sys_device_get_name(owner_sys_dev), owner_desc);
     return bitmap;
+}
+
+/* Whether a same-host lane loops back through one network device */
+static int ucp_proto_multi_is_same_device_lane(
+        const ucp_proto_init_params_t *params, ucp_lane_index_t lane)
+{
+    ucs_sys_device_t dst_sys_dev =
+            params->ep_config_key->lanes[lane].dst_local_sys_dev;
+
+    return (dst_sys_dev != UCS_SYS_DEVICE_ID_UNKNOWN) &&
+           (dst_sys_dev == ucp_proto_common_get_sys_dev(params, lane));
 }
 
 static UCS_F_ALWAYS_INLINE double
@@ -607,6 +619,123 @@ static ucs_status_t ucp_proto_multi_filter_gpu_nic_lanes(
     return UCS_OK;
 }
 
+/* Whether a network device is under the PCIe root port of a device memory, and
+ * the peer-to-peer traffic under the root port goes through the root complex */
+static int ucp_proto_multi_is_p2p_redirected(ucs_sys_device_t mem_sys_dev,
+                                             ucs_sys_device_t net_sys_dev)
+{
+    return ucs_topo_sys_device_is_p2p_redirected(net_sys_dev) &&
+           ucs_topo_is_same_root_port(mem_sys_dev, net_sys_dev);
+}
+
+/*
+ * Find a local network device under the PCIe root port of the remote memory.
+ * The remote key has the distances from the memory to the remote devices of
+ * the lanes, and a device under the root port of the memory has the distance
+ * of the same device. A same-device lane with this distance has such a device
+ * on both sides.
+ */
+static ucs_sys_device_t ucp_proto_multi_remote_mem_root_port_dev(
+        const ucp_proto_common_init_params_t *params)
+{
+    const ucp_proto_init_params_t *init_params   = &params->super;
+    const ucp_rkey_config_key_t *rkey_config_key = init_params->rkey_config_key;
+    ucs_sys_device_t sys_dev                     = UCS_SYS_DEVICE_ID_UNKNOWN;
+    int has_far_lane                             = 0;
+    const ucp_rkey_config_t *rkey_config;
+    double near_bandwidth;
+    ucp_lane_index_t lane;
+
+    if (!(params->flags & UCP_PROTO_COMMON_INIT_FLAG_REMOTE_ACCESS) ||
+        (rkey_config_key == NULL) ||
+        (rkey_config_key->sys_dev == UCS_SYS_DEVICE_ID_UNKNOWN)) {
+        return UCS_SYS_DEVICE_ID_UNKNOWN;
+    }
+
+    near_bandwidth = UCS_FP8_PACK_UNPACK(BANDWIDTH,
+                                         ucs_topo_default_distance.bandwidth);
+    rkey_config    = ucp_worker_rkey_config(init_params->worker,
+                                            init_params->rkey_cfg_index);
+    for (lane = 0; lane < init_params->ep_config_key->num_lanes; ++lane) {
+        if (ucs_fp_compare(rkey_config->lanes_distance[lane].bandwidth,
+                           near_bandwidth) != 0) {
+            has_far_lane = 1;
+        } else if (ucp_proto_multi_is_same_device_lane(init_params, lane)) {
+            sys_dev = ucp_proto_common_get_sys_dev(init_params, lane);
+        }
+    }
+
+    /* If all devices are near, the distances do not show the root port */
+    return has_far_lane ? sys_dev : UCS_SYS_DEVICE_ID_UNKNOWN;
+}
+
+/*
+ * Whether a same-host lane moves the data twice over the link of a PCIe root
+ * port with redirected peer-to-peer traffic: one end of the lane moves the data
+ * of device memory under the root port, and the other end is under the root
+ * port as well, so its traffic to the memory on its side shares the link.
+ */
+static int ucp_proto_multi_is_p2p_hairpin_lane(
+        const ucp_proto_common_init_params_t *params,
+        ucs_sys_device_t remote_mem_sys_dev, ucp_lane_index_t lane)
+{
+    const ucp_proto_init_params_t *init_params = &params->super;
+    ucs_sys_device_t dst_sys_dev               =
+            init_params->ep_config_key->lanes[lane].dst_local_sys_dev;
+
+    if (dst_sys_dev == UCS_SYS_DEVICE_ID_UNKNOWN) {
+        /* Not a same-host lane */
+        return 0;
+    }
+
+    return ((params->reg_mem_info.type != UCS_MEMORY_TYPE_UNKNOWN) &&
+            ucp_proto_multi_is_p2p_redirected(params->reg_mem_info.sys_dev,
+                                              dst_sys_dev)) ||
+           ucp_proto_multi_is_p2p_redirected(
+                   remote_mem_sys_dev,
+                   ucp_proto_common_get_sys_dev(init_params, lane));
+}
+
+/*
+ * Drop the lanes which move the data twice over the link of a PCIe root port,
+ * unless all lanes do. Such a lane shares the link with the other lanes, so
+ * any part of the data on it slows down the whole transfer.
+ */
+static void ucp_proto_multi_filter_p2p_hairpin_lanes(
+        const ucp_proto_multi_init_params_t *params, int fixed_first_lane,
+        ucp_lane_index_t *lanes, ucp_lane_index_t *num_lanes_p)
+{
+    const ucp_lane_index_t first        = fixed_first_lane ? 1 : 0;
+    ucs_sys_device_t remote_mem_sys_dev =
+            ucp_proto_multi_remote_mem_root_port_dev(&params->super);
+    ucp_lane_map_t hairpin_map          = 0;
+    ucp_lane_index_t i, num_lanes;
+
+    for (i = first; i < *num_lanes_p; ++i) {
+        if (ucp_proto_multi_is_p2p_hairpin_lane(&params->super,
+                                                remote_mem_sys_dev,
+                                                lanes[i])) {
+            hairpin_map |= UCS_BIT(i);
+        }
+    }
+
+    if ((hairpin_map == 0) ||
+        (ucs_popcount(hairpin_map) == (*num_lanes_p - first))) {
+        return;
+    }
+
+    for (i = num_lanes = first; i < *num_lanes_p; ++i) {
+        if (hairpin_map & UCS_BIT(i)) {
+            ucs_trace("drop lane[%d]: it moves the data twice over a root "
+                      "port link", lanes[i]);
+        } else {
+            lanes[num_lanes++] = lanes[i];
+        }
+    }
+
+    *num_lanes_p = num_lanes;
+}
+
 /* Get the performance and maximal bandwidth of all candidate lanes. */
 static ucs_status_t
 ucp_proto_multi_query_lanes(const ucp_proto_multi_init_params_t *params,
@@ -974,17 +1103,20 @@ ucs_status_t ucp_proto_multi_init(const ucp_proto_multi_init_params_t *params,
         return status;
     }
 
+    fixed_first_lane = params->first.lane_type != params->middle.lane_type;
+    ucp_proto_multi_filter_p2p_hairpin_lanes(params, fixed_first_lane, lanes,
+                                             &num_lanes);
+
     status = ucp_proto_multi_query_lanes(params, lanes, num_lanes, lanes_perf,
                                          &queried_lane_map, &max_bandwidth);
     if (status != UCS_OK) {
         goto out_cleanup_lanes;
     }
 
-    fixed_first_lane = params->first.lane_type != params->middle.lane_type;
-    num_lanes        = ucp_proto_multi_filter_slow_lanes(params, lanes_perf,
-                                                         max_bandwidth,
-                                                         fixed_first_lane, num_lanes,
-                                                         lanes);
+    num_lanes = ucp_proto_multi_filter_slow_lanes(params, lanes_perf,
+                                                  max_bandwidth,
+                                                  fixed_first_lane, num_lanes,
+                                                  lanes);
 
     /* Keep the device-ordinal tie-break with an active assignment too: with
      * flip or round_robin each GPU has exclusive NICs, so the tie-break is a
