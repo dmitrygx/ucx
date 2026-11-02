@@ -1490,6 +1490,25 @@ static int ucp_wireup_is_same_device(const ucp_worker_iface_t *wiface,
            uct_iface_is_reachable_v2(wiface->iface, &params);
 }
 
+/* Find a local resource on the device of a remote address on the same host */
+static ucp_rsc_index_t
+ucp_wireup_find_same_device_rsc(ucp_worker_h worker,
+                                const ucp_address_entry_t *ae)
+{
+    ucp_context_h context = worker->context;
+    ucp_rsc_index_t rsc_index;
+
+    UCP_TL_BITMAP_FOR_EACH_BIT(rsc_index, &context->tl_bitmap) {
+        if ((context->tl_rscs[rsc_index].tl_name_csum == ae->tl_name_csum) &&
+            ucp_wireup_is_same_device(ucp_worker_iface(worker, rsc_index),
+                                      ae)) {
+            return rsc_index;
+        }
+    }
+
+    return UCP_NULL_RESOURCE;
+}
+
 /*
  * When the peer-to-peer traffic between a network device and another PCI
  * device (e.g. GPU) under its root port goes through the root complex, a lane
@@ -2915,6 +2934,39 @@ static ucs_status_t ucp_wireup_select_set_locality_flags(
     return UCS_OK;
 }
 
+/* On a same-host endpoint, find the local system devices of the remote network
+ * devices of the lanes, so the protocols can tell their PCIe topology */
+static void ucp_wireup_set_dst_local_sys_devs(
+        const ucp_wireup_select_params_t *select_params,
+        const unsigned *addr_indices, ucp_ep_config_key_t *key)
+{
+    ucp_worker_h worker   = select_params->ep->worker;
+    ucp_context_h context = worker->context;
+    const ucp_address_entry_t *ae;
+    ucp_rsc_index_t rsc_index;
+    ucp_lane_index_t lane;
+
+    if (!(key->flags & UCP_EP_CONFIG_KEY_FLAG_INTRA_NODE)) {
+        return;
+    }
+
+    for (lane = 0; lane < key->num_lanes; ++lane) {
+        rsc_index = key->lanes[lane].rsc_index;
+        if ((rsc_index == UCP_NULL_RESOURCE) || (key->cm_lane == lane) ||
+            (context->tl_rscs[rsc_index].tl_rsc.dev_type !=
+             UCT_DEVICE_TYPE_NET)) {
+            continue;
+        }
+
+        ae        = &select_params->address->address_list[addr_indices[lane]];
+        rsc_index = ucp_wireup_find_same_device_rsc(worker, ae);
+        if (rsc_index != UCP_NULL_RESOURCE) {
+            key->lanes[lane].dst_local_sys_dev =
+                    context->tl_rscs[rsc_index].tl_rsc.sys_device;
+        }
+    }
+}
+
 static UCS_F_NOINLINE ucs_status_t
 ucp_wireup_construct_lanes(const ucp_wireup_select_params_t *select_params,
                            ucp_wireup_select_context_t *select_ctx,
@@ -2929,6 +2981,7 @@ ucp_wireup_construct_lanes(const ucp_wireup_select_params_t *select_params,
     ucp_lane_index_t i;
     ucp_wireup_lane_desc_t *lane_desc;
     ucp_worker_iface_t *wiface;
+    ucs_status_t status;
 
     key->num_lanes   = select_ctx->num_lanes;
     first_am_bw_lane = context->config.ext.proto_enable ? 0 : 1;
@@ -3089,8 +3142,14 @@ ucp_wireup_construct_lanes(const ucp_wireup_select_params_t *select_params,
         key->am_bw_lanes[0] = key->am_lane;
     }
 
-    return ucp_wireup_select_set_locality_flags(select_params, addr_indices,
-                                                key);
+    status = ucp_wireup_select_set_locality_flags(select_params, addr_indices,
+                                                  key);
+    if (status != UCS_OK) {
+        return status;
+    }
+
+    ucp_wireup_set_dst_local_sys_devs(select_params, addr_indices, key);
+    return UCS_OK;
 }
 
 static void ucp_wireup_filter_token_tls(ucp_worker_h worker,
