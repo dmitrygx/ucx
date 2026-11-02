@@ -2308,6 +2308,106 @@ ucp_wireup_is_rma_bw_needed(ucp_context_h context, unsigned ep_init_flags)
     return 0;
 }
 
+/*
+ * Find the remote device of an RMA_BW lane which is the same device as the
+ * local device of another RMA_BW lane, on a same-host endpoint. Return the
+ * remote device index, or UCP_NULL_RESOURCE if there is no such lane, or if
+ * the lanes already loop back through the device.
+ */
+static ucp_rsc_index_t ucp_wireup_rma_bw_same_device_remote(
+        const ucp_wireup_select_params_t *select_params,
+        const ucp_wireup_select_context_t *select_ctx,
+        ucp_lane_index_t num_lanes, ucp_rsc_index_t rsc_index)
+{
+    ucp_worker_h worker                  = select_params->ep->worker;
+    ucp_context_h context                = worker->context;
+    const ucp_address_entry_t *addr_list = select_params->address->address_list;
+    ucp_rsc_index_t dev_index            = context->tl_rscs[rsc_index].dev_index;
+    ucp_rsc_index_t remote_dev_index     = UCP_NULL_RESOURCE;
+    const ucp_wireup_lane_desc_t *lane_desc;
+    const ucp_address_entry_t *ae;
+
+    ucs_carray_for_each(lane_desc, select_ctx->lane_descs, num_lanes) {
+        ae = &addr_list[lane_desc->addr_index];
+        if (!(lane_desc->lane_types & UCS_BIT(UCP_LANE_TYPE_RMA_BW)) ||
+            (ae->tl_name_csum != context->tl_rscs[rsc_index].tl_name_csum) ||
+            !ucp_wireup_is_same_device(ucp_worker_iface(worker, rsc_index),
+                                       ae)) {
+            continue;
+        }
+
+        if (context->tl_rscs[lane_desc->rsc_index].dev_index == dev_index) {
+            /* Already loops back, e.g. when there is no other device */
+            return UCP_NULL_RESOURCE;
+        }
+
+        remote_dev_index = ae->dev_index;
+    }
+
+    return remote_dev_index;
+}
+
+/*
+ * The score of ucp_wireup_p2p_redirect_ratio() leaves out the same-device lanes
+ * of network devices with redirected peer-to-peer traffic, because they move
+ * the data twice over the root port link when the memory on one side is under
+ * that root port. Host memory is not, and then a same-device lane does not go
+ * through the network, so add these lanes as well: the protocols select them or
+ * the lanes between different devices according to the memory of a request.
+ * A device is added when an RMA_BW lane starts from it and another one ends at
+ * it, so both peers add the same devices.
+ */
+static void ucp_wireup_add_rma_bw_same_device_lanes(
+        const ucp_wireup_select_params_t *select_params,
+        const ucp_wireup_select_bw_info_t *bw_info, ucp_lane_index_t am_lane,
+        unsigned allow_extra_path, ucp_wireup_select_context_t *select_ctx)
+{
+    ucp_context_h context                   = select_params->ep->worker->context;
+    ucp_lane_index_t num_lanes              = select_ctx->num_lanes;
+    ucp_wireup_select_bw_info_t dev_bw_info = *bw_info;
+    uint64_t dev_bitmap                     = 0;
+    ucp_rsc_index_t rsc_index, dev_index, remote_dev_index;
+    ucp_tl_bitmap_t tl_bitmap;
+    ucp_lane_index_t lane;
+
+    if (select_params->address->dst_version <
+        UCP_WIREUP_P2P_REDIRECT_MIN_DST_VERSION) {
+        return;
+    }
+
+    ucp_wireup_memaccess_bitmap(context, UCS_BIT(UCS_MEMORY_TYPE_HOST),
+                                &tl_bitmap);
+
+    for (lane = 0; lane < num_lanes; ++lane) {
+        rsc_index = select_ctx->lane_descs[lane].rsc_index;
+        if (!(select_ctx->lane_descs[lane].lane_types &
+              UCS_BIT(UCP_LANE_TYPE_RMA_BW))) {
+            continue;
+        }
+
+        dev_index = context->tl_rscs[rsc_index].dev_index;
+        if ((dev_bitmap & UCS_BIT(dev_index)) ||
+            !UCS_STATIC_BITMAP_GET(tl_bitmap, rsc_index) ||
+            !ucs_topo_sys_device_is_p2p_redirected(
+                    context->tl_rscs[rsc_index].tl_rsc.sys_device)) {
+            continue;
+        }
+
+        dev_bitmap      |= UCS_BIT(dev_index);
+        remote_dev_index = ucp_wireup_rma_bw_same_device_remote(
+                select_params, select_ctx, num_lanes, rsc_index);
+        if (remote_dev_index == UCP_NULL_RESOURCE) {
+            continue;
+        }
+
+        dev_bw_info.local_dev_bitmap  = UCS_BIT(dev_index);
+        dev_bw_info.remote_dev_bitmap = UCS_BIT(remote_dev_index);
+        ucp_wireup_add_bw_lanes_pairwise(select_params, &dev_bw_info,
+                                         tl_bitmap, am_lane, select_ctx,
+                                         allow_extra_path);
+    }
+}
+
 static ucs_status_t
 ucp_wireup_add_rma_bw_lanes(const ucp_wireup_select_params_t *select_params,
                             ucp_wireup_select_context_t *select_ctx)
@@ -2477,6 +2577,12 @@ ucp_wireup_add_rma_bw_lanes(const ucp_wireup_select_params_t *select_params,
             (context->config.ext.rndv_mode != UCP_RNDV_MODE_AUTO)) {
             break;
         }
+    }
+
+    if (found_lane) {
+        ucp_wireup_add_rma_bw_same_device_lanes(select_params, &bw_info,
+                                                am_lane, allow_extra_path,
+                                                select_ctx);
     }
 
     return UCS_OK;

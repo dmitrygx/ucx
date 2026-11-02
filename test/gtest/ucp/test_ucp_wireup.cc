@@ -1459,6 +1459,49 @@ public:
     {
         add_variant_with_value(variants, UCP_FEATURE_RMA, TEST_RMA, "rma");
     }
+
+protected:
+    /* Connect the entities if they have two network devices for RMA_BW lanes,
+     * with a system device per network device, and return the sender lanes.
+     * The entities share the topology, so their system devices are
+     * comparable. */
+    const ucp_ep_config_key_t &connect_net_devices()
+    {
+        ucp_context_h context = sender().ucph();
+        std::map<ucs_sys_device_t, std::set<std::string>> net_devices;
+
+        skip_loopback();
+        for (ucp_rsc_index_t i = 0; i < context->num_tls; ++i) {
+            const uct_tl_resource_desc_t &tl_rsc = context->tl_rscs[i].tl_rsc;
+            if ((tl_rsc.dev_type == UCT_DEVICE_TYPE_NET) &&
+                (ucp_worker_iface_get_attr(sender().worker(), i)->cap.flags &
+                 UCT_IFACE_FLAG_PUT_ZCOPY)) {
+                net_devices[tl_rsc.sys_device].insert(tl_rsc.dev_name);
+            }
+        }
+
+        if (net_devices.size() < 2) {
+            UCS_TEST_SKIP_R("less than two network devices");
+        }
+
+        for (const auto &net_device : net_devices) {
+            if (net_device.second.size() > 1) {
+                UCS_TEST_SKIP_R("network devices share a system device");
+            }
+        }
+
+        sender().connect(&receiver(), get_ep_params());
+        send_recv(sender().ep(), receiver().worker(), receiver().ep(),
+                  BUFFER_LENGTH, 1);
+        return ucp_ep_config(sender().ep())->key;
+    }
+
+    ucs_sys_device_t
+    lane_sys_dev(const ucp_ep_config_key_t &key, ucp_lane_index_t lane)
+    {
+        return sender().ucph()->tl_rscs[key.lanes[lane].rsc_index]
+                .tl_rsc.sys_device;
+    }
 };
 
 /* Same-host RMA_BW lanes avoid looping back through one network device when
@@ -1466,40 +1509,43 @@ public:
 UCS_TEST_P(test_ucp_wireup_p2p_redirect, cross_devices, "TOPO_P2P_REDIRECT=on",
            "MAX_RMA_RAILS=2")
 {
-    ucp_context_h context = sender().ucph();
-    std::map<ucs_sys_device_t, std::set<std::string>> net_devices;
+    const ucp_ep_config_key_t &key = connect_net_devices();
 
-    skip_loopback();
-    for (ucp_rsc_index_t i = 0; i < context->num_tls; ++i) {
-        const uct_tl_resource_desc_t &tl_rsc = context->tl_rscs[i].tl_rsc;
-        if ((tl_rsc.dev_type == UCT_DEVICE_TYPE_NET) &&
-            (ucp_worker_iface_get_attr(sender().worker(), i)->cap.flags &
-             UCT_IFACE_FLAG_PUT_ZCOPY)) {
-            net_devices[tl_rsc.sys_device].insert(tl_rsc.dev_name);
-        }
-    }
-
-    if (net_devices.size() < 2) {
-        UCS_TEST_SKIP_R("less than two network devices");
-    }
-
-    for (const auto &net_device : net_devices) {
-        if (net_device.second.size() > 1) {
-            UCS_TEST_SKIP_R("network devices share a system device");
-        }
-    }
-
-    sender().connect(&receiver(), get_ep_params());
-    send_recv(sender().ep(), receiver().worker(), receiver().ep(),
-              BUFFER_LENGTH, 1);
-
-    /* The best lane connects different devices. The entities share the
-     * topology, so their system devices are comparable. */
-    const ucp_ep_config_key_t &key = ucp_ep_config(sender().ep())->key;
-    ucp_lane_index_t lane          = key.rma_bw_lanes[0];
+    /* The best lane connects different devices */
+    ucp_lane_index_t lane = key.rma_bw_lanes[0];
     ASSERT_NE(UCP_NULL_LANE, lane);
-    EXPECT_NE(context->tl_rscs[key.lanes[lane].rsc_index].tl_rsc.sys_device,
-              key.lanes[lane].dst_sys_dev);
+    EXPECT_NE(lane_sys_dev(key, lane), key.lanes[lane].dst_sys_dev);
+    flush_worker(sender());
+}
+
+/* Each device with a lane to another device also has a same-device lane for
+ * host memory, and the lanes know the local devices of their remote ends */
+UCS_TEST_P(test_ucp_wireup_p2p_redirect, same_device_lanes,
+           "TOPO_P2P_REDIRECT=on", "MAX_RMA_RAILS=2")
+{
+    const ucp_ep_config_key_t &key = connect_net_devices();
+    std::set<ucs_sys_device_t> same_device, cross_device;
+
+    for (ucp_lane_index_t lane = 0; lane < key.num_lanes; ++lane) {
+        if (!(key.lanes[lane].lane_types & UCS_BIT(UCP_LANE_TYPE_RMA_BW))) {
+            continue;
+        }
+
+        EXPECT_EQ(key.lanes[lane].dst_sys_dev,
+                  key.lanes[lane].dst_local_sys_dev) << "lane " << int(lane);
+        if (lane_sys_dev(key, lane) == key.lanes[lane].dst_sys_dev) {
+            same_device.insert(lane_sys_dev(key, lane));
+        } else {
+            cross_device.insert(lane_sys_dev(key, lane));
+        }
+    }
+
+    EXPECT_FALSE(cross_device.empty());
+    for (ucs_sys_device_t sys_dev : cross_device) {
+        EXPECT_TRUE(same_device.count(sys_dev) != 0)
+                << "sys_dev " << int(sys_dev);
+    }
+
     flush_worker(sender());
 }
 
