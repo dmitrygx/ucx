@@ -105,6 +105,22 @@ static int ucp_proto_multi_is_same_device_lane(
            (dst_sys_dev == ucp_proto_common_get_sys_dev(params, lane));
 }
 
+static ucp_lane_index_t
+ucp_proto_multi_find_same_device_index(const ucp_proto_init_params_t *params,
+                                       const ucp_lane_index_t *lanes,
+                                       ucp_lane_map_t index_map)
+{
+    ucp_lane_index_t index;
+
+    ucs_for_each_bit(index, index_map) {
+        if (ucp_proto_multi_is_same_device_lane(params, lanes[index])) {
+            return index;
+        }
+    }
+
+    return UCP_NULL_LANE;
+}
+
 static UCS_F_ALWAYS_INLINE double
 ucp_proto_multi_get_avail_bw(const ucp_proto_init_params_t *params,
                              ucp_lane_index_t lane,
@@ -203,8 +219,17 @@ static ucp_lane_index_t ucp_proto_multi_find_max_avail_bw_lane(
     }
 
     if (owner_sys_dev_ord == UCS_SYS_DEVICE_ORDINAL_INVALID) {
-        selected_index = first_max_bw_lane;
-        tie_break      = "first-max";
+        /* Without a device (e.g. host memory), prefer a lane which loops back
+         * through one device, so the data does not go through the network,
+         * and the lanes do not cross between the devices of the host */
+        selected_index = ucp_proto_multi_find_same_device_index(params, lanes,
+                                                                lane_map);
+        if (selected_index != UCP_NULL_LANE) {
+            tie_break = "same-device";
+        } else {
+            selected_index = first_max_bw_lane;
+            tie_break      = "first-max";
+        }
         goto out;
     }
 
