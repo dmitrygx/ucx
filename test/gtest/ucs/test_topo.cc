@@ -1266,10 +1266,10 @@ protected:
     void add_topology(int peer_iommu_group, int nic_iommu_group,
                       unsigned peer_class = PCI_CLASS_GPU)
     {
-        std::string root_port = add_device(host_bridge(), "0000:00:01.0",
-                                           PCI_CLASS_BRIDGE);
-        std::string upstream  = add_device(root_port, "0000:01:00.0",
-                                           PCI_CLASS_BRIDGE);
+        m_root_port          = add_device(host_bridge(), "0000:00:01.0",
+                                          PCI_CLASS_BRIDGE);
+        std::string upstream = add_device(m_root_port, "0000:01:00.0",
+                                          PCI_CLASS_BRIDGE);
 
         m_peer      = add_device(add_device(upstream, "0000:02:00.0",
                                             PCI_CLASS_BRIDGE),
@@ -1298,7 +1298,7 @@ protected:
         return ucs_topo_sysfs_is_p2p_redirected(dev_path.c_str());
     }
 
-    std::string m_peer, m_nic, m_other_nic;
+    std::string m_root_port, m_peer, m_nic, m_other_nic;
 
 private:
     static int
@@ -1366,19 +1366,15 @@ UCS_TEST_F(test_topo_p2p_redirect, nic_peer) {
 UCS_TEST_F(test_topo_p2p_redirect, same_root_port) {
     add_topology(1, 2);
 
-    EXPECT_TRUE(ucs_topo_sysfs_is_same_root_port(m_nic.c_str(),
-                                                 m_peer.c_str()));
-    EXPECT_TRUE(ucs_topo_sysfs_is_same_root_port(m_peer.c_str(),
-                                                 m_nic.c_str()));
-    EXPECT_TRUE(ucs_topo_sysfs_is_same_root_port(m_nic.c_str(),
-                                                 m_nic.c_str()));
-    EXPECT_FALSE(ucs_topo_sysfs_is_same_root_port(m_nic.c_str(),
-                                                  m_other_nic.c_str()));
-    EXPECT_FALSE(ucs_topo_sysfs_is_same_root_port(m_other_nic.c_str(),
-                                                  m_peer.c_str()));
-    /* The host bridge is not behind a root port */
-    EXPECT_FALSE(ucs_topo_sysfs_is_same_root_port(host_bridge().c_str(),
-                                                  m_nic.c_str()));
+    /* Bus ID of the root port 0000:00:01.0 */
+    EXPECT_EQ(0x100, ucs_topo_sysfs_root_port(m_nic.c_str()));
+    EXPECT_EQ(ucs_topo_sysfs_root_port(m_nic.c_str()),
+              ucs_topo_sysfs_root_port(m_peer.c_str()));
+    EXPECT_NE(ucs_topo_sysfs_root_port(m_nic.c_str()),
+              ucs_topo_sysfs_root_port(m_other_nic.c_str()));
+    /* The host bridge and the root port itself are not behind a root port */
+    EXPECT_EQ(-1, ucs_topo_sysfs_root_port(host_bridge().c_str()));
+    EXPECT_EQ(-1, ucs_topo_sysfs_root_port(m_root_port.c_str()));
 }
 
 UCS_TEST_F(test_topo_p2p_redirect, not_peers) {

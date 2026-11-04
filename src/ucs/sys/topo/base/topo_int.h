@@ -61,6 +61,10 @@ typedef struct {
     /* Whether peer-to-peer traffic between PCI devices under the same root
      * port goes through the root complex, UCS_AUTO until detected */
     ucs_ternary_auto_value_t p2p_redirect;
+
+    /* PCIe root port of the device as returned by
+     * ucs_topo_get_bus_id_bit_repr(), or -1 if not behind a root port */
+    ucs_bus_id_bit_rep_t     root_port;
 } ucs_topo_sys_device_info_t;
 
 
@@ -99,14 +103,15 @@ int ucs_topo_sysfs_is_p2p_redirected(const char *dev_path);
 
 
 /**
- * Check whether two PCI devices are under the same PCIe root port.
+ * Get the PCIe root port of a PCI device.
  *
- * @param [in] path1  Canonical sysfs path of the first device.
- * @param [in] path2  Canonical sysfs path of the second device.
+ * @param [in] path  Canonical sysfs path of the device.
  *
- * @return Nonzero if both devices are behind the same root port, 0 otherwise.
+ * @return Bus ID of the root port as returned by
+ *         ucs_topo_get_bus_id_bit_repr(), or -1 if the device is not behind a
+ *         root port.
  */
-int ucs_topo_sysfs_is_same_root_port(const char *path1, const char *path2);
+ucs_bus_id_bit_rep_t ucs_topo_sysfs_root_port(const char *path);
 
 
 END_C_DECLS

@@ -408,13 +408,15 @@ ucs_topo_get_sysfs_pci_id(const char *dev_name, const char *sysfs_path)
 static void ucs_topo_read_device_sysfs_info(const ucs_sys_bus_id_t *bus_id,
                                             const char *dev_name,
                                             ucs_numa_node_t *numa_node_p,
-                                            ucs_sys_pci_id_t *pci_id_p)
+                                            ucs_sys_pci_id_t *pci_id_p,
+                                            ucs_bus_id_bit_rep_t *root_port_p)
 {
     char *path;
     ucs_status_t status;
 
     *numa_node_p = UCS_NUMA_NODE_UNDEFINED;
     *pci_id_p    = UCS_SYS_PCI_ID_UNDEFINED;
+    *root_port_p = -1;
 
     status = ucs_string_alloc_path_buffer(&path, "sysfs_path");
     if (status != UCS_OK) {
@@ -428,6 +430,7 @@ static void ucs_topo_read_device_sysfs_info(const ucs_sys_bus_id_t *bus_id,
 
     *numa_node_p = ucs_numa_node_of_device(path);
     *pci_id_p    = ucs_topo_get_sysfs_pci_id(dev_name, path);
+    *root_port_p = ucs_topo_sysfs_root_port(path);
 
     ucs_trace("read sysfs info for %s: numa_node %d, vendor %04x, device %04x",
               dev_name, *numa_node_p, pci_id_p->vendor, pci_id_p->device);
@@ -482,6 +485,7 @@ ucs_topo_find_device_by_bus_id_value(const ucs_sys_bus_id_t *bus_id,
     ucs_topo_bus_value_key_t key;
     ucs_sys_pci_id_t pci_id;
     ucs_numa_node_t numa_node;
+    ucs_bus_id_bit_rep_t root_port;
     int kh_put_status;
     khiter_t hash_it;
     ucs_status_t status;
@@ -513,7 +517,8 @@ ucs_topo_find_device_by_bus_id_value(const ucs_sys_bus_id_t *bus_id,
 
         ucs_topo_bus_id_str(bus_id, 1, name, UCS_SYS_BDF_NAME_MAX);
 
-        ucs_topo_read_device_sysfs_info(bus_id, name, &numa_node, &pci_id);
+        ucs_topo_read_device_sysfs_info(bus_id, name, &numa_node, &pci_id,
+                                        &root_port);
 
         *sys_dev_p = ucs_topo_global_ctx.num_devices++;
         device     = &ucs_topo_global_ctx.devices[*sys_dev_p];
@@ -530,6 +535,7 @@ ucs_topo_find_device_by_bus_id_value(const ucs_sys_bus_id_t *bus_id,
         device->sibling_role  = UCS_TOPO_SIBLING_ROLE_NONE;
         device->sys_dev_aux   = UCS_SYS_DEVICE_ID_UNKNOWN;
         device->p2p_redirect  = UCS_AUTO;
+        device->root_port     = root_port;
         UCS_STATIC_BITMAP_RESET_ALL(&device->siblings);
 
         if (user_value == UCS_SYS_DEVICE_USER_VALUE_EMPTY) {
@@ -1678,14 +1684,33 @@ int ucs_topo_sysfs_is_p2p_redirected(const char *dev_path)
     return status == UCS_ERR_CANCELED;
 }
 
-int ucs_topo_sysfs_is_same_root_port(const char *path1, const char *path2)
+/*
+ * Find the root port as the peer search of ucs_topo_sysfs_is_p2p_redirected()
+ * does, unlike ucs_topo_is_pci_bridge() which expects host bridges directly
+ * under /sys/devices.
+ */
+ucs_bus_id_bit_rep_t ucs_topo_sysfs_root_port(const char *path)
 {
-    size_t root_port_length = ucs_topo_sysfs_root_port_length(path1);
+    size_t length = ucs_topo_sysfs_root_port_length(path);
+    ucs_sys_bus_id_t bus_id;
+    const char *name;
 
-    return (root_port_length > 0) &&
-           (strncmp(path1, path2, root_port_length) == 0) &&
-           ((path2[root_port_length] == '/') ||
-            (path2[root_port_length] == '\0'));
+    if (length == 0) {
+        return -1;
+    }
+
+    /* The bus ID of the root port is the last component of its path */
+    name = path + length;
+    while (name[-1] != '/') {
+        --name;
+    }
+
+    if (sscanf(name, "%hx:%hhx:%hhx.%hhx", &bus_id.domain, &bus_id.bus,
+               &bus_id.slot, &bus_id.function) != 4) {
+        return -1;
+    }
+
+    return ucs_topo_get_bus_id_bit_repr(&bus_id);
 }
 
 int ucs_topo_sys_device_is_p2p_redirected(ucs_sys_device_t sys_dev)
@@ -1745,8 +1770,6 @@ int ucs_topo_sys_device_is_p2p_redirected(ucs_sys_device_t sys_dev)
 int ucs_topo_is_same_root_port(ucs_sys_device_t sys_dev1,
                                ucs_sys_device_t sys_dev2)
 {
-    char *path1, *path2, *common_path;
-    ucs_status_t status;
     int result;
 
     if ((sys_dev1 == UCS_SYS_DEVICE_ID_UNKNOWN) ||
@@ -1759,17 +1782,13 @@ int ucs_topo_is_same_root_port(ucs_sys_device_t sys_dev1,
     }
 
     ucs_spin_lock(&ucs_topo_global_ctx.lock);
-    status = ucs_topo_get_common_path(sys_dev1, sys_dev2, &path1, &path2,
-                                      &common_path);
+    result = (sys_dev1 < ucs_topo_global_ctx.num_devices) &&
+             (sys_dev2 < ucs_topo_global_ctx.num_devices) &&
+             (ucs_topo_global_ctx.devices[sys_dev1].root_port >= 0) &&
+             (ucs_topo_global_ctx.devices[sys_dev1].root_port ==
+              ucs_topo_global_ctx.devices[sys_dev2].root_port);
     ucs_spin_unlock(&ucs_topo_global_ctx.lock);
-    if (status != UCS_OK) {
-        return 0;
-    }
 
-    result = ucs_topo_sysfs_is_same_root_port(path1, path2);
-    ucs_free(common_path);
-    ucs_free(path2);
-    ucs_free(path1);
     return result;
 }
 
