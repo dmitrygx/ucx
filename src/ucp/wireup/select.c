@@ -1483,10 +1483,12 @@ ucp_wireup_is_connect_all_to_all(const ucp_worker_h worker,
            (unpacked_addr->dst_version >= 19);
 }
 
-/* Check whether the remote address is on the same device as the local iface */
+/* Check whether the remote address is of the same transport on the same
+ * device as the local iface */
 static int ucp_wireup_is_same_device(const ucp_worker_iface_t *wiface,
                                      const ucp_address_entry_t *ae)
 {
+    ucp_context_h context                  = wiface->worker->context;
     uct_iface_is_reachable_params_t params = {
         .field_mask         = UCT_IFACE_IS_REACHABLE_FIELD_DEVICE_ADDR |
                               UCT_IFACE_IS_REACHABLE_FIELD_IFACE_ADDR |
@@ -1500,7 +1502,9 @@ static int ucp_wireup_is_same_device(const ucp_worker_iface_t *wiface,
         .scope              = UCT_IFACE_REACHABILITY_SCOPE_DEVICE
     };
 
-    return (wiface->attr.device_addr_len != 0) &&
+    return (context->tl_rscs[wiface->rsc_index].tl_name_csum ==
+            ae->tl_name_csum) &&
+           (wiface->attr.device_addr_len != 0) &&
            uct_iface_is_reachable_v2(wiface->iface, &params);
 }
 
@@ -1513,8 +1517,7 @@ ucp_wireup_find_same_device_rsc(ucp_worker_h worker,
     ucp_rsc_index_t rsc_index;
 
     UCP_TL_BITMAP_FOR_EACH_BIT(rsc_index, &context->tl_bitmap) {
-        if ((context->tl_rscs[rsc_index].tl_name_csum == ae->tl_name_csum) &&
-            ucp_wireup_is_same_device(ucp_worker_iface(worker, rsc_index),
+        if (ucp_wireup_is_same_device(ucp_worker_iface(worker, rsc_index),
                                       ae)) {
             return rsc_index;
         }
@@ -2428,22 +2431,25 @@ static ucp_rsc_index_t ucp_wireup_rma_bw_same_device_remote(
 {
     ucp_worker_h worker                  = select_params->ep->worker;
     ucp_context_h context                = worker->context;
+    const ucp_tl_resource_desc_t *rsc    = &context->tl_rscs[rsc_index];
+    const ucp_worker_iface_t *wiface     = ucp_worker_iface(worker, rsc_index);
     const ucp_address_entry_t *addr_list = select_params->address->address_list;
-    ucp_rsc_index_t dev_index            = context->tl_rscs[rsc_index].dev_index;
     ucp_rsc_index_t remote_dev_index     = UCP_NULL_RESOURCE;
     const ucp_wireup_lane_desc_t *lane_desc;
     const ucp_address_entry_t *ae;
 
     ucs_carray_for_each(lane_desc, select_ctx->lane_descs, num_lanes) {
-        ae = &addr_list[lane_desc->addr_index];
-        if (!(lane_desc->lane_types & UCS_BIT(UCP_LANE_TYPE_RMA_BW)) ||
-            (ae->tl_name_csum != context->tl_rscs[rsc_index].tl_name_csum) ||
-            !ucp_wireup_is_same_device(ucp_worker_iface(worker, rsc_index),
-                                       ae)) {
+        if (!(lane_desc->lane_types & UCS_BIT(UCP_LANE_TYPE_RMA_BW))) {
             continue;
         }
 
-        if (context->tl_rscs[lane_desc->rsc_index].dev_index == dev_index) {
+        ae = &addr_list[lane_desc->addr_index];
+        if (!ucp_wireup_is_same_device(wiface, ae)) {
+            continue;
+        }
+
+        if (context->tl_rscs[lane_desc->rsc_index].dev_index ==
+            rsc->dev_index) {
             /* Already loops back, e.g. when there is no other device */
             return UCP_NULL_RESOURCE;
         }
