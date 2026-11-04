@@ -1990,7 +1990,7 @@ static void ucp_wireup_print_config(ucp_worker_h worker,
             key->reachable_md_map);
 
     for (lane = 0; lane < key->num_lanes; ++lane) {
-        UCS_STRING_BUFFER_ONSTACK(strb, 128);
+        UCS_STRING_BUFFER_ONSTACK(strb, 256);
         if (lane == key->cm_lane) {
             ucp_ep_config_cm_lane_info_str(worker, key, lane, cm_index, &strb);
         } else {

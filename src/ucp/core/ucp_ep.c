@@ -4837,7 +4837,7 @@ static void ucp_ep_config_print(FILE *stream, ucp_worker_h worker,
     ucp_rsc_index_t cm_idx;
 
     for (lane = 0; lane < config->key.num_lanes; ++lane) {
-        UCS_STRING_BUFFER_ONSTACK(strb, 128);
+        UCS_STRING_BUFFER_ONSTACK(strb, 256);
         if (lane == config->key.cm_lane) {
             cm_idx = ep->ext->cm_idx;
             ucp_ep_config_cm_lane_info_str(worker, &config->key, lane, cm_idx,
