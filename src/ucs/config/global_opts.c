@@ -218,9 +218,9 @@ static ucs_config_field_t ucs_global_opts_table[] = {
  {"TOPO_P2P_REDIRECT", "auto",
   "Whether PCIe peer-to-peer traffic between PCI devices (e.g. NIC and GPU)\n"
   "under the same PCIe root port goes through the root complex, because of\n"
-  "ACS redirect or IOMMU address translation. Then a network device accessing\n"
-  "host memory shares the root port link with that traffic, and same-host\n"
-  "endpoints avoid lanes which loop back through such a device.\n"
+  "ACS redirect or IOMMU address translation. Then the root port link carries\n"
+  "that traffic together with the host memory traffic of the devices, and the\n"
+  "lane selection of same-host endpoints takes it into account.\n"
   " - auto : detect from the IOMMU groups of the devices and their domain\n"
   "          type.\n"
   " - on   : assume it for every device.\n"

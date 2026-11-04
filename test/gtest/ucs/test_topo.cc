@@ -1172,12 +1172,17 @@ UCS_TEST_F(test_topo, p2p_redirect_config) {
     ASSERT_UCS_OK(ucs_topo_find_device_by_bus_id(&bus_id, &sys_dev));
 
     /* The device is not found in sysfs */
+    modify_config("TOPO_P2P_REDIRECT", "auto");
     EXPECT_FALSE(ucs_topo_sys_device_is_p2p_redirected(sys_dev));
 
     modify_config("TOPO_P2P_REDIRECT", "on");
     EXPECT_TRUE(ucs_topo_sys_device_is_p2p_redirected(sys_dev));
     EXPECT_FALSE(
             ucs_topo_sys_device_is_p2p_redirected(UCS_SYS_DEVICE_ID_UNKNOWN));
+
+    /* The override does not change the detected value */
+    modify_config("TOPO_P2P_REDIRECT", "auto");
+    EXPECT_FALSE(ucs_topo_sys_device_is_p2p_redirected(sys_dev));
 
     modify_config("TOPO_P2P_REDIRECT", "off");
     EXPECT_FALSE(ucs_topo_sys_device_is_p2p_redirected(sys_dev));
