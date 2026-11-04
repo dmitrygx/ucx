@@ -104,7 +104,7 @@ typedef struct {
     /* Whether the local worker UUID is lower than the peer's */
     int      is_first;
     /* Host identity of the device of each remote device index, if it is a
-     * local device as well, or UINT32_MAX */
+     * local device with redirected peer-to-peer traffic, or UINT32_MAX */
     uint32_t remote_dev_ids[UCP_MAX_RESOURCES];
 } ucp_wireup_p2p_redirect_tiebreak_t;
 
@@ -1639,7 +1639,9 @@ ucp_wireup_mem_reg_cost(ucp_context_t *context,
     return ucs_linear_func_make(180e-9, 0);
 }
 
-/* Identity of a PCI device which is the same in all processes of a host */
+/* Identity of a PCI device which is the same in all processes of a host. The
+ * domain is cut to 8 bits to keep a pair of identities exact in a double, so
+ * devices whose domains differ only in higher bits get the same identity. */
 static uint32_t ucp_wireup_host_dev_id(ucs_sys_device_t sys_dev)
 {
     ucs_sys_bus_id_t bus_id;
@@ -1659,16 +1661,17 @@ static uint32_t ucp_wireup_host_dev_id(ucs_sys_device_t sys_dev)
  * same score, select first the lane with the lowest pair of host device
  * identities, the device of the peer with the lower worker UUID first. Both
  * peers then select mirrored lanes, also from the address of a wireup message,
- * which has only the resources of the peer lanes.
+ * which has only the resources of the peer lanes. Return nonzero if the remote
+ * address has a device of this host with redirected peer-to-peer traffic.
  */
 static int ucp_wireup_p2p_redirect_tiebreak_init(
         const ucp_wireup_select_params_t *select_params,
         ucp_wireup_p2p_redirect_tiebreak_t *tiebreak)
 {
-    ucp_worker_h worker        = select_params->ep->worker;
-    ucp_context_h context      = worker->context;
-    uint64_t checked_dev_map   = 0;
-    int found                  = 0;
+    ucp_worker_h worker      = select_params->ep->worker;
+    ucp_context_h context    = worker->context;
+    uint64_t checked_dev_map = 0;
+    int found                = 0;
     const ucp_address_entry_t *ae;
     ucp_rsc_index_t rsc_index;
     ucs_sys_device_t sys_dev;
@@ -1714,10 +1717,12 @@ static double ucp_wireup_p2p_redirect_tiebreak_func(
         void *arg)
 {
     const ucp_wireup_p2p_redirect_tiebreak_t *tiebreak = arg;
-    ucp_context_h context = wiface->worker->context;
-    uint32_t remote_id    = tiebreak->remote_dev_ids[remote_addr->dev_index];
-    uint32_t local_id     = ucp_wireup_host_dev_id(
-            context->tl_rscs[wiface->rsc_index].tl_rsc.sys_device);
+    ucp_context_h context    = wiface->worker->context;
+    ucs_sys_device_t sys_dev =
+            context->tl_rscs[wiface->rsc_index].tl_rsc.sys_device;
+    uint32_t remote_id       = tiebreak->remote_dev_ids[remote_addr->dev_index];
+    uint32_t local_id        = ucs_topo_sys_device_is_p2p_redirected(sys_dev) ?
+                               ucp_wireup_host_dev_id(sys_dev) : UINT32_MAX;
     uint32_t first_id, second_id;
 
     if ((remote_id == UINT32_MAX) || (local_id == UINT32_MAX)) {
@@ -1728,6 +1733,9 @@ static double ucp_wireup_p2p_redirect_tiebreak_func(
 
     first_id  = tiebreak->is_first ? local_id : remote_id;
     second_id = tiebreak->is_first ? remote_id : local_id;
+    /* Negative, so the lowest pair wins. This also makes ucs_fp_compare()
+     * exact: its tolerance is relative to the sum of the values and would
+     * make positive pairs of this size equal */
     return -(((double)first_id * UCP_WIREUP_P2P_REDIRECT_TIEBREAK_SCALE) +
              second_id);
 }
