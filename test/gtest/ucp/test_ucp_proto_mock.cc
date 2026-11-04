@@ -2034,6 +2034,28 @@ UCS_TEST_P(test_ucp_proto_mock_cuda_ipc, get, "ZCOPY_THRESH=1")
     });
 }
 
+/* Only network lanes keep the local device of their remote end, so the
+ * redirected peer-to-peer traffic does not drop the cuda_ipc lane */
+UCS_TEST_P(test_ucp_proto_mock_cuda_ipc, put_p2p_redirect, "ZCOPY_THRESH=1",
+           "TOPO_P2P_REDIRECT=on")
+{
+    const ucp_ep_config_key_t &key = ucp_ep_config(sender().ep())->key;
+
+    for (ucp_lane_index_t lane = 0; lane < key.num_lanes; ++lane) {
+        if ((key.lanes[lane].rsc_index != UCP_NULL_RESOURCE) &&
+            (ucp_ep_get_tl_rsc(sender().ep(), lane)->dev_type !=
+             UCT_DEVICE_TYPE_NET)) {
+            EXPECT_EQ(UCS_SYS_DEVICE_ID_UNKNOWN,
+                      key.lanes[lane].dst_local_sys_dev)
+                    << "lane " << int(lane);
+        }
+    }
+
+    test_cuda_rma(UCP_OP_ID_PUT, {
+        {1, INF, "zero-copy", "cuda_ipc/cuda"},
+    });
+}
+
 UCP_INSTANTIATE_TEST_CASE_TLS_GPU_AWARE(test_ucp_proto_mock_cuda_ipc,
                                         shm_rc_ipc, "rc_x,cuda_ipc,rocm_ipc")
 
