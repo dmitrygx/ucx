@@ -1216,8 +1216,7 @@ protected:
         ASSERT_NE(nullptr, realpath(root.c_str(), resolved));
         m_root = resolved;
 
-        for (const auto &dir : {"/devices", "/devices/pci0000:00", "/bus",
-                                "/bus/pci", "/bus/pci/devices", "/kernel",
+        for (const auto &dir : {"/devices", "/devices/pci0000:00", "/kernel",
                                 "/kernel/iommu_groups"}) {
             ASSERT_EQ(0, mkdir((m_root + dir).c_str(), 0755)) << dir;
         }
@@ -1239,8 +1238,6 @@ protected:
         EXPECT_EQ(0, mkdir(path.c_str(), 0755)) << path;
         snprintf(class_str, sizeof(class_str), "0x%06x\n", pci_class);
         write_file(path + "/class", class_str);
-        EXPECT_EQ(0, symlink(path.c_str(),
-                             (m_root + "/bus/pci/devices/" + bdf).c_str()));
 
         if (pci_class == PCI_CLASS_BRIDGE) {
             /* Only bridges have a secondary bus */
@@ -1293,8 +1290,7 @@ protected:
 
     bool is_redirected(const std::string &dev_path) const
     {
-        return ucs_topo_sysfs_is_p2p_redirected(
-                (m_root + "/bus/pci/devices").c_str(), dev_path.c_str());
+        return ucs_topo_sysfs_is_p2p_redirected(dev_path.c_str());
     }
 
     std::string m_peer, m_nic, m_other_nic;

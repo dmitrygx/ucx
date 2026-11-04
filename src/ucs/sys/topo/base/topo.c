@@ -69,14 +69,10 @@ KHASH_INIT(bus_to_sys_dev, ucs_topo_bus_value_key_t, ucs_sys_device_t, 1,
 
 /* Context of the search for a peer of a device under its root port */
 typedef struct {
-    const char *pci_devices_dir;
     const char *dev_path;
-    size_t     root_port_length; /* Length of the root port path of dev_path */
-    size_t     parent_length;    /* Length of the parent path of dev_path */
-    long       iommu_group;      /* IOMMU group of the device, or -1 */
-    char       *link_path;       /* Buffer for a link in pci_devices_dir */
-    char       *peer_path;       /* Buffer for the resolved link */
-    int        is_redirected;    /* A peer is reached through root complex */
+    size_t     parent_length; /* Length of the parent path of dev_path */
+    long       iommu_group;   /* IOMMU group of the device, or -1 */
+    char       *path;         /* Directory being read, then a device in it */
 } ucs_topo_p2p_peer_search_t;
 
 typedef struct ucs_topo_global_ctx {
@@ -1549,6 +1545,7 @@ static long ucs_topo_sysfs_iommu_group(const char *dev_path)
     long iommu_group = -1;
     char *link_path, *group_path;
     ucs_status_t status;
+    ssize_t length;
 
     status = ucs_string_alloc_formatted_path(&link_path, "iommu_group_link",
                                              "%s/iommu_group", dev_path);
@@ -1561,8 +1558,10 @@ static long ucs_topo_sysfs_iommu_group(const char *dev_path)
         goto out_free_link_path;
     }
 
-    if (realpath(link_path, group_path) != NULL) {
-        iommu_group = strtol(ucs_basename(group_path), NULL, 10);
+    length = readlink(link_path, group_path, PATH_MAX - 1);
+    if (length > 0) {
+        group_path[length] = '\0';
+        iommu_group        = strtol(ucs_basename(group_path), NULL, 10);
     }
 
     ucs_free(group_path);
@@ -1609,82 +1608,74 @@ static ucs_status_t
 ucs_topo_sysfs_p2p_peer_search_cb(const struct dirent *entry, void *arg)
 {
     ucs_topo_p2p_peer_search_t *search = arg;
+    size_t dir_length                  = strlen(search->path);
+    int name_length                    = -1;
+    int is_bridge, is_own_function;
+    ucs_status_t status;
 
-    if (entry->d_name[0] == '.') {
-        return UCS_OK;
-    }
-
-    ucs_snprintf_safe(search->link_path, PATH_MAX, "%s/%s",
-                      search->pci_devices_dir, entry->d_name);
-    if ((realpath(search->link_path, search->peer_path) == NULL) ||
-        (strncmp(search->peer_path, search->dev_path,
-                 search->root_port_length) != 0) ||
-        (search->peer_path[search->root_port_length] != '/')) {
-        return UCS_OK;
-    }
-
-    /* The functions of the device itself have the same parent */
-    if ((ucs_topo_sysfs_parent_length(search->peer_path) ==
-         search->parent_length) &&
-        (strncmp(search->peer_path, search->dev_path, search->parent_length) ==
-         0)) {
+    /* The devices behind a bridge are its subdirectories named by bus ID */
+    sscanf(entry->d_name, "%*x:%*x:%*x.%*x%n", &name_length);
+    if ((name_length <= 0) || (entry->d_name[name_length] != '\0') ||
+        ((dir_length + name_length + sizeof("//pci_bus")) > PATH_MAX)) {
         return UCS_OK;
     }
 
     /* Bridges have a secondary bus and are not peers */
-    ucs_snprintf_safe(search->link_path, PATH_MAX, "%s/pci_bus",
-                      search->peer_path);
-    if (access(search->link_path, F_OK) == 0) {
-        return UCS_OK;
+    ucs_snprintf_safe(search->path + dir_length, PATH_MAX - dir_length,
+                      "/%s/pci_bus", entry->d_name);
+    is_bridge = (access(search->path, F_OK) == 0);
+    search->path[dir_length + 1 + name_length] = '\0';
+
+    /* The functions of the device itself have the same parent */
+    is_own_function = (dir_length == search->parent_length) &&
+                      !strncmp(search->path, search->dev_path, dir_length);
+
+    if (is_bridge) {
+        status = ucs_sys_readdir(search->path,
+                                 ucs_topo_sysfs_p2p_peer_search_cb, search);
+    } else if (!is_own_function &&
+               ucs_topo_sysfs_is_p2p_via_root_complex(search->dev_path,
+                                                      search->iommu_group,
+                                                      search->path)) {
+        ucs_debug("%s: peer-to-peer traffic with %s goes through the root "
+                  "complex", search->dev_path, search->path);
+        status = UCS_ERR_CANCELED; /* Found, stop the search */
+    } else {
+        status = UCS_OK;
     }
 
-    if (!ucs_topo_sysfs_is_p2p_via_root_complex(search->dev_path,
-                                                search->iommu_group,
-                                                search->peer_path)) {
-        return UCS_OK;
-    }
+    search->path[dir_length] = '\0';
 
-    ucs_debug("%s: peer-to-peer traffic with %s goes through the root complex",
-              search->dev_path, search->peer_path);
-    search->is_redirected = 1;
-    return UCS_ERR_CANCELED; /* Stop the search */
+    /* A bridge which cannot be read does not stop the search */
+    return (status == UCS_ERR_CANCELED) ? status : UCS_OK;
 }
 
-int ucs_topo_sysfs_is_p2p_redirected(const char *pci_devices_dir,
-                                     const char *dev_path)
+int ucs_topo_sysfs_is_p2p_redirected(const char *dev_path)
 {
+    size_t root_port_length = ucs_topo_sysfs_root_port_length(dev_path);
     ucs_topo_p2p_peer_search_t search;
     ucs_status_t status;
 
-    search.pci_devices_dir  = pci_devices_dir;
-    search.dev_path         = dev_path;
-    search.root_port_length = ucs_topo_sysfs_root_port_length(dev_path);
-    search.parent_length    = ucs_topo_sysfs_parent_length(dev_path);
-    search.is_redirected    = 0;
-
-    if (search.root_port_length == 0) {
-        goto out;
+    if (root_port_length == 0) {
+        return 0;
     }
 
-    status = ucs_string_alloc_path_buffer(&search.link_path, "link_path");
+    status = ucs_string_alloc_path_buffer(&search.path, "peer_search_path");
     if (status != UCS_OK) {
-        goto out;
+        return 0;
     }
 
-    status = ucs_string_alloc_path_buffer(&search.peer_path, "peer_path");
-    if (status != UCS_OK) {
-        goto out_free_link_path;
-    }
+    search.dev_path      = dev_path;
+    search.parent_length = ucs_topo_sysfs_parent_length(dev_path);
+    search.iommu_group   = ucs_topo_sysfs_iommu_group(dev_path);
 
-    search.iommu_group = ucs_topo_sysfs_iommu_group(dev_path);
-    ucs_sys_readdir(pci_devices_dir, ucs_topo_sysfs_p2p_peer_search_cb,
-                    &search);
+    /* Walk the devices under the root port */
+    ucs_strncpy_safe(search.path, dev_path, root_port_length + 1);
+    status = ucs_sys_readdir(search.path, ucs_topo_sysfs_p2p_peer_search_cb,
+                             &search);
+    ucs_free(search.path);
 
-    ucs_free(search.peer_path);
-out_free_link_path:
-    ucs_free(search.link_path);
-out:
-    return search.is_redirected;
+    return status == UCS_ERR_CANCELED;
 }
 
 int ucs_topo_sysfs_is_same_root_port(const char *path1, const char *path2)
@@ -1735,8 +1726,7 @@ int ucs_topo_sys_device_is_p2p_redirected(ucs_sys_device_t sys_dev)
 
     status        = ucs_topo_bus_id_to_sysfs_path(&bus_id, path, PATH_MAX);
     is_redirected = (status == UCS_OK) &&
-                    ucs_topo_sysfs_is_p2p_redirected(UCS_TOPO_SYSFS_PCI_PREFIX,
-                                                     path);
+                    ucs_topo_sysfs_is_p2p_redirected(path);
     ucs_free(path);
 
     ucs_spin_lock(&ucs_topo_global_ctx.lock);

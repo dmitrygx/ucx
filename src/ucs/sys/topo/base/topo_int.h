@@ -90,15 +90,12 @@ ucs_status_t ucs_topo_bus_id_to_sysfs_path(const ucs_sys_bus_id_t *bus_id,
  * same PCIe root port goes through the root complex. Any other device under the
  * root port is a peer, except bridges and the functions of the device itself.
  *
- * @param [in] pci_devices_dir  Directory with links to all PCI devices, such
- *                              as /sys/bus/pci/devices.
- * @param [in] dev_path         Canonical sysfs path of the device.
+ * @param [in] dev_path  Canonical sysfs path of the device.
  *
  * @return Nonzero if the traffic between the device and a peer under its root
  *         port goes through the root complex, 0 otherwise.
  */
-int ucs_topo_sysfs_is_p2p_redirected(const char *pci_devices_dir,
-                                     const char *dev_path);
+int ucs_topo_sysfs_is_p2p_redirected(const char *dev_path);
 
 
 /**
