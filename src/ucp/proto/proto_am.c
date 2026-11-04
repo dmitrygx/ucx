@@ -1,5 +1,5 @@
 /**
- * Copyright (c) NVIDIA CORPORATION & AFFILIATES, 2001-2016. ALL RIGHTS RESERVED.
+ * Copyright (c) NVIDIA CORPORATION & AFFILIATES, 2001-2026. ALL RIGHTS RESERVED.
  *
  * See file LICENSE for terms.
  */
@@ -9,6 +9,7 @@
 #endif
 
 #include "proto_am.inl"
+#include "proto_single.inl"
 
 #include <ucp/core/ucp_request.inl>
 #include <ucp/tag/offload.h>
@@ -91,6 +92,22 @@ ucs_status_t ucp_proto_progress_am_single(uct_pending_req_t *self)
     }
 
     /* TODO: handle failure */
+    req->send.proto.comp_cb(req);
+    return UCS_OK;
+}
+
+ucs_status_t ucp_proto_progress_am_single_lane(uct_pending_req_t *self)
+{
+    ucp_request_t *req = ucs_container_of(self, ucp_request_t, send.uct);
+    ucs_status_t status;
+
+    status = ucp_proto_am_bcopy_single_send(req, req->send.proto.am_id,
+                                            req->send.lane, ucp_proto_pack, req,
+                                            ucp_proto_max_packed_size(), 0);
+    if (ucs_unlikely(status == UCS_ERR_NO_RESOURCE)) {
+        return UCS_ERR_NO_RESOURCE;
+    }
+
     req->send.proto.comp_cb(req);
     return UCS_OK;
 }

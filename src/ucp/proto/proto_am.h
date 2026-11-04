@@ -1,5 +1,5 @@
 /**
- * Copyright (c) NVIDIA CORPORATION & AFFILIATES, 2019. ALL RIGHTS RESERVED.
+ * Copyright (c) NVIDIA CORPORATION & AFFILIATES, 2019-2026. ALL RIGHTS RESERVED.
  *
  * See file LICENSE for terms.
  */
@@ -43,6 +43,9 @@ ucp_do_am_single(uct_pending_req_t *self, uint8_t am_id,
                  uct_pack_callback_t pack_cb, ssize_t max_packed_size);
 
 ucs_status_t ucp_proto_progress_am_single(uct_pending_req_t *self);
+
+/* Like ucp_proto_progress_am_single(), but sends on req->send.lane */
+ucs_status_t ucp_proto_progress_am_single_lane(uct_pending_req_t *self);
 
 void ucp_proto_am_zcopy_completion(uct_completion_t *self);
 

@@ -21,6 +21,15 @@
 #include <ucp/proto/proto_am.inl>
 #include <ucs/datastruct/queue.h>
 
+
+/*
+ * Minimal peer release version which completes an RTR only when the sizes of
+ * its ATP messages add up to the RTR size, so it can be sent an ATP on every
+ * data lane.
+ */
+#define UCP_RNDV_ATP_LANES_MIN_DST_VERSION 24
+
+
 static UCS_F_ALWAYS_INLINE int
 ucp_rndv_frag_mem_type(ucp_context_t *context)
 {
@@ -344,16 +353,19 @@ ucp_rndv_adjust_zcopy_length(size_t min_zcopy, size_t max_zcopy, size_t align,
     return result_length;
 }
 
-void ucp_rndv_req_send_ack(ucp_request_t *ack_req, size_t ack_size,
-                           ucs_ptr_map_key_t remote_req_id, ucs_status_t status,
-                           ucp_am_id_t am_id, const char *ack_str)
+static void
+ucp_rndv_req_send_ack_common(ucp_request_t *ack_req, ucp_lane_index_t lane,
+                             uct_pending_callback_t progress_cb,
+                             size_t ack_size, ucs_ptr_map_key_t remote_req_id,
+                             ucs_status_t status, ucp_am_id_t am_id,
+                             const char *ack_str)
 {
-    ucp_trace_req(ack_req, "%s remote_req_id 0x%" PRIxPTR " size %zu", ack_str,
-                  remote_req_id, ack_size);
+    ucp_trace_req(ack_req, "%s remote_req_id 0x%" PRIxPTR " size %zu lane %d",
+                  ack_str, remote_req_id, ack_size, lane);
     UCS_PROFILE_REQUEST_EVENT(ack_req, ack_str, 0);
 
-    ack_req->send.lane                = ucp_ep_get_am_lane(ack_req->send.ep);
-    ack_req->send.uct.func            = ucp_proto_progress_am_single;
+    ack_req->send.lane                = lane;
+    ack_req->send.uct.func            = progress_cb;
     ack_req->send.length              = ack_size;
     ack_req->send.proto.am_id         = am_id;
     ack_req->send.proto.status        = status;
@@ -362,6 +374,80 @@ void ucp_rndv_req_send_ack(ucp_request_t *ack_req, size_t ack_size,
     ucp_request_send_state_reset(ack_req, NULL,
                                  UCP_REQUEST_SEND_PROTO_BCOPY_AM);
     ucp_request_send(ack_req);
+}
+
+void ucp_rndv_req_send_ack(ucp_request_t *ack_req, size_t ack_size,
+                           ucs_ptr_map_key_t remote_req_id, ucs_status_t status,
+                           ucp_am_id_t am_id, const char *ack_str)
+{
+    ucp_rndv_req_send_ack_common(ack_req, ucp_ep_get_am_lane(ack_req->send.ep),
+                                 ucp_proto_progress_am_single, ack_size,
+                                 remote_req_id, status, am_id, ack_str);
+}
+
+/*
+ * Send the ATP of data put to the peer on the lanes of 'lanes_map' (indexes of
+ * rndv.put_zcopy.lanes), after the local completion of all the puts.
+ * A local completion does not mean that the data has reached the remote
+ * memory, so data which enters the peer through another device than the ATP
+ * can land after the peer has handled the ATP. Therefore send an ATP on every
+ * data lane which can send active messages, after the data of that lane. Each
+ * ATP acknowledges one byte and the last one the rest, so the peer completes
+ * when all of them have arrived.
+ */
+static void ucp_rndv_req_send_put_atp(ucp_request_t *atp_req,
+                                      ucp_lane_map_t lanes_map, size_t length,
+                                      ucs_ptr_map_key_t remote_req_id,
+                                      ucs_status_t status, const char *atp_str)
+{
+    ucp_ep_h ep             = atp_req->send.ep;
+    ucp_ep_config_t *config = ucp_ep_config(ep);
+    ucp_lane_index_t atp_lanes[UCP_MAX_LANES];
+    ucp_lane_index_t lane_idx, lane, num_lanes, i;
+    ucp_request_t *lane_atp_req;
+
+    /* Older peers complete on the first ATP, and a failed transfer needs no
+     * ordering, so both get a single ATP on the AM lane */
+    num_lanes = 0;
+    if ((status == UCS_OK) &&
+        (config->key.dst_version >= UCP_RNDV_ATP_LANES_MIN_DST_VERSION)) {
+        /* The puts use the lanes in this order, so a short transfer puts data
+         * only on the first lanes, and each ATP acknowledges at least one
+         * byte */
+        ucs_for_each_bit(lane_idx, lanes_map) {
+            lane = config->rndv.put_zcopy.lanes[lane_idx];
+            if ((num_lanes < length) &&
+                ucp_proto_rndv_iface_can_send_ack(
+                        ucp_ep_get_iface_attr(ep, lane))) {
+                atp_lanes[num_lanes++] = lane;
+            }
+        }
+    }
+
+    if (num_lanes == 0) {
+        ucp_rndv_req_send_ack(atp_req, length, remote_req_id, status,
+                              UCP_AM_ID_RNDV_ATP, atp_str);
+        return;
+    }
+
+    for (i = 0; i < (num_lanes - 1); ++i) {
+        lane_atp_req = ucp_request_get(ep->worker);
+        if (ucs_unlikely(lane_atp_req == NULL)) {
+            ucs_fatal("failed to allocate request for sending ATP");
+        }
+
+        lane_atp_req->send.ep = ep;
+        lane_atp_req->flags   = 0;
+        ucp_rndv_req_send_ack_common(lane_atp_req, atp_lanes[i],
+                                     ucp_proto_progress_am_single_lane, 1,
+                                     remote_req_id, UCS_OK, UCP_AM_ID_RNDV_ATP,
+                                     atp_str);
+    }
+
+    ucp_rndv_req_send_ack_common(atp_req, atp_lanes[i],
+                                 ucp_proto_progress_am_single_lane, length - i,
+                                 remote_req_id, UCS_OK, UCP_AM_ID_RNDV_ATP,
+                                 atp_str);
 }
 
 static UCS_F_ALWAYS_INLINE void
@@ -417,9 +503,11 @@ static void ucp_rndv_complete_rma_put_zcopy(ucp_request_t *sreq, int is_frag_put
                         sreq->send.state.dt.offset, sreq->send.length);
             atp_req->send.ep = sreq->send.ep;
             atp_req->flags   = 0;
-            ucp_rndv_req_send_ack(atp_req, sreq->send.length,
-                                  sreq->send.rndv.remote_req_id, status,
-                                  UCP_AM_ID_RNDV_ATP, "send_atp");
+            ucp_rndv_req_send_put_atp(atp_req,
+                                      sreq->send.rndv.zcopy.lanes_map_all,
+                                      sreq->send.length,
+                                      sreq->send.rndv.remote_req_id, status,
+                                      "send_atp");
         }
     }
 
@@ -2004,6 +2092,7 @@ ucp_rndv_send_frag_completion_common(uct_completion_t *comp, int is_rkey_ptr)
     ucp_request_t *freq = ucs_container_of(comp, ucp_request_t,
                                            send.state.uct_comp);
     ucp_request_t *fsreq, *sreq;
+    ucp_lane_map_t lanes_map;
 
     if (freq->send.state.dt.offset != freq->send.length) {
         return;
@@ -2031,9 +2120,12 @@ ucp_rndv_send_frag_completion_common(uct_completion_t *comp, int is_rkey_ptr)
         uct_completion_update_status(&sreq->send.state.uct_comp, comp->status);
         ucp_rndv_complete_rma_put_zcopy(sreq, 1);
 
-        ucp_rndv_req_send_ack(fsreq, fsreq->send.length,
-                              fsreq->send.rndv.remote_req_id, comp->status,
-                              UCP_AM_ID_RNDV_ATP, "send_frag_atp");
+        /* With rkey_ptr, the memtype endpoint copied the data without using
+         * the lanes of the endpoint */
+        lanes_map = is_rkey_ptr ? 0 : fsreq->send.rndv.zcopy.lanes_map_all;
+        ucp_rndv_req_send_put_atp(fsreq, lanes_map, fsreq->send.length,
+                                  fsreq->send.rndv.remote_req_id, comp->status,
+                                  "send_frag_atp");
     }
 
    if (!is_rkey_ptr) {
@@ -2296,8 +2388,8 @@ UCS_PROFILE_FUNC(ucs_status_t, ucp_rndv_atp_handler,
                  (arg, data, length, flags),
                  void *arg, void *data, size_t length, unsigned flags)
 {
-    ucp_worker_h worker      = arg;
-    ucp_reply_hdr_t *rep_hdr = data;
+    ucp_worker_h worker     = arg;
+    ucp_rndv_ack_hdr_t *atp = data;
     ucp_request_t *rtr_sreq, *req;
     ucp_mem_desc_t *mdesc;
 
@@ -2305,9 +2397,19 @@ UCS_PROFILE_FUNC(ucs_status_t, ucp_rndv_atp_handler,
         return ucp_proto_rndv_rtr_handle_atp(arg, data, length, flags);
     }
 
-    UCP_SEND_REQUEST_GET_BY_ID(&rtr_sreq, worker, rep_hdr->req_id, 1,
-                               return UCS_OK, "RNDV ATP %p", rep_hdr);
+    UCP_SEND_REQUEST_GET_BY_ID(&rtr_sreq, worker, atp->super.req_id, 0,
+                               return UCS_OK, "RNDV ATP %p", atp);
 
+    /* The data can be acknowledged by an ATP on every data lane. An ATP
+     * without the size field acknowledges all of it. */
+    rtr_sreq->send.state.dt.offset += (length >= sizeof(*atp)) ?
+                                              atp->size :
+                                              rtr_sreq->send.length;
+    if (rtr_sreq->send.state.dt.offset < rtr_sreq->send.length) {
+        return UCS_OK;
+    }
+
+    ucp_send_request_id_release(rtr_sreq);
     req   = ucp_request_get_super(rtr_sreq);
     mdesc = rtr_sreq->send.rndv.mdesc;
     ucs_assert(req != NULL);

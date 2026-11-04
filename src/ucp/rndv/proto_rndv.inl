@@ -1,5 +1,5 @@
 /**
- * Copyright (c) NVIDIA CORPORATION & AFFILIATES, 2021. ALL RIGHTS RESERVED.
+ * Copyright (c) NVIDIA CORPORATION & AFFILIATES, 2021-2026. ALL RIGHTS RESERVED.
  *
  * See file LICENSE for terms.
  */
@@ -300,6 +300,18 @@ static UCS_F_ALWAYS_INLINE size_t ucp_proto_rndv_rts_pack(
     }
 
     return hdr_len + rkey_size;
+}
+
+/* Whether an interface can send an ATS/ATP message */
+static UCS_F_ALWAYS_INLINE int
+ucp_proto_rndv_iface_can_send_ack(const uct_iface_attr_t *iface_attr)
+{
+    const size_t ack_size = sizeof(ucp_rndv_ack_hdr_t);
+
+    return ((iface_attr->cap.flags & UCT_IFACE_FLAG_AM_SHORT) &&
+            (iface_attr->cap.am.max_short >= ack_size)) ||
+           ((iface_attr->cap.flags & UCT_IFACE_FLAG_AM_BCOPY) &&
+            (iface_attr->cap.am.max_bcopy >= ack_size));
 }
 
 static size_t UCS_F_ALWAYS_INLINE ucp_proto_rndv_pack_ack(ucp_request_t *req,

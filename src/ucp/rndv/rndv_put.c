@@ -240,7 +240,6 @@ ucp_proto_rndv_put_common_probe(const ucp_proto_init_params_t *init_params,
                                 int support_ppln, uint8_t stat_counter,
                                 const ucp_memory_info_t *reg_mem_info)
 {
-    const size_t atp_size                = sizeof(ucp_rndv_ack_hdr_t);
     ucp_context_t *context               = init_params->worker->context;
     ucp_proto_multi_init_params_t params = {
         .super.super         = *init_params,
@@ -303,10 +302,7 @@ ucp_proto_rndv_put_common_probe(const ucp_proto_init_params_t *init_params,
     for (lane_idx = 0; lane_idx < rpriv.bulk.mpriv.num_lanes; ++lane_idx) {
         lane       = rpriv.bulk.mpriv.lanes[lane_idx].super.lane;
         iface_attr = ucp_proto_common_get_iface_attr(init_params, lane);
-        if (((iface_attr->cap.flags & UCT_IFACE_FLAG_AM_SHORT) &&
-             (iface_attr->cap.am.max_short >= atp_size)) ||
-            ((iface_attr->cap.flags & UCT_IFACE_FLAG_AM_BCOPY) &&
-             (iface_attr->cap.am.max_bcopy >= atp_size))) {
+        if (ucp_proto_rndv_iface_can_send_ack(iface_attr)) {
             atp_map |= UCS_BIT(lane);
         }
     }

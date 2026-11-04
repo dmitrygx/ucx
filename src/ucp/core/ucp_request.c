@@ -688,7 +688,8 @@ void ucp_request_send_state_ff(ucp_request_t *req, ucs_status_t status)
     req->flags |= UCP_REQUEST_FLAG_SYNC_REMOTE_COMPLETED;
     ucp_send_request_id_release(req);
 
-    if (req->send.uct.func == ucp_proto_progress_am_single) {
+    if ((req->send.uct.func == ucp_proto_progress_am_single) ||
+        (req->send.uct.func == ucp_proto_progress_am_single_lane)) {
         req->send.proto.comp_cb(req);
     } else if (req->send.uct.func == ucp_wireup_msg_progress) {
         ucs_free(req->send.buffer);
