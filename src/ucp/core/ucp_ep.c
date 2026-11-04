@@ -4777,6 +4777,11 @@ void ucp_ep_config_lane_info_str(ucp_worker_h worker,
          context->tl_cmpts[cmpt_index].attr.name, key->lanes[lane].dst_sys_dev,
          key->lanes[lane].seg_size);
 
+    if (key->lanes[lane].dst_local_sys_dev != UCS_SYS_DEVICE_ID_UNKNOWN) {
+        ucs_string_buffer_appendf(strbuf, " local-sysdev[%d]",
+                                  key->lanes[lane].dst_local_sys_dev);
+    }
+
     prio = ucp_ep_config_get_multi_lane_prio(key->rma_bw_lanes, lane);
     if (prio != -1) {
         ucs_string_buffer_appendf(strbuf, " rma_bw#%d", prio);
