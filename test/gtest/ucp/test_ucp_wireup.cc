@@ -22,7 +22,10 @@ extern "C" {
 #include <ucp/wireup/wireup_cm.h>
 #include <ucp/wireup/wireup_ep.h>
 #include <ucp/core/ucp_ep.inl>
+#include <ucp/core/ucp_rkey.h>
+#include <ucp/proto/proto_select.inl>
 #include <ucs/sys/math.h>
+#include <ucs/sys/topo/base/topo.h>
 }
 
 class test_ucp_wireup : public ucp_test {
@@ -1453,6 +1456,48 @@ UCS_TEST_P(select_transport_rma_bw, select_rc, "NUM_EPS=56", "NUM_PPN=28")
 
 UCP_INSTANTIATE_TEST_CASE_TLS(select_transport_rma_bw, tcp_ib, "tcp,ib")
 
+class unpacked_address {
+public:
+    unpacked_address(ucp_worker_h remote_worker) :
+        address(), m_remote_worker(remote_worker), m_address(NULL)
+    {
+    }
+
+    ~unpacked_address()
+    {
+        if (m_address != NULL) {
+            ucp_worker_release_address(m_remote_worker, m_address);
+        }
+        ucs_free(address.address_list);
+    }
+
+    void unpack(ucp_worker_h local_worker)
+    {
+        size_t address_length;
+        ucs_status_t status;
+
+        status = ucp_worker_get_address(m_remote_worker, &m_address,
+                                        &address_length);
+        ASSERT_UCS_OK(status);
+        ASSERT_GT(address_length, 0ul);
+
+        status = ucp_address_unpack(
+                local_worker, m_address,
+                ucp_worker_default_address_pack_flags(m_remote_worker),
+                &address);
+        ASSERT_UCS_OK(status);
+    }
+
+    ucp_unpacked_address_t address;
+
+private:
+    unpacked_address(const unpacked_address&);
+    unpacked_address& operator=(const unpacked_address&);
+
+    ucp_worker_h m_remote_worker;
+    ucp_address_t *m_address;
+};
+
 class test_ucp_wireup_p2p_redirect : public test_ucp_wireup {
 public:
     static void get_test_variants(std::vector<ucp_test_variant> &variants)
@@ -1461,17 +1506,43 @@ public:
     }
 
 protected:
-    /* Connect the entities if they have two network devices for RMA_BW lanes,
-     * with a system device per network device, and return the sender lanes.
-     * The entities share the topology, so their system devices are
-     * comparable. */
-    const ucp_ep_config_key_t &connect_net_devices()
+    /* Whether a network device of the sender reaches another device of the
+     * receiver, e.g. not if one is InfiniBand and the other one RoCE */
+    bool has_cross_device_path()
+    {
+        ucp_context_h context = sender().ucph();
+        unpacked_address remote(receiver().worker());
+        const ucp_address_entry_t *ae;
+        ucp_rsc_index_t rsc_index;
+
+        remote.unpack(sender().worker());
+        ucp_unpacked_address_for_each(ae, &remote.address) {
+            UCP_TL_BITMAP_FOR_EACH_BIT(rsc_index, &context->tl_bitmap) {
+                const uct_tl_resource_desc_t &tl_rsc =
+                        context->tl_rscs[rsc_index].tl_rsc;
+                if ((tl_rsc.dev_type == UCT_DEVICE_TYPE_NET) &&
+                    (tl_rsc.sys_device != ae->sys_dev) &&
+                    ucp_wireup_is_reachable(sender().ep(), 0, rsc_index, ae,
+                                            NULL, 0)) {
+                    return true;
+                }
+            }
+        }
+
+        return false;
+    }
+
+    /* Skip the test unless the entities have two network devices for RMA_BW
+     * lanes, with a system device per network device. The entities share the
+     * topology, so their system devices are comparable. */
+    void skip_without_net_devices()
     {
         ucp_context_h context = sender().ucph();
         std::map<ucs_sys_device_t, std::set<std::string>> net_devices;
+        ucp_rsc_index_t i;
 
         skip_loopback();
-        for (ucp_rsc_index_t i = 0; i < context->num_tls; ++i) {
+        UCP_TL_BITMAP_FOR_EACH_BIT(i, &context->tl_bitmap) {
             const uct_tl_resource_desc_t &tl_rsc = context->tl_rscs[i].tl_rsc;
             if ((tl_rsc.dev_type == UCT_DEVICE_TYPE_NET) &&
                 (ucp_worker_iface_get_attr(sender().worker(), i)->cap.flags &
@@ -1489,8 +1560,18 @@ protected:
                 UCS_TEST_SKIP_R("network devices share a system device");
             }
         }
+    }
 
+    /* Connect the sender to the receiver over network devices which reach
+     * each other, and return the sender lanes */
+    const ucp_ep_config_key_t &connect_net_devices()
+    {
+        skip_without_net_devices();
         sender().connect(&receiver(), get_ep_params());
+        if (!has_cross_device_path()) {
+            UCS_TEST_SKIP_R("network devices do not reach each other");
+        }
+
         send_recv(sender().ep(), receiver().worker(), receiver().ep(),
                   BUFFER_LENGTH, 1);
         return ucp_ep_config(sender().ep())->key;
@@ -1502,10 +1583,89 @@ protected:
         return sender().ucph()->tl_rscs[key.lanes[lane].rsc_index]
                 .tl_rsc.sys_device;
     }
+
+    /* Lanes of the protocol which puts a buffer with the given memory info to
+     * the receiver */
+    ucp_lane_map_t put_lane_map(const ucp_memory_info_t &mem_info,
+                                size_t length = UCS_MBYTE)
+    {
+        ucp_ep_h ep                          = sender().ep();
+        ucp_worker_h worker                  = sender().worker();
+        ucp_proto_select_elem_t *select_elem = nullptr;
+        ucs::handle<ucp_rkey_h> rkey;
+        ucp_worker_cfg_index_t rkey_cfg_index;
+        ucp_proto_select_param_t select_param;
+        ucp_proto_select_t *proto_select;
+        ucp_proto_query_attr_t attr;
+
+        if (!is_proto_enabled()) {
+            UCS_TEST_SKIP_R("Proto v2 is disabled");
+        }
+
+        rkey.reset(get_rkey(ep, m_memh_receiver), ucp_rkey_destroy);
+        proto_select = ucp_proto_select_get(worker, ep->cfg_index,
+                                            rkey->cfg_index, &rkey_cfg_index);
+        ucp_proto_select_param_init(&select_param, UCP_OP_ID_PUT, 0, 0,
+                                    UCP_DATATYPE_CONTIG, &mem_info, 1);
+        if (proto_select != nullptr) {
+            select_elem = ucp_proto_select_lookup_slow(
+                    worker, proto_select, 0, ep->cfg_index, rkey_cfg_index,
+                    &select_param);
+        }
+
+        if ((select_elem == nullptr) ||
+            !ucp_proto_select_elem_query(worker, select_elem, length, &attr)) {
+            ADD_FAILURE() << "no put protocol";
+            return 0;
+        }
+
+        return attr.lane_map;
+    }
+
+    /* Select the lanes of an endpoint from the worker address of its peer */
+    static ucp_ep_config_key_t
+    select_lanes(ucp_ep_h ep, ucp_worker_h peer_worker)
+    {
+        unpacked_address remote(peer_worker);
+        unsigned addr_indices[UCP_MAX_LANES];
+        ucp_ep_config_key_t key;
+
+        remote.unpack(ep->worker);
+        ucp_ep_config_key_reset(&key);
+        EXPECT_UCS_OK(ucp_wireup_select_lanes(ep, 0, ucp_tl_bitmap_max,
+                                              &remote.address, addr_indices,
+                                              &key, 1));
+        return key;
+    }
+
+    /* Local and remote system devices of the RMA_BW lanes, swapped if
+     * requested to compare with the lanes of the peer. The remote one is the
+     * local system device of the remote network device, because the worker
+     * address can omit system devices with protocols v1. */
+    static std::multiset<std::pair<int, int>>
+    rma_bw_lane_devs(ucp_worker_h worker, const ucp_ep_config_key_t &key,
+                     bool swap)
+    {
+        ucp_context_h context = worker->context;
+        std::multiset<std::pair<int, int>> result;
+
+        for (ucp_lane_index_t lane = 0; lane < key.num_lanes; ++lane) {
+            if (!(key.lanes[lane].lane_types & UCS_BIT(UCP_LANE_TYPE_RMA_BW))) {
+                continue;
+            }
+
+            const int local  = context->tl_rscs[key.lanes[lane].rsc_index]
+                                       .tl_rsc.sys_device;
+            const int remote = key.lanes[lane].dst_local_sys_dev;
+            result.emplace(swap ? remote : local, swap ? local : remote);
+        }
+
+        return result;
+    }
 };
 
-/* Same-host RMA_BW lanes avoid looping back through one network device when
- * its peer-to-peer traffic goes through the root complex */
+/* The best same-host RMA_BW lane connects different network devices when their
+ * peer-to-peer traffic goes through the root complex */
 UCS_TEST_P(test_ucp_wireup_p2p_redirect, cross_devices, "TOPO_P2P_REDIRECT=on",
            "MAX_RMA_RAILS=2")
 {
@@ -1546,6 +1706,95 @@ UCS_TEST_P(test_ucp_wireup_p2p_redirect, same_device_lanes,
                 << "sys_dev " << int(sys_dev);
     }
 
+    flush_worker(sender());
+}
+
+/* Host memory moves over the same-device lanes, which do not go through the
+ * network, and not over the lanes between different devices */
+UCS_TEST_P(test_ucp_wireup_p2p_redirect, host_mem_lanes,
+           "TOPO_P2P_REDIRECT=on", "MAX_RMA_RAILS=2")
+{
+    const ucp_ep_config_key_t key = connect_net_devices();
+    ucp_memory_info_t mem_info;
+    ucp_lane_map_t lane_map;
+    ucp_lane_index_t lane;
+
+    ucp_memory_info_set_host(&mem_info);
+    lane_map = put_lane_map(mem_info);
+    ASSERT_NE(ucp_lane_map_t(0), lane_map);
+    ucs_for_each_bit(lane, lane_map) {
+        EXPECT_EQ(lane_sys_dev(key, lane), key.lanes[lane].dst_sys_dev)
+                << "lane " << int(lane);
+    }
+
+    flush_worker(sender());
+}
+
+/* Memory under the root port of a device with redirected peer-to-peer traffic
+ * does not move over lanes whose remote ends are under that root port as well.
+ * The buffer is attributed to a network device, which is under its own root
+ * port. */
+UCS_TEST_P(test_ucp_wireup_p2p_redirect, root_port_hairpin_lanes,
+           "TOPO_P2P_REDIRECT=on", "MAX_RMA_RAILS=2")
+{
+    const ucp_ep_config_key_t key = connect_net_devices();
+    bool has_other_root_port      = false;
+    ucs_sys_device_t mem_sys_dev;
+    ucp_memory_info_t mem_info;
+    ucp_lane_map_t lane_map;
+    ucp_lane_index_t lane;
+
+    ASSERT_NE(UCP_NULL_LANE, key.rma_bw_lanes[0]);
+    mem_sys_dev = lane_sys_dev(key, key.rma_bw_lanes[0]);
+    for (lane = 0; lane < key.num_lanes; ++lane) {
+        if ((key.lanes[lane].lane_types & UCS_BIT(UCP_LANE_TYPE_RMA_BW)) &&
+            !ucs_topo_is_same_root_port(mem_sys_dev,
+                                        key.lanes[lane].dst_local_sys_dev)) {
+            has_other_root_port = true;
+        }
+    }
+
+    if (!has_other_root_port) {
+        UCS_TEST_SKIP_R("all network devices are under one root port");
+    }
+
+    ucp_memory_info_set_host(&mem_info);
+    mem_info.sys_dev = mem_sys_dev;
+    lane_map         = put_lane_map(mem_info);
+    ASSERT_NE(ucp_lane_map_t(0), lane_map);
+    ucs_for_each_bit(lane, lane_map) {
+        EXPECT_FALSE(ucs_topo_is_same_root_port(
+                mem_sys_dev, key.lanes[lane].dst_local_sys_dev))
+                << "lane " << int(lane);
+    }
+
+    flush_worker(sender());
+}
+
+/* Both peers select mirrored lanes from the worker addresses of each other, as
+ * when they connect at the same time. With one rendezvous rail, they must
+ * break the tie between the two directions of a device pair the same way. The
+ * protocols v1 put of connect_net_devices() is not supported here, so only
+ * connect. */
+UCS_TEST_P(test_ucp_wireup_p2p_redirect, mirrored_lanes, "TOPO_P2P_REDIRECT=on",
+           "PROTO_ENABLE=n", "MAX_RNDV_RAILS=1")
+{
+    skip_without_net_devices();
+    sender().connect(&receiver(), get_ep_params());
+
+    ucp_worker_h worker = receiver().worker();
+    wait_for_value(&worker->num_all_eps, 1u);
+    ucp_ep_h receiver_ep = ucs_list_head(&worker->all_eps, ucp_ep_ext_t,
+                                         ep_list)->ep;
+    auto sender_devs     = rma_bw_lane_devs(sender().worker(),
+                                            select_lanes(sender().ep(), worker),
+                                            false);
+
+    ASSERT_FALSE(sender_devs.empty());
+    EXPECT_EQ(sender_devs,
+              rma_bw_lane_devs(worker,
+                               select_lanes(receiver_ep, sender().worker()),
+                               true));
     flush_worker(sender());
 }
 
@@ -2117,49 +2366,6 @@ UCS_TEST_SKIP_COND_P(test_ucp_address_v2, diff_seg_sizes,
 }
 
 UCP_INSTANTIATE_TEST_CASE(test_ucp_address_v2)
-
-
-class unpacked_address {
-public:
-    unpacked_address(ucp_worker_h remote_worker) :
-        address(), m_remote_worker(remote_worker), m_address(NULL)
-    {
-    }
-
-    ~unpacked_address()
-    {
-        if (m_address != NULL) {
-            ucp_worker_release_address(m_remote_worker, m_address);
-        }
-        ucs_free(address.address_list);
-    }
-
-    void unpack(ucp_worker_h local_worker)
-    {
-        size_t address_length;
-        ucs_status_t status;
-
-        status = ucp_worker_get_address(m_remote_worker, &m_address,
-                                        &address_length);
-        ASSERT_UCS_OK(status);
-        ASSERT_GT(address_length, 0ul);
-
-        status = ucp_address_unpack(
-                local_worker, m_address,
-                ucp_worker_default_address_pack_flags(m_remote_worker),
-                &address);
-        ASSERT_UCS_OK(status);
-    }
-
-    ucp_unpacked_address_t address;
-
-private:
-    unpacked_address(const unpacked_address&);
-    unpacked_address& operator=(const unpacked_address&);
-
-    ucp_worker_h m_remote_worker;
-    ucp_address_t *m_address;
-};
 
 
 static uint64_t wireup_aux_local_iface_flags(int has_cm, int err_mode_peer)
