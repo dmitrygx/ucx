@@ -98,11 +98,11 @@ out:
 static int ucp_proto_multi_is_same_device_lane(
         const ucp_proto_init_params_t *params, ucp_lane_index_t lane)
 {
-    ucs_sys_device_t dst_sys_dev =
+    ucs_sys_device_t dst_local_sys_dev =
             params->ep_config_key->lanes[lane].dst_local_sys_dev;
 
-    return (dst_sys_dev != UCS_SYS_DEVICE_ID_UNKNOWN) &&
-           (dst_sys_dev == ucp_proto_common_get_sys_dev(params, lane));
+    return (dst_local_sys_dev != UCS_SYS_DEVICE_ID_UNKNOWN) &&
+           (dst_local_sys_dev == ucp_proto_common_get_sys_dev(params, lane));
 }
 
 static ucp_lane_index_t
@@ -230,6 +230,7 @@ static ucp_lane_index_t ucp_proto_multi_find_max_avail_bw_lane(
             selected_index = first_max_bw_lane;
             tie_break      = "first-max";
         }
+
         goto out;
     }
 
@@ -702,22 +703,22 @@ static ucs_sys_device_t ucp_proto_multi_remote_mem_root_port_dev(
  */
 static int ucp_proto_multi_is_p2p_hairpin_lane(
         const ucp_proto_common_init_params_t *params,
-        ucs_sys_device_t remote_mem_sys_dev, ucp_lane_index_t lane)
+        ucs_sys_device_t remote_mem_port_dev, ucp_lane_index_t lane)
 {
     const ucp_proto_init_params_t *init_params = &params->super;
-    ucs_sys_device_t dst_sys_dev               =
+    ucs_sys_device_t dst_local_sys_dev         =
             init_params->ep_config_key->lanes[lane].dst_local_sys_dev;
 
-    if (dst_sys_dev == UCS_SYS_DEVICE_ID_UNKNOWN) {
+    if (dst_local_sys_dev == UCS_SYS_DEVICE_ID_UNKNOWN) {
         /* Not a same-host lane */
         return 0;
     }
 
     return ((params->reg_mem_info.type != UCS_MEMORY_TYPE_UNKNOWN) &&
             ucp_proto_multi_is_p2p_redirected(params->reg_mem_info.sys_dev,
-                                              dst_sys_dev)) ||
+                                              dst_local_sys_dev)) ||
            ucp_proto_multi_is_p2p_redirected(
-                   remote_mem_sys_dev,
+                   remote_mem_port_dev,
                    ucp_proto_common_get_sys_dev(init_params, lane));
 }
 
@@ -726,39 +727,28 @@ static int ucp_proto_multi_is_p2p_hairpin_lane(
  * unless all lanes do. Such a lane shares the link with the other lanes, so
  * any part of the data on it slows down the whole transfer.
  */
-static void ucp_proto_multi_filter_p2p_hairpin_lanes(
+static ucp_lane_index_t ucp_proto_multi_filter_p2p_hairpin_lanes(
         const ucp_proto_multi_init_params_t *params, int fixed_first_lane,
-        ucp_lane_index_t *lanes, ucp_lane_index_t *num_lanes_p)
+        ucp_lane_index_t num_lanes, ucp_lane_index_t *lanes)
 {
-    const ucp_lane_index_t first        = fixed_first_lane ? 1 : 0;
-    ucs_sys_device_t remote_mem_sys_dev =
+    const ucp_lane_index_t first         = fixed_first_lane ? 1 : 0;
+    ucs_sys_device_t remote_mem_port_dev =
             ucp_proto_multi_remote_mem_root_port_dev(&params->super);
-    ucp_lane_map_t hairpin_map          = 0;
-    ucp_lane_index_t i, num_lanes;
+    ucp_lane_index_t i, num_kept_lanes;
 
-    for (i = first; i < *num_lanes_p; ++i) {
+    for (i = num_kept_lanes = first; i < num_lanes; ++i) {
         if (ucp_proto_multi_is_p2p_hairpin_lane(&params->super,
-                                                remote_mem_sys_dev,
+                                                remote_mem_port_dev,
                                                 lanes[i])) {
-            hairpin_map |= UCS_BIT(i);
-        }
-    }
-
-    if ((hairpin_map == 0) ||
-        (ucs_popcount(hairpin_map) == (*num_lanes_p - first))) {
-        return;
-    }
-
-    for (i = num_lanes = first; i < *num_lanes_p; ++i) {
-        if (hairpin_map & UCS_BIT(i)) {
-            ucs_trace("drop lane[%d]: it moves the data twice over a root "
-                      "port link", lanes[i]);
+            ucs_trace("lane[%d] moves the data twice over a root port link",
+                      lanes[i]);
         } else {
-            lanes[num_lanes++] = lanes[i];
+            lanes[num_kept_lanes++] = lanes[i];
         }
     }
 
-    *num_lanes_p = num_lanes;
+    /* If all lanes are such, none was moved: keep them all */
+    return (num_kept_lanes > first) ? num_kept_lanes : num_lanes;
 }
 
 /* Get the performance and maximal bandwidth of all candidate lanes. */
@@ -1129,8 +1119,8 @@ ucs_status_t ucp_proto_multi_init(const ucp_proto_multi_init_params_t *params,
     }
 
     fixed_first_lane = params->first.lane_type != params->middle.lane_type;
-    ucp_proto_multi_filter_p2p_hairpin_lanes(params, fixed_first_lane, lanes,
-                                             &num_lanes);
+    num_lanes        = ucp_proto_multi_filter_p2p_hairpin_lanes(
+            params, fixed_first_lane, num_lanes, lanes);
 
     status = ucp_proto_multi_query_lanes(params, lanes, num_lanes, lanes_perf,
                                          &queried_lane_map, &max_bandwidth);
