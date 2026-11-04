@@ -1,5 +1,5 @@
 /**
-* Copyright (c) NVIDIA CORPORATION & AFFILIATES, 2001-2019. ALL RIGHTS RESERVED.
+* Copyright (c) NVIDIA CORPORATION & AFFILIATES, 2001-2026. ALL RIGHTS RESERVED.
 * Copyright (C) UT-Battelle, LLC. 2015. ALL RIGHTS RESERVED.
 *
 * See file LICENSE for terms.
@@ -971,6 +971,162 @@ UCS_TEST_P(test_ucp_tag_match_rndv, bidir_multi_exp_post,
 
 UCP_INSTANTIATE_TEST_CASE(test_ucp_tag_match_rndv)
 UCP_INSTANTIATE_TEST_CASE_TLS(test_ucp_tag_match_rndv, mm_tcp, "posix,sysv,tcp")
+
+/* The put rendezvous of protocols v1 must send an ATP after the data on every
+ * lane which put the data, because the data of a lane can reach the receiver
+ * memory later than an ATP sent on another lane. */
+class test_ucp_tag_match_rndv_put_atp : public test_ucp_tag_match_rndv {
+public:
+    static void get_test_variants(std::vector<ucp_test_variant> &variants)
+    {
+        add_variant_with_value(variants, get_ctx_params(),
+                               RNDV_SCHEME_PUT_ZCOPY | DISABLE_PROTO,
+                               "put_zcopy,proto_v1");
+    }
+
+    void cleanup() override
+    {
+        restore_lanes();
+        m_ops_log.clear();
+        test_ucp_tag_match_rndv::cleanup();
+    }
+
+protected:
+    void send_recv(size_t size)
+    {
+        std::vector<char> sendbuf(size), recvbuf(size, 0);
+        request *send_req, *recv_req;
+
+        ucs::fill_random(sendbuf);
+        recv_req = recv_nb(&recvbuf[0], recvbuf.size(), DATATYPE, 0x1337,
+                           0xffff);
+        ASSERT_TRUE(!UCS_PTR_IS_ERR(recv_req));
+        send_req = send_nb(&sendbuf[0], sendbuf.size(), DATATYPE, 0x111337);
+        ASSERT_TRUE(!UCS_PTR_IS_ERR(send_req));
+
+        wait(recv_req);
+        EXPECT_EQ(sendbuf, recvbuf);
+        wait_and_validate(send_req);
+        request_free(recv_req);
+    }
+
+    /* Record the puts and ATPs on the lanes of the sender */
+    void hook_lanes()
+    {
+        ucp_ep_h ep = sender().ep();
+        uct_iface_h iface;
+
+        for (ucp_lane_index_t lane = 0; lane < ucp_ep_config(ep)->key.num_lanes;
+             ++lane) {
+            iface = ucp_ep_get_lane(ep, lane)->iface;
+            if (m_ops.find(iface) != m_ops.end()) {
+                continue;
+            }
+
+            m_ops[iface]            = iface->ops;
+            iface->ops.ep_put_zcopy = put_zcopy;
+            iface->ops.ep_am_short  = am_short;
+            iface->ops.ep_am_bcopy  = am_bcopy;
+        }
+    }
+
+    void restore_lanes()
+    {
+        for (auto &iface_ops : m_ops) {
+            iface_ops.first->ops = iface_ops.second;
+        }
+
+        m_ops.clear();
+    }
+
+    static ucs_status_t put_zcopy(uct_ep_h ep, const uct_iov_t *iov,
+                                  size_t iovcnt, uint64_t remote_addr,
+                                  uct_rkey_t rkey, uct_completion_t *comp)
+    {
+        ucs_status_t status = m_ops[ep->iface].ep_put_zcopy(ep, iov, iovcnt,
+                                                            remote_addr, rkey,
+                                                            comp);
+
+        if (!UCS_STATUS_IS_ERR(status)) {
+            m_ops_log[ep] += 'p';
+        }
+
+        return status;
+    }
+
+    static ucs_status_t am_short(uct_ep_h ep, uint8_t id, uint64_t header,
+                                 const void *payload, unsigned length)
+    {
+        ucs_status_t status = m_ops[ep->iface].ep_am_short(ep, id, header,
+                                                           payload, length);
+
+        if ((status == UCS_OK) && (id == UCP_AM_ID_RNDV_ATP)) {
+            m_ops_log[ep] += 'a';
+        }
+
+        return status;
+    }
+
+    static ssize_t am_bcopy(uct_ep_h ep, uint8_t id,
+                            uct_pack_callback_t pack_cb, void *arg,
+                            unsigned flags)
+    {
+        ssize_t packed_size = m_ops[ep->iface].ep_am_bcopy(ep, id, pack_cb, arg,
+                                                           flags);
+
+        if ((packed_size >= 0) && (id == UCP_AM_ID_RNDV_ATP)) {
+            m_ops_log[ep] += 'a';
+        }
+
+        return packed_size;
+    }
+
+    static std::map<uct_iface_h, uct_iface_ops_t> m_ops;
+    /* Operations of every UCT endpoint: 'p' for a put, 'a' for an ATP */
+    static std::map<uct_ep_h, std::string> m_ops_log;
+};
+
+std::map<uct_iface_h, uct_iface_ops_t> test_ucp_tag_match_rndv_put_atp::m_ops;
+std::map<uct_ep_h, std::string> test_ucp_tag_match_rndv_put_atp::m_ops_log;
+
+UCS_TEST_P(test_ucp_tag_match_rndv_put_atp, atp_after_data, "IB_NUM_PATHS?=2")
+{
+    static const size_t size = 4 * UCS_MBYTE;
+    ucp_ep_h ep              = sender().ep();
+    bool data_put            = false;
+    const std::string *ops_log;
+    ucp_lane_index_t lane;
+    size_t last_put;
+
+    /* Connect all the lanes before recording their operations */
+    send_recv(size);
+
+    hook_lanes();
+    send_recv(size);
+    restore_lanes();
+
+    for (lane = 0; lane < ucp_ep_config(ep)->key.num_lanes; ++lane) {
+        ops_log  = &m_ops_log[ucp_ep_get_lane(ep, lane)];
+        last_put = ops_log->rfind('p');
+        if (last_put == std::string::npos) {
+            continue;
+        }
+
+        data_put = true;
+        if (ucp_ep_get_iface_attr(ep, lane)->cap.flags &
+            (UCT_IFACE_FLAG_AM_SHORT | UCT_IFACE_FLAG_AM_BCOPY)) {
+            EXPECT_NE(std::string::npos, ops_log->find('a', last_put))
+                    << "lane[" << static_cast<int>(lane)
+                    << "] put data without an ATP after it: " << *ops_log;
+        }
+    }
+
+    if (!data_put) {
+        UCS_TEST_SKIP_R("no lane put the data");
+    }
+}
+
+UCP_INSTANTIATE_TEST_CASE(test_ucp_tag_match_rndv_put_atp)
 
 class test_ucp_tag_match_rndv_align : public test_ucp_tag_match_rndv {
 public:
