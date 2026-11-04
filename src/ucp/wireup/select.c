@@ -30,15 +30,17 @@
 #define UCP_WIREUP_KA_SCORE_TOLERANCE      0.02
 #define UCP_WIREUP_NO_SCORE_TIEBREAK       (-1.0)
 
-/* Minimal peer release version which lowers the score of loopback lanes with
- * redirected peer-to-peer traffic, both peers must do it to match the lanes */
+/* Minimal peer release version which selects same-host RMA_BW lanes of devices
+ * with redirected peer-to-peer traffic the same way, both peers must do it to
+ * match the lanes */
 #define UCP_WIREUP_P2P_REDIRECT_MIN_DST_VERSION 24
 
 /* Factor applied to the bandwidth of a same-device loopback lane when its
  * device's peer-to-peer traffic goes through the root complex. It is small
  * enough to outweigh any bandwidth difference from device distances (e.g. to
- * the GPU of the process), so such a lane is selected only when no pair of
- * different devices is available. */
+ * the GPU of the process), so the RMA_BW selection pairs different devices
+ * first. ucp_wireup_add_rma_bw_same_device_lanes() then adds the loopback
+ * lanes for host memory. */
 #define UCP_WIREUP_P2P_REDIRECT_BW_RATIO        1e-3
 
 /* Host device identities are below this value, so a pair of them is exact in
