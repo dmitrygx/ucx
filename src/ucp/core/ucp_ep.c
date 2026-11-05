@@ -5805,6 +5805,7 @@ static ucs_status_t ucp_rkey_update_config(ucp_rkey_h rkey, ucp_ep_h ep)
 
     rkey_cfg                            = ucp_rkey_config(worker, rkey);
     rkey_cfg->proto_select.worker_epoch = worker->epoch;
+    ucs_assert(rkey_cfg->put_short == rkey->put_short);
     return UCS_OK;
 }
 

@@ -141,6 +141,11 @@ KHASH_IMPL(ucp_worker_discard_uct_ep_hash, uct_ep_h, ucp_request_t*, 1,
            ucp_worker_discard_uct_ep_hash_key, kh_int64_hash_equal);
 
 
+KHASH_IMPL(ucp_worker_rkey_put_short, ucp_rkey_config_key_t,
+           ucp_proto_select_short_t*, 1, ucp_rkey_config_hash_func,
+           ucp_rkey_config_is_equal);
+
+
 static ucs_status_t ucp_worker_wakeup_ctl_fd(ucp_worker_h worker,
                                              ucp_worker_event_fd_op_t op,
                                              int event_fd)
@@ -2356,6 +2361,53 @@ static void ucp_worker_dump_rkey_config_key(ucs_string_buffer_t *log_strb,
             ucs_memory_type_names[key->mem_type], key->unreachable_md_map);
 }
 
+/*
+ * Rkey configurations which differ only by the endpoint configuration share the
+ * put-short thresholds array. A remote key keeps a pointer to the array, so the
+ * short put uses the thresholds and the lane of the current endpoint
+ * configuration, even if it changed after the remote key was unpacked.
+ */
+static ucs_status_t
+ucp_worker_rkey_put_short_get(ucp_worker_h worker,
+                              const ucp_rkey_config_key_t *key,
+                              ucp_proto_select_short_t **put_short_p)
+{
+    ucp_rkey_config_key_t put_short_key = *key;
+    ucp_proto_select_short_t *put_short;
+    ucp_worker_cfg_index_t ep_cfg_index;
+    khiter_t khiter;
+    int khret;
+
+    put_short_key.ep_cfg_index = UCP_WORKER_CFG_INDEX_NULL;
+    khiter = kh_put(ucp_worker_rkey_put_short, &worker->rkey_put_short_hash,
+                    put_short_key, &khret);
+    if (khret == UCS_KH_PUT_FAILED) {
+        return UCS_ERR_NO_MEMORY;
+    }
+
+    if (khret == UCS_KH_PUT_KEY_PRESENT) {
+        *put_short_p = kh_value(&worker->rkey_put_short_hash, khiter);
+        return UCS_OK;
+    }
+
+    put_short = ucs_malloc(sizeof(*put_short) * UCP_WORKER_MAX_EP_CONFIG,
+                           "rkey_put_short");
+    if (put_short == NULL) {
+        kh_del(ucp_worker_rkey_put_short, &worker->rkey_put_short_hash, khiter);
+        return UCS_ERR_NO_MEMORY;
+    }
+
+    /* Set when the rkey configuration of the endpoint configuration is added */
+    for (ep_cfg_index = 0; ep_cfg_index < UCP_WORKER_MAX_EP_CONFIG;
+         ++ep_cfg_index) {
+        ucp_proto_select_short_disable(&put_short[ep_cfg_index]);
+    }
+
+    kh_value(&worker->rkey_put_short_hash, khiter) = put_short;
+    *put_short_p                                   = put_short;
+    return UCS_OK;
+}
+
 ucs_status_t
 ucp_worker_add_rkey_config(ucp_worker_h worker,
                            const ucp_rkey_config_key_t *key,
@@ -2414,6 +2466,12 @@ ucp_worker_add_rkey_config(ucp_worker_h worker,
 
     rkey_config->key = *key;
 
+    status = ucp_worker_rkey_put_short_get(worker, key,
+                                           &rkey_config->put_short);
+    if (status != UCS_OK) {
+        goto err_free_rkey_config;
+    }
+
     /* Copy remote-memory distance of each lane to rkey config */
     for (lane = 0; lane < ep_config->key.num_lanes; ++lane) {
         if (key->sys_dev == UCS_SYS_DEVICE_ID_UNKNOWN) {
@@ -2451,14 +2509,12 @@ ucp_worker_add_rkey_config(ucp_worker_h worker,
 
     *cfg_index_p = rkey_cfg_index;
 
-    /* Set threshold for short put */
+    /* Set threshold for short put, the key is new, so it is set only once */
     if (worker->context->config.features & UCP_FEATURE_RMA) {
         ucp_proto_select_short_init(worker, &rkey_config->proto_select,
                                     key->ep_cfg_index, rkey_cfg_index,
                                     UCP_OP_ID_PUT, UCP_PROTO_FLAG_PUT_SHORT,
-                                    &rkey_config->put_short);
-    } else {
-        ucp_proto_select_short_disable(&rkey_config->put_short);
+                                    &rkey_config->put_short[key->ep_cfg_index]);
     }
 
     return UCS_OK;
@@ -2502,6 +2558,7 @@ static void ucp_worker_destroy_configs(ucp_worker_h worker)
 {
     ucp_ep_config_t *ep_config;
     ucp_rkey_config_t **rkey_config_p;
+    ucp_proto_select_short_t *put_short;
 
     ucs_array_for_each(ep_config, &worker->ep_config) {
         ucp_ep_config_cleanup(worker, ep_config);
@@ -2513,6 +2570,11 @@ static void ucp_worker_destroy_configs(ucp_worker_h worker)
         ucs_free(*rkey_config_p);
     }
     ucs_array_cleanup_dynamic(&worker->rkey_config);
+
+    kh_foreach_value(&worker->rkey_put_short_hash, put_short, {
+        ucs_free(put_short);
+    });
+    kh_destroy_inplace(ucp_worker_rkey_put_short, &worker->rkey_put_short_hash);
 }
 
 ucs_thread_mode_t ucp_worker_get_thread_mode(uint64_t worker_flags)
@@ -2744,6 +2806,7 @@ ucs_status_t ucp_worker_create(ucp_context_h context,
     ucs_list_head_init(&worker->all_eps);
     ucs_list_head_init(&worker->internal_eps);
     kh_init_inplace(ucp_worker_rkey_config, &worker->rkey_config_hash);
+    kh_init_inplace(ucp_worker_rkey_put_short, &worker->rkey_put_short_hash);
     kh_init_inplace(ucp_worker_discard_uct_ep_hash, &worker->discard_uct_ep_hash);
     kh_init_inplace(ucp_worker_remote_flush, &worker->remote_flush_hash);
     worker->counters.ep_creations         = 0;

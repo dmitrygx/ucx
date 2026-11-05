@@ -54,6 +54,19 @@ ucp_rkey_config(ucp_worker_h worker, ucp_rkey_h rkey)
     return ucp_worker_rkey_config(worker, rkey->cfg_index);
 }
 
+/**
+ * @return put-short thresholds of the remote key for the current endpoint
+ *         configuration, even if the remote key configuration was created for
+ *         another endpoint configuration
+ */
+static UCS_F_ALWAYS_INLINE const ucp_proto_select_short_t *
+ucp_rkey_put_short(ucp_rkey_h rkey, ucp_ep_h ep)
+{
+    ucs_assertv(ep->cfg_index < UCP_WORKER_MAX_EP_CONFIG, "ep %p cfg_index %u",
+                ep, ep->cfg_index);
+    return &rkey->put_short[ep->cfg_index];
+}
+
 static UCS_F_ALWAYS_INLINE uct_rkey_t
 ucp_rkey_get_tl_rkey(ucp_rkey_h rkey, ucp_md_index_t rkey_index)
 {

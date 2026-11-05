@@ -91,8 +91,10 @@ typedef struct {
     /* Configuration key */
     ucp_rkey_config_key_t    key;
 
-    /* Put-short thresholds */
-    ucp_proto_select_short_t put_short;
+    /* Put-short thresholds of all configurations which differ from this one
+     * only by the endpoint configuration, indexed by the endpoint
+     * configuration index */
+    ucp_proto_select_short_t *put_short;
 
     /* Remote system topology distance of each lane from the remote memory
      * buffer. The number of valid entries is according to the number of lanes
@@ -126,6 +128,9 @@ typedef struct ucp_rkey {
             uint8_t                   flags;           /* Rkey flags */
             uint8_t                   mem_type;        /* Memory type of remote key memory */
             ucp_worker_cfg_index_t    cfg_index;       /* Rkey configuration index */
+            /* Put-short thresholds, indexed by the endpoint configuration
+             * index. @ref ucp_rkey_config_t::put_short */
+            const ucp_proto_select_short_t *put_short;
         };
     };
 #if ENABLE_PARAMS_CHECK

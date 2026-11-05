@@ -156,7 +156,7 @@ ucp_put_send_short(ucp_ep_h ep, const void *buffer, size_t length,
                    uint64_t remote_addr, ucp_rkey_h rkey,
                    const ucp_request_param_t *param)
 {
-    const ucp_rkey_config_t *rkey_config;
+    const ucp_proto_select_short_t *put_short;
     uct_rkey_t tl_rkey;
     ucs_status_t status;
 
@@ -165,13 +165,12 @@ ucp_put_send_short(ucp_ep_h ep, const void *buffer, size_t length,
         return UCS_ERR_NO_RESOURCE;
     }
 
-    rkey_config = ucp_rkey_config(ep->worker, rkey);
-    if (ucs_unlikely(!ucp_proto_select_is_short(ep, &rkey_config->put_short,
-                                                length))) {
+    put_short = ucp_rkey_put_short(rkey, ep);
+    if (ucs_unlikely(!ucp_proto_select_is_short(ep, put_short, length))) {
         return UCS_ERR_NO_RESOURCE;
     }
 
-    tl_rkey = ucp_rkey_get_tl_rkey(rkey, rkey_config->put_short.rkey_index);
+    tl_rkey = ucp_rkey_get_tl_rkey(rkey, put_short->rkey_index);
 
     if (ucs_unlikely(ucp_ep_rma_is_fence_required(ep))) {
         /* TODO: check support for fence in fast path short */
@@ -179,14 +178,40 @@ ucp_put_send_short(ucp_ep_h ep, const void *buffer, size_t length,
     }
 
     status = UCS_PROFILE_CALL(uct_ep_put_short,
-                              ucp_ep_get_fast_lane(ep,
-                                                   rkey_config->put_short.lane),
-                              buffer, length, remote_addr, tl_rkey);
+                              ucp_ep_get_fast_lane(ep, put_short->lane), buffer,
+                              length, remote_addr, tl_rkey);
     if (status == UCS_OK) {
-        ep->ext->unflushed_lanes |= UCS_BIT(rkey_config->put_short.lane);
+        ep->ext->unflushed_lanes |= UCS_BIT(put_short->lane);
     }
 
     return status;
+}
+
+/*
+ * The put-short thresholds of an endpoint configuration are set when a remote
+ * key of the same kind is unpacked with it, or moved to it on the protocol path.
+ * A put which must complete immediately does not get to the protocol path, so
+ * move the remote key here and try once again.
+ */
+static UCS_F_NOINLINE ucs_status_t ucp_put_send_short_force(
+        ucp_ep_h ep, const void *buffer, size_t length, uint64_t remote_addr,
+        ucp_rkey_h rkey, const ucp_request_param_t *param)
+{
+    ucs_status_t status;
+
+    if ((param->op_attr_mask &
+         (UCP_OP_ATTR_FIELD_DATATYPE | UCP_OP_ATTR_FLAG_NO_IMM_CMPL)) ||
+        (ucp_rkey_put_short(rkey, ep)->lane != UCP_NULL_LANE) ||
+        !ucp_proto_rkey_config_is_stale(ep, rkey)) {
+        return UCS_ERR_NO_RESOURCE;
+    }
+
+    status = ucp_ep_update_rkey_config(ep, rkey);
+    if (status != UCS_OK) {
+        return status;
+    }
+
+    return ucp_put_send_short(ep, buffer, length, remote_addr, rkey, param);
 }
 
 ucs_status_ptr_t ucp_put_nbx(ucp_ep_h ep, const void *buffer, size_t count,
@@ -217,9 +242,15 @@ ucs_status_ptr_t ucp_put_nbx(ucp_ep_h ep, const void *buffer, size_t count,
     }
 
     status = ucp_put_send_short(ep, buffer, count, remote_addr, rkey, param);
-    if (ucs_likely(status != UCS_ERR_NO_RESOURCE) ||
-        ucs_unlikely(param->op_attr_mask & UCP_OP_ATTR_FLAG_FORCE_IMM_CMPL)) {
+    if (ucs_likely(status != UCS_ERR_NO_RESOURCE)) {
         ret = UCS_STATUS_PTR(status);
+        goto out_unlock;
+    }
+
+    if (ucs_unlikely(param->op_attr_mask & UCP_OP_ATTR_FLAG_FORCE_IMM_CMPL)) {
+        ret = UCS_STATUS_PTR(ucp_put_send_short_force(ep, buffer, count,
+                                                      remote_addr, rkey,
+                                                      param));
         goto out_unlock;
     }
 

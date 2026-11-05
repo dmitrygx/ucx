@@ -872,6 +872,7 @@ UCS_PROFILE_FUNC(ucs_status_t, ucp_rkey_proto_resolve,
     const void *p                    = buffer;
     ucs_sys_dev_distance_t *lanes_distance;
     ucp_rkey_config_key_t rkey_config_key;
+    ucs_status_t status;
     khiter_t khiter;
 
     /* Avoid calling ucp_ep_resolve_remote_id() from rkey_unpack, and let
@@ -902,14 +903,21 @@ UCS_PROFILE_FUNC(ucs_status_t, ucp_rkey_proto_resolve,
     if (ucs_likely(khiter != kh_end(&worker->rkey_config_hash))) {
         /* Found existing configuration in hash */
         rkey->cfg_index = kh_val(&worker->rkey_config_hash, khiter);
-        return UCS_OK;
+    } else {
+        lanes_distance = ucs_alloca(sizeof(*lanes_distance) * UCP_MAX_LANES);
+        ucp_rkey_unpack_lanes_distance(&ucp_ep_config(ep)->key, lanes_distance,
+                                       p, buffer_end);
+        status = ucp_worker_add_rkey_config(worker, &rkey_config_key,
+                                            lanes_distance, &rkey->cfg_index);
+        if (status != UCS_OK) {
+            return status;
+        }
     }
 
-    lanes_distance = ucs_alloca(sizeof(*lanes_distance) * UCP_MAX_LANES);
-    ucp_rkey_unpack_lanes_distance(&ucp_ep_config(ep)->key, lanes_distance, p,
-                                   buffer_end);
-    return ucp_worker_add_rkey_config(worker, &rkey_config_key, lanes_distance,
-                                      &rkey->cfg_index);
+    /* Does not change when the remote key is moved to another endpoint
+     * configuration */
+    rkey->put_short = ucp_rkey_config(worker, rkey)->put_short;
+    return UCS_OK;
 }
 
 UCS_PROFILE_FUNC(ucs_status_t, ucp_ep_rkey_unpack_internal,
@@ -1300,7 +1308,9 @@ void ucp_rkey_proto_select_dump(ucp_worker_h worker,
     const ucp_rkey_config_t *rkey_config =
             ucp_worker_rkey_config(worker, rkey_cfg_index);
 
-    ucp_proto_select_dump_short(&rkey_config->put_short, "put_short", strb);
+    ucp_proto_select_dump_short(
+            &rkey_config->put_short[rkey_config->key.ep_cfg_index], "put_short",
+            strb);
     ucp_proto_select_info(worker, rkey_config->key.ep_cfg_index, rkey_cfg_index,
                           &rkey_config->proto_select, 0, strb);
 }

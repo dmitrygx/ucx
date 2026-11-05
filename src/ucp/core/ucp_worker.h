@@ -219,6 +219,13 @@ KHASH_TYPE(ucp_worker_rkey_config, ucp_rkey_config_key_t, ucp_worker_cfg_index_t
 typedef khash_t(ucp_worker_rkey_config) ucp_worker_rkey_config_hash_t;
 
 
+/* Hash map to find put-short thresholds by rkey config key without the endpoint
+ * configuration index */
+KHASH_TYPE(ucp_worker_rkey_put_short, ucp_rkey_config_key_t,
+           ucp_proto_select_short_t*);
+typedef khash_t(ucp_worker_rkey_put_short) ucp_worker_rkey_put_short_hash_t;
+
+
 /* Hash map of UCT EPs that are being discarded on UCP Worker */
 KHASH_TYPE(ucp_worker_discard_uct_ep_hash, uct_ep_h, ucp_request_t*);
 typedef khash_t(ucp_worker_discard_uct_ep_hash) ucp_worker_discard_uct_ep_hash_t;
@@ -399,6 +406,8 @@ typedef struct ucp_worker {
                                                              ucp_worker_listen */
 
     ucp_worker_rkey_config_hash_t    rkey_config_hash;    /* RKEY config key -> index */
+    /* RKEY config key without EP config -> put-short thresholds */
+    ucp_worker_rkey_put_short_hash_t rkey_put_short_hash;
     ucp_worker_discard_uct_ep_hash_t discard_uct_ep_hash; /* Hash of discarded UCT EPs */
     UCS_PTR_MAP_T(ep)                ep_map;              /* UCP ep key to ptr
                                                              mapping */
