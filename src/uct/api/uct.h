@@ -539,7 +539,15 @@ enum uct_flush_flags {
                                                  and the updated memory is
                                                  globally visible for all
                                                  processing elements in the
-                                                 system. */
+                                                 system. If remote flush is
+                                                 not supported for the peer,
+                                                 for example when the peer
+                                                 interface was opened without
+                                                 @ref UCT_IFACE_FEATURE_FLUSH_REMOTE
+                                                 or the peer memory domain
+                                                 cannot provide it, the flush
+                                                 provides only the guarantees of
+                                                 @ref UCT_FLUSH_FLAG_LOCAL. */
 };
 
 

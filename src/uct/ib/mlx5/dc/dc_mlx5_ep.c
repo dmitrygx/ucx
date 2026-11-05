@@ -888,12 +888,11 @@ ucs_status_t uct_dc_mlx5_ep_flush(uct_ep_h tl_ep, unsigned flags,
         goto out;
     }
 
-    if (flags & UCT_FLUSH_FLAG_REMOTE) {
-        UCT_RC_IFACE_CHECK_FLUSH_REMOTE(ep->flags & UCT_DC_MLX5_EP_FLAG_FLUSH_RKEY,
-                                        ep, &iface->super.super, dcx);
-        if (ep->flags & UCT_DC_MLX5_EP_FLAG_FLUSH_REMOTE) {
-            return uct_dc_mlx5_ep_flush_remote(ep, comp);
-        }
+    /* Fall back to a regular flush if the peer did not pass a flush rkey */
+    if ((flags & UCT_FLUSH_FLAG_REMOTE) &&
+        ucs_test_all_flags(ep->flags, UCT_DC_MLX5_EP_FLAG_FLUSH_RKEY |
+                                      UCT_DC_MLX5_EP_FLAG_FLUSH_REMOTE)) {
+        return uct_dc_mlx5_ep_flush_remote(ep, comp);
     }
 
     if (ep->dci == UCT_DC_MLX5_EP_NO_DCI) {

@@ -671,6 +671,19 @@ uct_rc_ep_enable_flush_remote(uct_rc_ep_t *ep)
     ep->flags |= UCT_RC_EP_FLAG_FLUSH_REMOTE;
 }
 
+/*
+ * A remote flush reads over the flush rkey of the peer. The peer does not
+ * provide it when its memory domain has no flush memory key, or when its
+ * interface was opened without UCT_IFACE_FEATURE_FLUSH_REMOTE (rc_mlx5 and
+ * gga_mlx5), so a regular flush is done for such a peer.
+ */
+static UCS_F_ALWAYS_INLINE int
+uct_rc_ep_is_flush_remote(const uct_rc_ep_t *ep)
+{
+    return (ep->flags & UCT_RC_EP_FLAG_FLUSH_REMOTE) &&
+           uct_ib_md_is_flush_rkey_valid(ep->flush_rkey);
+}
+
 static UCS_F_NOINLINE void
 uct_rc_ep_send_op_completed_iov(uct_rc_iface_send_op_t *op)
 {
