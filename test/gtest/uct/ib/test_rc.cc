@@ -984,6 +984,24 @@ UCS_TEST_SKIP_COND_P(test_rc_ep_flush_remote, put_flush_no_peer_rkey,
     test_put_flush_remote(m_e2, false, 0);
 }
 
+/* A failed remote flush must be completed exactly once */
+UCS_TEST_SKIP_COND_P(test_rc_ep_flush_remote, put_flush_error,
+                     !check_caps(UCT_IFACE_FLAG_PUT_SHORT) ||
+                     has_transport("dc_mlx5"))
+{
+    counting_comp comp;
+
+    /* The extra count shows a second completion instead of asserting */
+    init_comp(&comp, 2);
+    put_flush_remote_error(&comp.super);
+
+    EXPECT_EQ(1, comp.super.count);
+    EXPECT_EQ(0u, comp.calls);
+    EXPECT_TRUE(UCS_STATUS_IS_ERR(comp.super.status))
+            << ucs_status_string(comp.super.status);
+    EXPECT_GT(m_err_count, 0);
+}
+
 /* A failed remote flush without a completion must not crash */
 UCS_TEST_SKIP_COND_P(test_rc_ep_flush_remote, put_flush_error_no_comp,
                      !check_caps(UCT_IFACE_FLAG_PUT_SHORT) ||

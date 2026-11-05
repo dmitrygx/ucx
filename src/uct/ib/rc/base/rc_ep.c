@@ -564,6 +564,7 @@ void uct_rc_txqp_purge_outstanding(uct_rc_iface_t *iface, uct_rc_txqp_t *txqp,
                  * uct_rc_ep_put_sgl_zcopy_completion_handler,
                  * uct_rc_ep_get_sgl_zcopy_completion_handler,
                  * uct_rc_ep_flush_op_completion_handler,
+                 * uct_rc_ep_flush_remote_handler,
                  * uct_rc_ep_check_completion_handler or
                  * one of the atomic handlers,
                  * so invoke user completion */
@@ -602,7 +603,8 @@ void uct_rc_txqp_purge_outstanding(uct_rc_iface_t *iface, uct_rc_txqp_t *txqp,
                    (op->handler == iface->config.atomic64_handler) ||
                    (op->handler == uct_rc_ep_get_bcopy_handler) ||
                    (op->handler == uct_rc_ep_get_bcopy_handler_no_completion) ||
-                   (op->handler == uct_rc_ep_am_zcopy_handler)) {
+                   (op->handler == uct_rc_ep_am_zcopy_handler) ||
+                   (op->handler == uct_rc_ep_flush_remote_handler)) {
             desc = ucs_derived_of(op, uct_rc_iface_send_desc_t);
             ucs_mpool_put(desc);
         } else {
