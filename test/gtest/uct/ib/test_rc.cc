@@ -912,6 +912,20 @@ protected:
             EXPECT_NE(read_expected, is_flush_remote_pending(index));
         }
     }
+
+    /* A put and a remote flush whose read fails on the peer */
+    void put_flush_remote_error(uct_completion_t *comp)
+    {
+        mapped_buffer recvbuf(sizeof(uint64_t), 0ul, *m_e2);
+        scoped_log_handler wrap_err(wrap_errors_logger);
+
+        /* A well-formed flush rkey which is not registered on the peer */
+        set_peer_flush_rkey(0xffffff00);
+        put_value(1, recvbuf);
+        ASSERT_EQ(UCS_INPROGRESS, flush_remote(comp));
+        wait_for_flag(&m_err_count);
+        short_progress_loop();
+    }
 };
 
 /* The peer provides a flush rkey: the remote flush reads over it */
@@ -968,6 +982,15 @@ UCS_TEST_SKIP_COND_P(test_rc_ep_flush_remote, put_flush_no_peer_rkey,
     /* What connect_to_ep sets when the peer address carries no flush rkey */
     set_peer_flush_rkey(UCT_IB_MD_INVALID_FLUSH_RKEY);
     test_put_flush_remote(m_e2, false, 0);
+}
+
+/* A failed remote flush without a completion must not crash */
+UCS_TEST_SKIP_COND_P(test_rc_ep_flush_remote, put_flush_error_no_comp,
+                     !check_caps(UCT_IFACE_FLAG_PUT_SHORT) ||
+                     has_transport("dc_mlx5"))
+{
+    put_flush_remote_error(NULL);
+    EXPECT_GT(m_err_count, 0);
 }
 
 UCT_INSTANTIATE_RC_DC_TEST_CASE(test_rc_ep_flush_remote)
