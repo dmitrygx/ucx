@@ -213,6 +213,13 @@ UCS_PROFILE_FUNC(ucs_status_ptr_t, ucp_atomic_op_nbx,
                                  goto out;});
 
     if (context->config.ext.proto_enable) {
+        status = ucp_proto_rkey_config_update(ep, rkey);
+        if (status != UCS_OK) {
+            ucp_request_put_param(param, req);
+            status_p = UCS_STATUS_PTR(status);
+            goto out;
+        }
+
         ucp_amo_init_proto(req, ucp_uct_atomic_op_table[opcode], remote_addr,
                            rkey);
         if (param->op_attr_mask & UCP_OP_ATTR_FIELD_REPLY_BUFFER) {

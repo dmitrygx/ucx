@@ -334,6 +334,28 @@ ucp_proto_request_send_op(ucp_ep_h ep, ucp_proto_select_t *proto_select,
 }
 
 
+/* The endpoint configuration can change after the remote key was unpacked, for
+ * example by wireup or by a port speed change */
+static UCS_F_ALWAYS_INLINE int
+ucp_proto_rkey_config_is_stale(ucp_ep_h ep, ucp_rkey_h rkey)
+{
+    ucp_worker_h worker                  = ep->worker;
+    const ucp_rkey_config_t *rkey_config = ucp_rkey_config(worker, rkey);
+
+    return (rkey_config->proto_select.worker_epoch != worker->epoch) ||
+           (rkey_config->key.ep_cfg_index != ep->cfg_index);
+}
+
+static UCS_F_ALWAYS_INLINE ucs_status_t
+ucp_proto_rkey_config_update(ucp_ep_h ep, ucp_rkey_h rkey)
+{
+    if (ucs_likely(!ucp_proto_rkey_config_is_stale(ep, rkey))) {
+        return UCS_OK;
+    }
+
+    return ucp_ep_update_rkey_config(ep, rkey);
+}
+
 static UCS_F_ALWAYS_INLINE ucs_status_ptr_t
 ucp_proto_request_send_op_rma(ucp_ep_h ep, ucp_rkey_h rkey, ucp_request_t *req,
                               uint32_t req_flags, ucp_operation_id_t op_id,
@@ -342,29 +364,18 @@ ucp_proto_request_send_op_rma(ucp_ep_h ep, ucp_rkey_h rkey, ucp_request_t *req,
                               const ucp_request_param_t *param,
                               size_t header_length, uint8_t op_flags)
 {
-    ucp_worker_h worker = ep->worker;
-    ucp_rkey_config_t *rkey_config;
-    ucp_proto_select_t *proto_select;
     ucs_status_t status;
 
-    rkey_config  = ucp_rkey_config(worker, rkey);
-    proto_select = &rkey_config->proto_select;
-    
-    if (ucs_unlikely((proto_select->worker_epoch != worker->epoch) ||
-                     (rkey_config->key.ep_cfg_index != ep->cfg_index))) {
-        status = ucp_ep_update_rkey_config(ep, rkey);
-        if (status != UCS_OK) {
-            ucp_request_put_param(param, req);
-            return UCS_STATUS_PTR(status);
-        }
-
-        proto_select = &ucp_rkey_config(worker, rkey)->proto_select;
+    status = ucp_proto_rkey_config_update(ep, rkey);
+    if (status != UCS_OK) {
+        ucp_request_put_param(param, req);
+        return UCS_STATUS_PTR(status);
     }
 
-    return ucp_proto_request_send_op(ep, proto_select, rkey->cfg_index, req,
-                                     req_flags, op_id, buffer, count, datatype,
-                                     contig_length, param, header_length,
-                                     op_flags);
+    return ucp_proto_request_send_op(
+            ep, &ucp_rkey_config(ep->worker, rkey)->proto_select,
+            rkey->cfg_index, req, req_flags, op_id, buffer, count, datatype,
+            contig_length, param, header_length, op_flags);
 }
 
 static UCS_F_ALWAYS_INLINE ucs_status_ptr_t ucp_proto_request_send_op_reply(
