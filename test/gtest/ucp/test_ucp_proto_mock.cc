@@ -3925,6 +3925,228 @@ UCS_TEST_P(test_ucp_proto_mock_keepalive_tiebreak,
 UCP_INSTANTIATE_TEST_CASE_TLS(test_ucp_proto_mock_keepalive_tiebreak, rcx,
                               "rc_x")
 
+class test_ucp_proto_mock_rcx_stale_rkey : public test_ucp_proto_mock {
+public:
+    test_ucp_proto_mock_rcx_stale_rkey()
+    {
+        mock_transport("rc_mlx5");
+    }
+
+    static void get_test_variants(std::vector<ucp_test_variant> &variants)
+    {
+        add_variant(variants, UCP_FEATURE_TAG | UCP_FEATURE_AM |
+                                      UCP_FEATURE_RMA | UCP_FEATURE_AMO64);
+    }
+
+    virtual void init() override
+    {
+        add_mock_iface("mock_0:1", [](uct_iface_attr_t &iface_attr) {
+            iface_attr.bandwidth.shared = 28e9;
+            iface_attr.latency.c        = 600e-9;
+            iface_attr.latency.m        = 1e-9;
+        });
+        add_mock_iface("mock_1:1", [](uct_iface_attr_t &iface_attr) {
+            iface_attr.bandwidth.shared = 24e9;
+            iface_attr.latency.c        = 500e-9;
+            iface_attr.latency.m        = 1e-9;
+        });
+        test_ucp_proto_mock::init();
+
+        m_buf.reset(new mem_buffer(sizeof(uint64_t), UCS_MEMORY_TYPE_HOST));
+        *remote() = 0;
+
+        m_memh        = mem_map(receiver(), *m_buf);
+        m_rkey_packed = rkey_pack(receiver(), m_memh);
+        m_rkey        = rkey_unpack(sender().ep(), m_rkey_packed);
+    }
+
+    virtual void cleanup() override
+    {
+        m_rkey.reset();
+        m_rkey_packed.reset();
+        m_memh.reset();
+        m_buf.reset();
+        test_ucp_proto_mock::cleanup();
+    }
+
+protected:
+    uint64_t *remote() const
+    {
+        return static_cast<uint64_t*>(m_buf->ptr());
+    }
+
+    ucp_worker_cfg_index_t rkey_ep_config_index()
+    {
+        return ucp_worker_rkey_config(sender().worker(), m_rkey->cfg_index)
+                ->key.ep_cfg_index;
+    }
+
+    /* Put a value and return the lane which sent it */
+    ucp_lane_index_t
+    put(ucp_rkey_h rkey, uint64_t value, uint32_t op_attr_mask = 0)
+    {
+        ucp_ep_h ep = sender().ep();
+        ucp_request_param_t param;
+        ucs_status_ptr_t sptr;
+        ucp_lane_map_t lanes;
+
+        /* Only a fence resets the lanes of the previous operations */
+        ep->ext->unflushed_lanes = 0;
+
+        param.op_attr_mask = op_attr_mask;
+        sptr               = ucp_put_nbx(ep, &value, sizeof(value),
+                                         (uintptr_t)remote(), rkey, &param);
+        EXPECT_EQ(UCS_OK, request_wait(sptr));
+        lanes = ep->ext->unflushed_lanes;
+        flush_ep(sender());
+
+        EXPECT_EQ(value, *remote());
+        EXPECT_EQ(1, ucs_popcount(lanes)) << "lanes 0x" << std::hex << lanes;
+        return ucs_ffs64_safe(lanes);
+    }
+
+    void atomic_add(uint64_t *reply)
+    {
+        uint64_t value = 1;
+        ucp_request_param_t param;
+        ucs_status_ptr_t sptr;
+
+        param.op_attr_mask = UCP_OP_ATTR_FIELD_DATATYPE;
+        param.datatype     = ucp_dt_make_contig(sizeof(value));
+        if (reply != nullptr) {
+            param.op_attr_mask |= UCP_OP_ATTR_FIELD_REPLY_BUFFER;
+            param.reply_buffer  = reply;
+        }
+
+        sptr = ucp_atomic_op_nbx(sender().ep(), UCP_ATOMIC_OP_ADD, &value, 1,
+                                 (uintptr_t)remote(), m_rkey, &param);
+        ASSERT_UCS_OK(request_wait(sptr));
+        flush_ep(sender());
+    }
+
+    /* Move each lane of the sender endpoint to the next index, as wireup does
+     * when it selects the same transports in another order. To move the short
+     * put as well, the lane which takes its index is not an RMA lane anymore. */
+    void reorder_lanes(ucp_lane_index_t put_lane)
+    {
+        ucp_ep_h ep                 = sender().ep();
+        ucp_worker_h worker         = sender().worker();
+        ucp_ep_config_key_t key     = ucp_ep_config(ep)->key;
+        ucp_lane_index_t *rma_lanes = key.rma_lanes;
+        std::vector<uct_ep_h> uct_eps;
+        ucp_worker_cfg_index_t cfg_index;
+        ucp_lane_index_t lane;
+        ucs_status_t status;
+
+        ASSERT_GE(key.num_lanes, 2);
+        ASSERT_LT(put_lane, key.num_lanes);
+        for (lane = 0; lane < key.num_lanes; ++lane) {
+            key.lanes[next_lane(lane)] = ucp_ep_config(ep)->key.lanes[lane];
+            uct_eps.push_back(ucp_ep_get_lane(ep, lane));
+        }
+
+        for (ucp_lane_index_t *lane_p :
+             {&key.am_lane, &key.tag_lane, &key.wireup_msg_lane, &key.cm_lane,
+              &key.keepalive_lane, &key.rkey_ptr_lane}) {
+            move_lane(lane_p);
+        }
+
+        for (ucp_lane_index_t *lanes : {key.rma_lanes, key.rma_bw_lanes,
+                                        key.amo_lanes, key.am_bw_lanes}) {
+            for (lane = 0; lane < key.num_lanes; ++lane) {
+                move_lane(&lanes[lane]);
+            }
+        }
+
+        if (key.lanes[put_lane].lane_types & UCS_BIT(UCP_LANE_TYPE_RMA)) {
+            key.lanes[put_lane].lane_types &= ~UCS_BIT(UCP_LANE_TYPE_RMA);
+            std::fill(std::remove(rma_lanes, rma_lanes + UCP_MAX_LANES,
+                                  put_lane),
+                      rma_lanes + UCP_MAX_LANES, UCP_NULL_LANE);
+        }
+
+        {
+            UCS_ASYNC_BLOCK(&worker->async);
+            status = ucp_worker_get_ep_config(worker, &key, 0, &cfg_index);
+            if (status == UCS_OK) {
+                for (lane = 0; lane < key.num_lanes; ++lane) {
+                    ucp_ep_set_lane(ep, next_lane(lane), uct_eps[lane]);
+                }
+                ucp_ep_set_cfg_index(ep, cfg_index, 1);
+            }
+            UCS_ASYNC_UNBLOCK(&worker->async);
+        }
+
+        ASSERT_UCS_OK(status);
+        ASSERT_NE(ep_config_index(sender()), rkey_ep_config_index());
+    }
+
+    std::unique_ptr<mem_buffer>           m_buf;
+    ucs::handle<ucp_mem_h, ucp_context_h> m_memh;
+    ucs::handle<void*>                    m_rkey_packed;
+    ucs::handle<ucp_rkey_h>               m_rkey;
+
+private:
+    ucp_lane_index_t next_lane(ucp_lane_index_t lane)
+    {
+        return (lane + 1) % ucp_ep_num_lanes(sender().ep());
+    }
+
+    void move_lane(ucp_lane_index_t *lane_p)
+    {
+        if (*lane_p != UCP_NULL_LANE) {
+            *lane_p = next_lane(*lane_p);
+        }
+    }
+};
+
+UCS_TEST_P(test_ucp_proto_mock_rcx_stale_rkey, amo, "IB_NUM_PATHS?=1",
+           "MAX_RMA_RAILS=2")
+{
+    uint64_t reply = 0;
+
+    reorder_lanes(put(m_rkey, 0));
+    atomic_add(nullptr);
+    EXPECT_EQ(UINT64_C(1), *remote());
+
+    reorder_lanes(put(m_rkey, 1));
+    atomic_add(&reply);
+    EXPECT_EQ(UINT64_C(1), reply);
+    EXPECT_EQ(UINT64_C(2), *remote());
+}
+
+UCS_TEST_P(test_ucp_proto_mock_rcx_stale_rkey, put_short, "IB_NUM_PATHS?=1",
+           "MAX_RMA_RAILS=2")
+{
+    const ucp_lane_index_t old_lane = put(m_rkey, 1);
+    ucp_lane_index_t stale_lane;
+
+    reorder_lanes(old_lane);
+    stale_lane = put(m_rkey, 2);
+
+    /* A remote key unpacked now uses the lanes of the new configuration */
+    auto rkey = rkey_unpack(sender().ep(), m_rkey_packed);
+    EXPECT_EQ(put(rkey, 3), stale_lane);
+    EXPECT_NE(old_lane, stale_lane);
+}
+
+UCS_TEST_P(test_ucp_proto_mock_rcx_stale_rkey, put_short_force_imm_cmpl,
+           "IB_NUM_PATHS?=1", "MAX_RMA_RAILS=2")
+{
+    const uint32_t op_attr_mask     = UCP_OP_ATTR_FLAG_FORCE_IMM_CMPL;
+    const ucp_lane_index_t old_lane = put(m_rkey, 1, op_attr_mask);
+    ucp_lane_index_t stale_lane;
+
+    reorder_lanes(old_lane);
+    stale_lane = put(m_rkey, 2, op_attr_mask);
+
+    auto rkey = rkey_unpack(sender().ep(), m_rkey_packed);
+    EXPECT_EQ(put(rkey, 3, op_attr_mask), stale_lane);
+    EXPECT_NE(old_lane, stale_lane);
+}
+
+UCP_INSTANTIATE_TEST_CASE_TLS(test_ucp_proto_mock_rcx_stale_rkey, rcx, "rc_x")
+
 
 #if HAVE_DECL_IBV_EVENT_DEVICE_SPEED_CHANGE
 
