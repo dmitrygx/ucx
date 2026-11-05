@@ -1078,6 +1078,7 @@ public:
         add_variant_with_value(variants, UCP_FEATURE_RMA, 0, "");
         add_variant_with_value(variants, UCP_FEATURE_RMA, EP_BASED_FENCE,
                                "ep_based");
+        add_variant_with_value(variants, UCP_FEATURE_RMA, VERBS_MD, "verbs_md");
     }
 
     virtual void init() {
@@ -1087,6 +1088,15 @@ public:
             }
             modify_config("FENCE_MODE", "ep_based");
             modify_config("MAX_RMA_LANES", "2");
+        }
+
+        if (get_variant_value() & VERBS_MD) {
+            /* The plain verbs MD, which is used when the mlx5 module cannot
+             * be loaded, has no flush memory key. A strong fence must still
+             * work with it. */
+            modify_config("FENCE_MODE", "strong");
+            modify_config("IB_MLX5_DEVX", "n", SETENV_IF_NOT_EXIST);
+            modify_config("IB_MLX5_DV", "n", SETENV_IF_NOT_EXIST);
         }
 
         test_ucp_memheap::init();
@@ -1129,7 +1139,8 @@ public:
     }
 private:
     enum {
-        EP_BASED_FENCE = UCS_BIT(0)
+        EP_BASED_FENCE = UCS_BIT(0),
+        VERBS_MD       = UCS_BIT(1)
     };
 };
 

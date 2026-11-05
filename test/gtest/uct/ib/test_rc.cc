@@ -24,6 +24,12 @@ extern "C" {
 }
 #endif
 
+#if HAVE_TL_DC
+extern "C" {
+#include <uct/ib/mlx5/dc/dc_mlx5_ep.h>
+}
+#endif
+
 
 void test_rc::init()
 {
@@ -778,6 +784,193 @@ UCS_TEST_SKIP_COND_P(test_rc_iface_flush_remote, put_fence_no_flush_remote,
 }
 
 UCT_INSTANTIATE_RC_DC_GGA_TEST_CASE(test_rc_iface_flush_remote)
+
+
+/*
+ * Remote flush of RC and DC endpoints. It reads over the peer flush rkey when
+ * the peer provides one. Otherwise, for example for a peer on the plain verbs
+ * MD (mlx5 module not loaded), on the non-DevX mlx5 MD or on a DevX MD without
+ * KSM support, it must fall back to a regular flush instead of using an
+ * invalid flush key and breaking the connection.
+ */
+class test_rc_ep_flush_remote : public test_rc_iface_flush_remote {
+public:
+    void init()
+    {
+        uct_test::init();
+
+        m_err_count = 0;
+        m_e1        = create_put_entity(UCT_IFACE_FEATURE_FLUSH_REMOTE);
+        m_e2        = create_put_entity(UCT_IFACE_FEATURE_FLUSH_REMOTE);
+        m_e1->connect(0, *m_e2, 0);
+        m_e2->connect(0, *m_e1, 0);
+
+        /* The entity of the base fixture is not created */
+        m_entity_flush_rkey = NULL;
+
+        check_skip_test();
+    }
+
+protected:
+    struct counting_comp {
+        uct_completion_t super;
+        unsigned         calls;
+    };
+
+    entity *create_put_entity(uint64_t features)
+    {
+        uct_iface_params_t params = iface_params();
+        entity *e;
+
+        params.features = UCT_IFACE_FEATURE_PUT | features;
+        e               = uct_test::create_entity(params);
+        m_entities.push_back(e);
+        return e;
+    }
+
+    static void counting_comp_cb(uct_completion_t *self)
+    {
+        ucs_container_of(self, counting_comp, super)->calls++;
+    }
+
+    static void init_comp(counting_comp *comp, int count)
+    {
+        comp->super.func   = counting_comp_cb;
+        comp->super.count  = count;
+        comp->super.status = UCS_OK;
+        comp->calls        = 0;
+    }
+
+    ucs_status_t flush_remote(uct_completion_t *comp, unsigned index = 0)
+    {
+        ucs_status_t status;
+
+        UCT_TEST_CALL_AND_TRY_AGAIN(uct_ep_flush(m_e1->ep(index),
+                                                 UCT_FLUSH_FLAG_REMOTE, comp),
+                                    status);
+        return status;
+    }
+
+    void put_value(uint64_t value, const mapped_buffer &buf, unsigned index = 0)
+    {
+        ASSERT_UCS_OK(uct_ep_put_short(m_e1->ep(index), &value, sizeof(value),
+                                       buf.addr(), buf.rkey()));
+    }
+
+    void set_peer_flush_rkey(uint32_t flush_rkey)
+    {
+        ucs_derived_of(m_e1->ep(0), uct_rc_ep_t)->flush_rkey = flush_rkey;
+    }
+
+    static bool md_relaxed_order_required(entity *e)
+    {
+        uct_rc_iface_t *rc_iface = ucs_derived_of(e->iface(), uct_rc_iface_t);
+
+        return uct_ib_iface_md(&rc_iface->super)->relaxed_order_required;
+    }
+
+    /* The remote flush read clears the flag, a regular flush keeps it */
+    bool is_flush_remote_pending(unsigned index)
+    {
+#if HAVE_TL_DC
+        if (has_transport("dc_mlx5")) {
+            return ucs_derived_of(m_e1->ep(index), uct_dc_mlx5_ep_t)->flags &
+                   UCT_DC_MLX5_EP_FLAG_FLUSH_REMOTE;
+        }
+#endif
+
+        return ucs_derived_of(m_e1->ep(index), uct_rc_ep_t)->flags &
+               UCT_RC_EP_FLAG_FLUSH_REMOTE;
+    }
+
+    void
+    test_put_flush_remote(entity *receiver, bool read_expected, unsigned index)
+    {
+        static const uint64_t num_iters = 10;
+        mapped_buffer recvbuf(sizeof(uint64_t), 0ul, *receiver);
+        counting_comp comp;
+        ucs_status_t status;
+        uint64_t value;
+
+        /* Nothing was sent yet */
+        ASSERT_UCS_OK(flush_remote(NULL, index));
+
+        for (value = 1; value <= num_iters; ++value) {
+            put_value(value, recvbuf, index);
+
+            init_comp(&comp, 1);
+            status = flush_remote(&comp.super, index);
+            ASSERT_UCS_OK_OR_INPROGRESS(status);
+            if (status == UCS_INPROGRESS) {
+                wait_for_value(&comp.calls, 1u, true);
+                ASSERT_EQ(1u, comp.calls);
+                ASSERT_UCS_OK(comp.super.status);
+            }
+
+            ASSERT_EQ(0, m_err_count);
+            EXPECT_EQ(value, *static_cast<uint64_t*>(recvbuf.ptr()));
+            EXPECT_NE(read_expected, is_flush_remote_pending(index));
+        }
+    }
+};
+
+/* The peer provides a flush rkey: the remote flush reads over it */
+UCS_TEST_SKIP_COND_P(test_rc_ep_flush_remote, put_flush_peer_rkey,
+                     !check_caps(UCT_IFACE_FLAG_PUT_SHORT))
+{
+    if (!rc_iface_flush_rkey_enabled(m_e2)) {
+        UCS_TEST_SKIP_R("no flush memory key");
+    }
+
+    test_put_flush_remote(m_e2, true, 0);
+}
+
+UCS_TEST_SKIP_COND_P(test_rc_ep_flush_remote, put_flush_no_devx,
+                     !check_caps(UCT_IFACE_FLAG_PUT_SHORT), "IB_MLX5_DEVX?=n")
+{
+    ASSERT_FALSE(rc_iface_flush_rkey_enabled(m_e2));
+    test_put_flush_remote(m_e2, false, 0);
+}
+
+UCS_TEST_SKIP_COND_P(test_rc_ep_flush_remote, put_flush_verbs_md,
+                     !check_caps(UCT_IFACE_FLAG_PUT_SHORT) ||
+                     !has_transport("rc_verbs"),
+                     "IB_MLX5_DV?=n", "IB_MLX5_DEVX?=n")
+{
+    ASSERT_FALSE(rc_iface_flush_rkey_enabled(m_e2));
+    test_put_flush_remote(m_e2, false, 0);
+}
+
+/* The peer interface was opened without UCT_IFACE_FEATURE_FLUSH_REMOTE */
+UCS_TEST_SKIP_COND_P(test_rc_ep_flush_remote, put_flush_peer_no_feature,
+                     !check_caps(UCT_IFACE_FLAG_PUT_SHORT))
+{
+    entity *peer = create_put_entity(0);
+    bool read_expected;
+
+    m_e1->connect(1, *peer, 0);
+    peer->connect(0, *m_e1, 1);
+
+    /* Without the feature, rc_verbs still passes the flush rkey of the MD, and
+     * dc_mlx5 does when the MD requires relaxed ordering. The peer and m_e2
+     * are on the same device. */
+    read_expected = rc_iface_flush_rkey_enabled(m_e2) &&
+                    (has_transport("rc_verbs") ||
+                     (has_transport("dc_mlx5") &&
+                      md_relaxed_order_required(peer)));
+    test_put_flush_remote(peer, read_expected, 1);
+}
+
+UCS_TEST_SKIP_COND_P(test_rc_ep_flush_remote, put_flush_no_peer_rkey,
+                     !check_caps(UCT_IFACE_FLAG_PUT_SHORT) ||
+                     has_transport("dc_mlx5"))
+{
+    /* What connect_to_ep sets when the peer address carries no flush rkey */
+    set_peer_flush_rkey(UCT_IB_MD_INVALID_FLUSH_RKEY);
+    test_put_flush_remote(m_e2, false, 0);
+}
+
+UCT_INSTANTIATE_RC_DC_TEST_CASE(test_rc_ep_flush_remote)
 
 
 class test_rc_get_limit : public test_rc {
