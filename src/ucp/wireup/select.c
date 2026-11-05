@@ -35,13 +35,15 @@
  * match the lanes */
 #define UCP_WIREUP_P2P_REDIRECT_MIN_DST_VERSION 24
 
-/* Factor applied to the bandwidth of a same-device loopback lane when its
+/* Factor applied to the RMA_BW score of a same-device loopback lane when its
  * device's peer-to-peer traffic goes through the root complex. It is small
  * enough to outweigh any bandwidth difference from device distances (e.g. to
  * the GPU of the process), so the RMA_BW selection pairs different devices
  * first. ucp_wireup_add_rma_bw_same_device_lanes() then adds the loopback
- * lanes for host memory. */
-#define UCP_WIREUP_P2P_REDIRECT_BW_RATIO        1e-3
+ * lanes for host memory. Scaling the score rather than the bandwidth keeps
+ * the gaps between the transports of a device above the tolerance of
+ * ucs_fp_compare(), so a tie does not select the first one. */
+#define UCP_WIREUP_P2P_REDIRECT_SCORE_RATIO     1e-3
 
 /* Host device identities are below this value, so a pair of them is exact in
  * a double */
@@ -1554,10 +1556,10 @@ ucp_wireup_p2p_redirect_ratio(const ucp_worker_iface_t *wiface,
     }
 
     ucs_trace(UCT_TL_RESOURCE_DESC_FMT " : loopback with redirected "
-              "peer-to-peer traffic, lowering bandwidth",
+              "peer-to-peer traffic, lowering score",
               UCT_TL_RESOURCE_DESC_ARG(
                       &context->tl_rscs[wiface->rsc_index].tl_rsc));
-    return UCP_WIREUP_P2P_REDIRECT_BW_RATIO;
+    return UCP_WIREUP_P2P_REDIRECT_SCORE_RATIO;
 }
 
 static double
@@ -1752,24 +1754,22 @@ ucp_wireup_rma_bw_score_func(const ucp_worker_iface_t *wiface,
     ucp_wireup_dev_usage_count *dev_count = arg;
     ucp_context_t *context                = wiface->worker->context;
     ucs_linear_func_t mem_reg_cost;
-    double avail_bw;
 
     mem_reg_cost = ucp_wireup_mem_reg_cost(context, unpacked_addr, md_attr);
-    avail_bw     = ucp_wireup_iface_avail_bandwidth(wiface, unpacked_addr,
-                                                    remote_addr, dev_count);
-    avail_bw    *= ucp_wireup_p2p_redirect_ratio(wiface, unpacked_addr,
-                                                 remote_addr);
 
     /* highest bandwidth with lowest overhead - test a message size of 256KB,
      * a size which is likely to be used for high-bw memory access protocol, for
      * how long it would take to transfer it with a certain transport. */
-    return 1 / ((UCP_WIREUP_RMA_BW_TEST_MSG_SIZE / avail_bw) +
-                ucp_wireup_tl_iface_latency(wiface, unpacked_addr,
-                                            &remote_addr->iface_attr,
-                                            is_prioritized_ep) +
-                wiface->attr.overhead +
-                ucs_linear_func_apply(mem_reg_cost,
-                                      UCP_WIREUP_RMA_BW_TEST_MSG_SIZE));
+    return ucp_wireup_p2p_redirect_ratio(wiface, unpacked_addr, remote_addr) /
+           ((UCP_WIREUP_RMA_BW_TEST_MSG_SIZE /
+             ucp_wireup_iface_avail_bandwidth(wiface, unpacked_addr,
+                                              remote_addr, dev_count)) +
+            ucp_wireup_tl_iface_latency(wiface, unpacked_addr,
+                                        &remote_addr->iface_attr,
+                                        is_prioritized_ep) +
+            wiface->attr.overhead +
+            ucs_linear_func_apply(mem_reg_cost,
+                                  UCP_WIREUP_RMA_BW_TEST_MSG_SIZE));
 }
 
 static inline int

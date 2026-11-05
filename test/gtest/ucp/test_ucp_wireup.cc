@@ -1622,20 +1622,27 @@ protected:
         return attr.lane_map;
     }
 
+    /* Select the lanes of an endpoint from the unpacked address of its peer */
+    static ucp_ep_config_key_t
+    select_lanes(ucp_ep_h ep, const ucp_unpacked_address_t &address)
+    {
+        unsigned addr_indices[UCP_MAX_LANES];
+        ucp_ep_config_key_t key;
+
+        ucp_ep_config_key_reset(&key);
+        EXPECT_UCS_OK(ucp_wireup_select_lanes(ep, 0, ucp_tl_bitmap_max,
+                                              &address, addr_indices, &key, 1));
+        return key;
+    }
+
     /* Select the lanes of an endpoint from the worker address of its peer */
     static ucp_ep_config_key_t
     select_lanes(ucp_ep_h ep, ucp_worker_h peer_worker)
     {
         unpacked_address remote(peer_worker);
-        unsigned addr_indices[UCP_MAX_LANES];
-        ucp_ep_config_key_t key;
 
         remote.unpack(ep->worker);
-        ucp_ep_config_key_reset(&key);
-        EXPECT_UCS_OK(ucp_wireup_select_lanes(ep, 0, ucp_tl_bitmap_max,
-                                              &remote.address, addr_indices,
-                                              &key, 1));
-        return key;
+        return select_lanes(ep, remote.address);
     }
 
     /* Local and remote system devices of the RMA_BW lanes, swapped if
@@ -1798,8 +1805,77 @@ UCS_TEST_P(test_ucp_wireup_p2p_redirect, mirrored_lanes, "TOPO_P2P_REDIRECT=on",
     flush_worker(sender());
 }
 
+/* The same-device lanes of a device use its best transport, also when the
+ * bandwidth of the peer is low, e.g. limited by the distance to the GPU of the
+ * process. The transports of a device have the same bandwidth and latency, so
+ * the best one has the lowest overhead. */
+UCS_TEST_P(test_ucp_wireup_p2p_redirect, same_device_lane_transport,
+           "TOPO_P2P_REDIRECT=on")
+{
+    /* Below 15 GB/s: scaling it by the loopback ratio would make the
+     * transports of a device tie on every path */
+    constexpr double remote_bw = 10e9;
+    ucp_context_h context      = sender().ucph();
+    unpacked_address remote(receiver().worker());
+    std::map<ucs_sys_device_t, double> min_overhead;
+    std::map<ucs_sys_device_t, unsigned> num_tls;
+    unsigned num_same_device_lanes = 0;
+    ucp_address_entry_t *ae;
+    ucp_rsc_index_t rsc_index;
+
+    UCP_TL_BITMAP_FOR_EACH_BIT(rsc_index, &context->tl_bitmap) {
+        const uct_tl_resource_desc_t &tl_rsc =
+                context->tl_rscs[rsc_index].tl_rsc;
+        const uct_iface_attr_t *attr =
+                ucp_worker_iface_get_attr(sender().worker(), rsc_index);
+        if ((tl_rsc.dev_type != UCT_DEVICE_TYPE_NET) ||
+            !(attr->cap.flags & UCT_IFACE_FLAG_PUT_ZCOPY)) {
+            continue;
+        }
+
+        auto result = min_overhead.emplace(tl_rsc.sys_device, attr->overhead);
+        result.first->second = std::min(result.first->second, attr->overhead);
+        ++num_tls[tl_rsc.sys_device];
+    }
+
+    if (std::none_of(num_tls.begin(), num_tls.end(),
+                     [](const std::pair<const ucs_sys_device_t, unsigned> &d) {
+                         return d.second > 1;
+                     })) {
+        UCS_TEST_SKIP_R("no network device with two RMA_BW transports");
+    }
+
+    connect_net_devices();
+    remote.unpack(sender().worker());
+    ucp_unpacked_address_for_each(ae, &remote.address) {
+        ae->iface_attr.bandwidth = remote_bw;
+    }
+
+    const ucp_ep_config_key_t key = select_lanes(sender().ep(), remote.address);
+    for (ucp_lane_index_t lane = 0; lane < key.num_lanes; ++lane) {
+        rsc_index = key.lanes[lane].rsc_index;
+        const uct_tl_resource_desc_t &tl_rsc =
+                context->tl_rscs[rsc_index].tl_rsc;
+        if (!(key.lanes[lane].lane_types & UCS_BIT(UCP_LANE_TYPE_RMA_BW)) ||
+            (tl_rsc.sys_device != key.lanes[lane].dst_local_sys_dev)) {
+            continue;
+        }
+
+        const uct_iface_attr_t *attr =
+                ucp_worker_iface_get_attr(sender().worker(), rsc_index);
+        EXPECT_LE(attr->overhead, min_overhead[tl_rsc.sys_device])
+                << "lane " << int(lane) << " " << tl_rsc.tl_name << "/"
+                << tl_rsc.dev_name;
+        ++num_same_device_lanes;
+    }
+
+    EXPECT_GT(num_same_device_lanes, 0u);
+    flush_worker(sender());
+}
+
 UCP_INSTANTIATE_TEST_CASE_TLS(test_ucp_wireup_p2p_redirect, rcx, "rc_x")
 UCP_INSTANTIATE_TEST_CASE_TLS(test_ucp_wireup_p2p_redirect, rcv, "rc_v")
+UCP_INSTANTIATE_TEST_CASE_TLS(test_ucp_wireup_p2p_redirect, rc, "rc")
 
 class test_ucp_wireup_fallback_amo : public test_ucp_wireup {
 protected:
