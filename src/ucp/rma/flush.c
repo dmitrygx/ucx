@@ -363,14 +363,30 @@ static unsigned ucp_ep_flush_resume_slow_path_callback(void *arg)
 
 static void ucp_ep_flush_request_resched(ucp_ep_h ep, ucp_request_t *req)
 {
+    int failover_replay;
+
     if (ep->flags & UCP_EP_FLAG_BLOCK_FLUSH) {
+        /* Lane failover replays the pending requests of a failed lane while
+         * the other lanes stay connected, so the flush can be started on
+         * them. This is safe if a lane was replaced since the flush
+         * progressed: the resume callback then keeps the completions of the
+         * started lanes and flushes all live lanes again. */
+        failover_replay = ucp_ep_err_mode_eq(ep,
+                                             UCP_ERR_HANDLING_MODE_FAILOVER) &&
+                          (req->send.flush.lane_generation !=
+                           ep->ext->lane_generation);
+
         /* Request was detached from pending and should be scheduled again */
         if (ucp_ep_has_cm_lane(ep) ||
             (ucp_ep_config(ep)->p2p_lanes &&
-             ep->worker->context->config.ext.proto_request_reset)) {
+             ep->worker->context->config.ext.proto_request_reset &&
+             !failover_replay)) {
             ucs_assertv(!req->send.flush.started_lanes,
-                        "req=%p flush started_lanes=0x%" PRIx64, req,
-                        req->send.flush.started_lanes);
+                        "req=%p flush started_lanes=0x%" PRIx64
+                        " lane_generation req=%u ep=%u",
+                        req, req->send.flush.started_lanes,
+                        req->send.flush.lane_generation,
+                        ep->ext->lane_generation);
         } else {
             ucs_assertv(!(UCS_BIT(req->send.lane) &
                           req->send.flush.started_lanes),
@@ -380,12 +396,15 @@ static void ucp_ep_flush_request_resched(ucp_ep_h ep, ucp_request_t *req)
             /* Only lanes connected to iface can be started/flushed before
              * wireup is done because connect2iface does not create wireup_ep
              * without cm mode */
-            ucs_assertv(!(req->send.flush.started_lanes &
+            ucs_assertv(failover_replay ||
+                        !(req->send.flush.started_lanes &
                           ucp_ep_config(ep)->p2p_lanes),
                         "req=%p flush started_lanes=0x%" PRIx64
-                        " p2p_lanes=0x%" PRIx64,
+                        " p2p_lanes=0x%" PRIx64 " lane_generation req=%u ep=%u",
                         req, req->send.flush.started_lanes,
-                        ucp_ep_config(ep)->p2p_lanes);
+                        ucp_ep_config(ep)->p2p_lanes,
+                        req->send.flush.lane_generation,
+                        ep->ext->lane_generation);
         }
 
         ucs_assertv(req->send.flush.sw_state ==
