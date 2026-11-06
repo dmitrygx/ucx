@@ -116,6 +116,38 @@ test_flush_pending_add(uct_ep_h, uct_pending_req_t *, unsigned)
     return UCS_OK;
 }
 
+static uct_ep_h test_flush_started_ep;
+static unsigned test_flush_started_count;
+
+static ucs_status_t
+test_flush_count_started_ep(uct_ep_h ep, unsigned flags, uct_completion_t *comp)
+{
+    if (ep == test_flush_started_ep) {
+        ++test_flush_started_count;
+    }
+
+    return test_flush_inprogress_except_ep(ep, flags, comp);
+}
+
+static int test_flush_count_oneshot(const ucs_callbackq_elem_t *, void *arg)
+{
+    ++(*static_cast<unsigned*>(arg));
+    return 0;
+}
+
+/* Count the oneshot callbacks of a flush request without removing them */
+static unsigned test_flush_oneshot_count(ucp_request_t *req)
+{
+    ucp_worker_h worker = req->send.ep->worker;
+    unsigned count      = 0;
+
+    UCS_ASYNC_BLOCK(&worker->async);
+    ucs_callbackq_remove_oneshot(&worker->uct->progress_q, req,
+                                 test_flush_count_oneshot, &count);
+    UCS_ASYNC_UNBLOCK(&worker->async);
+    return count;
+}
+
 static void test_flush_completion(ucp_request_t *req)
 {
     ucp_request_complete_send(req, req->status);
@@ -186,6 +218,24 @@ public:
         params.err_handler.cb  = test_flush_err_handler;
         params.err_handler.arg = NULL;
         return params;
+    }
+};
+
+class test_ucp_flush_failover_replay : public test_ucp_flush_failover {
+public:
+    /* The replay checks a flush differently with and without
+     * UCX_PROTO_REQUEST_RESET */
+    static void get_test_variants(std::vector<ucp_test_variant> &variants)
+    {
+        add_variant_values(variants, test_ucp_flush::get_test_variants, 0);
+        add_variant_values(variants, test_ucp_flush::get_test_variants, 1,
+                           "reset");
+    }
+
+    void init() override
+    {
+        modify_config("PROTO_REQUEST_RESET", get_variant_value() ? "y" : "n");
+        test_ucp_flush_failover::init();
     }
 };
 
@@ -704,6 +754,131 @@ UCS_TEST_P(test_ucp_flush_failover, restart_pending_skips_stale_resume,
     ucp_request_release(request);
 }
 
+/* Lane failover replays the pending requests of a failed lane while the other
+ * lanes stay connected, so a replayed flush can have started on a p2p lane.
+ * Since a lane was replaced, the resume that the replay schedules flushes the
+ * started lane again. */
+UCS_TEST_P(test_ucp_flush_failover_replay, reflushes_started_lane,
+           "MAX_EAGER_LANES=8")
+{
+    ucp_request_param_t param = {};
+    uct_ep_t replacement_lane = {};
+    ucp_request_t *req        = NULL;
+    ucs_status_ptr_t request  = NULL;
+    ucs_queue_head_t replay_queue;
+    ucp_lane_index_t started_lane;
+    ucp_lane_index_t pending_lane;
+    ucp_lane_map_t live_lanes;
+    ucp_lane_map_t p2p_lanes;
+    uct_ep_h pending_ep;
+    unsigned i;
+    ucp_ep_h ep;
+
+    flush_ep(sender());
+    ep         = sender().ep();
+    live_lanes = ucp_ep_get_live_lanes(ep);
+    if (ucs_popcount(live_lanes) < 2) {
+        UCS_TEST_SKIP_R("requires two endpoint lanes");
+    }
+
+    /* Without lane failover, a replayed flush cannot have started on a p2p
+     * lane, which the replay asserts, so start it on a p2p lane if there is
+     * one */
+    p2p_lanes    = live_lanes & ucp_ep_config(ep)->p2p_lanes;
+    started_lane = ucs_ffs64((p2p_lanes != 0) ? p2p_lanes : live_lanes);
+    pending_lane = ucs_ffs64(live_lanes & ~UCS_BIT(started_lane));
+    pending_ep   = ucp_ep_get_lane(ep, pending_lane);
+
+    replacement_lane.iface = pending_ep->iface;
+    UCS_TEST_MESSAGE << "started lane " << static_cast<int>(started_lane)
+                     << ((p2p_lanes != 0) ? " (p2p)" : "") << ", pending lane "
+                     << static_cast<int>(pending_lane);
+
+    test_flush_call_count     = 0;
+    test_flush_comp           = NULL;
+    test_flush_no_resource_ep = pending_ep;
+    test_flush_started_ep     = ucp_ep_get_lane(ep, started_lane);
+    test_flush_started_count  = 0;
+    {
+        ucs::mock mock;
+        mock_ep_flush(ep, mock, test_flush_count_started_ep);
+        mock.setup(&pending_ep->iface->ops.ep_pending_add,
+                   test_flush_pending_add);
+
+        {
+            test_flush_worker_cs_guard cs_guard(ep->worker);
+
+            request = ucp_ep_flush_lanes_internal(
+                    ep, 0, &param, NULL, test_flush_completion,
+                    "replay_started_lane", UCT_FLUSH_FLAG_LOCAL,
+                    UCS_BIT(started_lane) | UCS_BIT(pending_lane));
+            ASSERT_TRUE(UCS_PTR_IS_PTR(request));
+            req = static_cast<ucp_request_t*>(request) - 1;
+            ASSERT_EQ(pending_lane, req->send.lane);
+
+            /* The pending callback runs while the pending lane still has no
+             * resources, so after it the flush has started on the other lane
+             * whatever the lane order. It also schedules a resume. */
+            ASSERT_EQ(UCS_ERR_NO_RESOURCE,
+                      ucp_ep_flush_progress_pending(&req->send.uct));
+            ASSERT_EQ(UCS_BIT(started_lane), req->send.flush.started_lanes);
+            ASSERT_EQ(1u, test_flush_started_count);
+            ASSERT_EQ(1u, test_flush_oneshot_count(req));
+        }
+
+        /* No lane was replaced, so that resume does not flush the started
+         * lane again. Running it now leaves the resume that the replay
+         * schedules as the only one. */
+        sender().progress();
+        ASSERT_EQ(0u, test_flush_oneshot_count(req));
+        ASSERT_EQ(1u, test_flush_started_count);
+
+        {
+            test_flush_worker_cs_guard cs_guard(ep->worker);
+
+            /* Lane failover moves the pending requests of the failed lane to
+             * a queue and replaces the lane. Once the lane is recovered, it
+             * replays the queue. */
+            UCS_ASYNC_BLOCK(&ep->worker->async);
+            ucs_queue_head_init(&replay_queue);
+            ucp_request_purge_enqueue_cb(&req->send.uct, &replay_queue);
+            ucp_ep_set_lane(ep, pending_lane, &replacement_lane);
+            ucp_ep_set_lane(ep, pending_lane, pending_ep);
+            EXPECT_NE(ep->ext->lane_generation,
+                      req->send.flush.lane_generation);
+            ucp_wireup_replay_pending_requests(ep, &replay_queue);
+            UCS_ASYNC_UNBLOCK(&ep->worker->async);
+            EXPECT_TRUE(ucs_queue_is_empty(&replay_queue));
+            EXPECT_EQ(UCP_NULL_LANE, req->send.lane);
+            EXPECT_EQ(1u, test_flush_oneshot_count(req));
+            EXPECT_EQ(1u, test_flush_started_count);
+        }
+
+        test_flush_no_resource_ep = NULL;
+        sender().progress();
+
+        {
+            test_flush_worker_cs_guard cs_guard(ep->worker);
+
+            /* The resume that the replay scheduled flushed all live lanes
+             * again, and the flush still waits for the first flush of the
+             * started lane */
+            EXPECT_EQ(2u, test_flush_started_count);
+            EXPECT_EQ(1 + ucs_popcount(live_lanes),
+                      req->send.state.uct_comp.count);
+            for (i = 0; (i < test_flush_call_count) &&
+                        (req->send.state.uct_comp.count > 0); ++i) {
+                uct_invoke_completion(&req->send.state.uct_comp, UCS_OK);
+            }
+            EXPECT_EQ(0, req->send.state.uct_comp.count);
+            ucp_ep_flush_remote_completed(req);
+        }
+    }
+
+    EXPECT_UCS_OK(ucp_request_check_status(request));
+    ucp_request_release(request);
+}
+
 UCS_TEST_P(test_ucp_flush_failover, completion_error_restarts_flush)
 {
     ucp_request_param_t param = {};
@@ -902,3 +1077,6 @@ UCP_INSTANTIATE_TEST_CASE_TLS(test_ucp_flush, self, "self")
 UCP_INSTANTIATE_TEST_CASE_TLS(test_ucp_flush, shm_ib, "shm,ib")
 UCP_INSTANTIATE_TEST_CASE_TLS(test_ucp_flush_failover, shm_ib, "shm,ib")
 UCP_INSTANTIATE_TEST_CASE_TLS(test_ucp_flush_failover, shm_tcp, "shm,tcp")
+UCP_INSTANTIATE_TEST_CASE_TLS(test_ucp_flush_failover_replay, shm_ib, "shm,ib")
+UCP_INSTANTIATE_TEST_CASE_TLS(test_ucp_flush_failover_replay, shm_tcp,
+                              "shm,tcp")
