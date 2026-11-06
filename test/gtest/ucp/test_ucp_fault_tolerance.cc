@@ -1130,6 +1130,147 @@ UCS_TEST_P(test_ucp_flush_lane_recovery, lane_replaced_during_inprogress_flush,
 
 UCP_INSTANTIATE_TEST_CASE_TLS(test_ucp_flush_lane_recovery, shm_ib, "shm,ib")
 
+/* Token failover holds a failed lane and moves its pending requests to the
+ * recovery queue, which is replayed after the lane is recovered. */
+class test_ucp_flush_tf_replay : public test_ucp_fault_tolerance_tf {
+public:
+    static void get_am_variants(std::vector<ucp_test_variant> &variants)
+    {
+        add_variant_with_value(variants, UCP_FEATURE_AM, TEST_OP_AM, "am");
+    }
+
+    /* The replay checks a flush differently with and without
+     * UCX_PROTO_REQUEST_RESET */
+    static void get_test_variants(std::vector<ucp_test_variant> &variants)
+    {
+        add_variant_values(variants, get_am_variants, 0);
+        add_variant_values(variants, get_am_variants, 1, "reset");
+    }
+
+    void init() override
+    {
+        modify_config("PROTO_REQUEST_RESET", get_variant_value(1) ? "y" : "n");
+        test_ucp_fault_tolerance_tf::init();
+    }
+
+protected:
+    /* The flush has no resources on the pending lane, so it waits in a
+     * pending queue which only the test holds. */
+    static ucs_status_t
+    flush_no_resource(uct_ep_h ep, unsigned flags, uct_completion_t *comp)
+    {
+        if (ep == m_pending_uct_ep) {
+            return UCS_ERR_NO_RESOURCE;
+        }
+
+        return m_orig_ops.ep_flush(ep, flags, comp);
+    }
+
+    static ucs_status_t
+    pending_add(uct_ep_h ep, uct_pending_req_t *req, unsigned flags)
+    {
+        if ((ep == m_pending_uct_ep) && (m_pending_req == NULL)) {
+            m_pending_req = req;
+            return UCS_OK;
+        }
+
+        return m_orig_ops.ep_pending_add(ep, req, flags);
+    }
+
+    static void
+    pending_purge(uct_ep_h ep, uct_pending_purge_callback_t cb, void *arg)
+    {
+        uct_pending_req_t *req = m_pending_req;
+
+        if ((ep == m_pending_uct_ep) && (req != NULL)) {
+            m_pending_req = NULL;
+            cb(req, arg);
+        }
+
+        m_orig_ops.ep_pending_purge(ep, cb, arg);
+    }
+
+    static uct_ep_h m_pending_uct_ep;
+    static uct_pending_req_t *m_pending_req;
+    static uct_iface_ops_t m_orig_ops;
+};
+
+uct_ep_h test_ucp_flush_tf_replay::m_pending_uct_ep        = NULL;
+uct_pending_req_t *test_ucp_flush_tf_replay::m_pending_req = NULL;
+uct_iface_ops_t test_ucp_flush_tf_replay::m_orig_ops;
+
+/* The flush is replayed after it has started on the other lanes */
+UCS_TEST_P(test_ucp_flush_tf_replay, started_flush, "MAX_EAGER_LANES=8",
+           "RECOVERY_RETRIES=100")
+{
+    ucp_request_param_t param = {};
+    ucp_worker_iface_t *wiface;
+    ucp_lane_map_t live_lanes;
+    ucp_lane_index_t lane;
+    ucs_status_ptr_t request;
+    ucp_request_t *req;
+    uct_iface_h iface;
+    ucp_ep_h ep;
+
+    flush_workers();
+    ep         = sender().ep(0, INJECTED_EP_INDEX);
+    live_lanes = ucp_ep_get_live_lanes(ep);
+    if (ucs_popcount(live_lanes) < 2) {
+        UCS_TEST_SKIP_R("requires two endpoint lanes");
+    }
+
+    /* The flush starts on the lanes below the one it waits on */
+    lane   = ucs_ilog2(live_lanes);
+    wiface = ucp_worker_iface(sender().worker(),
+                              ucp_ep_get_rsc_index(ep, lane));
+    if (!(wiface->attr_v2.cap.flags & UCT_IFACE_FLAG_V2_QUERY_TOKEN)) {
+        UCS_TEST_SKIP_R("token failover is not supported");
+    }
+
+    m_pending_uct_ep = ucp_ep_get_lane(ep, lane);
+    m_pending_req    = NULL;
+    iface            = m_pending_uct_ep->iface;
+    m_orig_ops       = iface->ops;
+
+    {
+        ucs::mock purge_mock;
+        purge_mock.setup(&iface->ops.ep_pending_purge, pending_purge);
+
+        {
+            ucs::mock flush_mock;
+            flush_mock.setup(&iface->ops.ep_flush, flush_no_resource);
+            flush_mock.setup(&iface->ops.ep_pending_add, pending_add);
+            request = ucp_ep_flush_nbx(ep, &param);
+        }
+
+        ASSERT_TRUE(UCS_PTR_IS_PTR(request));
+        req = static_cast<ucp_request_t*>(request) - 1;
+        ASSERT_EQ(&req->send.uct, m_pending_req);
+        ASSERT_EQ(lane, req->send.lane);
+        ASSERT_TRUE(req->send.flush.started_lanes &
+                    ucp_ep_config(ep)->p2p_lanes);
+
+        /* The hold purges the pending queue of the failed lane */
+        ASSERT_UCS_OK(uct_ep_invalidate(m_pending_uct_ep, 0));
+        wait_for_cond([]() { return m_pending_req == NULL; },
+                      [this]() { progress(); });
+        ASSERT_TRUE(ucp_ep_tf_is_held(ep, lane, m_pending_uct_ep));
+
+        /* The flush waits in the recovery queue until the replay */
+        EXPECT_EQ(UCS_INPROGRESS, ucp_request_check_status(request));
+        EXPECT_EQ(lane, req->send.lane);
+
+        /* The hold replaced the lane after the flush progressed, so the
+         * replayed flush flushes its started lanes again */
+        EXPECT_NE(ep->ext->lane_generation, req->send.flush.lane_generation);
+    }
+
+    test_recovery(TEST_OP_AM);
+    EXPECT_UCS_OK(request_wait(request));
+}
+
+UCP_INSTANTIATE_TEST_CASE_TLS(test_ucp_flush_tf_replay, rcx, "rc_x")
+
 void test_ucp_fault_tolerance::run_initiator_failure()
 {
     if ((get_variant_value() & TEST_OP_ALL_LANES_FAILED) &&
