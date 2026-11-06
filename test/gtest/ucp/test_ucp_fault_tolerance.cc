@@ -1538,3 +1538,394 @@ UCS_TEST_P(test_ucp_fault_tolerance_teardown, inflight_am_force_close)
 UCP_INSTANTIATE_TEST_CASE_TLS(test_ucp_fault_tolerance_teardown, tcp, "tcp")
 UCP_INSTANTIATE_TEST_CASE_TLS(test_ucp_fault_tolerance_teardown, rc, "rc_v")
 UCP_INSTANTIATE_TEST_CASE_TLS(test_ucp_fault_tolerance_teardown, rcx, "rc_x")
+/* Token failover holds a failed lane until the peer returns its token. Then
+ * the operations outstanding on the held transport endpoint are reposted, and
+ * the requests from its pending queue, which waited in the recovery queue, are
+ * replayed. A flush or a graceful close issued in the meantime must complete
+ * after these operations. */
+class test_ucp_flush_tf_held : public test_ucp_fault_tolerance_tf {
+public:
+    static void get_test_variants(std::vector<ucp_test_variant> &variants)
+    {
+        add_variant_with_value(variants, UCP_FEATURE_RMA,
+                               TEST_OP_PUT | TEST_MSG_SIZE_SMALL,
+                               op_name(TEST_OP_PUT | TEST_MSG_SIZE_SMALL));
+        add_variant_with_value(variants, UCP_FEATURE_RMA,
+                               TEST_OP_PUT | TEST_MSG_SIZE_MEDIUM,
+                               op_name(TEST_OP_PUT | TEST_MSG_SIZE_MEDIUM));
+    }
+
+protected:
+    /* Where the put waits when the flush or the close is issued */
+    enum put_state_t {
+        /* Outstanding on the held transport endpoint */
+        PUT_OUTSTANDING,
+        /* In the recovery queue */
+        PUT_PARKED,
+        /* In the recovery queue, and the failed lane does not recover */
+        PUT_PARKED_LANE_DOWN
+    };
+
+    void test_held_put(put_state_t put_state, bool close_ep);
+
+    /* Lane of a put of 'size' bytes, if one lane serves it and token failover
+     * can hold it */
+    ucp_lane_index_t put_lane(ucp_rkey_h rkey, size_t size)
+    {
+        ucp_ep_h ep             = sender().ep(0, INJECTED_EP_INDEX);
+        ucp_worker_h worker     = sender().worker();
+        ucp_lane_map_t am_lanes = 0;
+        ucp_worker_cfg_index_t rkey_cfg_index;
+        ucp_proto_select_param_t select_param;
+        ucp_proto_select_elem_t *select_elem;
+        ucp_proto_query_attr_t query_attr;
+        ucp_proto_select_t *proto_select;
+        ucp_memory_info_t mem_info;
+        ucp_worker_iface_t *wiface;
+        ucp_lane_index_t lane;
+
+        if (ucs_popcount(ucp_ep_get_live_lanes(ep)) < 2) {
+            UCS_TEST_SKIP_R("requires two endpoint lanes");
+        }
+
+        proto_select = ucp_proto_select_get(worker, ep->cfg_index,
+                                            rkey->cfg_index, &rkey_cfg_index);
+        if (proto_select == nullptr) {
+            UCS_TEST_ABORT("no rkey protocol selection");
+        }
+
+        ucp_memory_info_set_host(&mem_info);
+        ucp_proto_select_param_init(&select_param, UCP_OP_ID_PUT, 0, 0,
+                                    UCP_DATATYPE_CONTIG, &mem_info, 1);
+        select_elem = ucp_proto_select_lookup_slow(worker, proto_select, 0,
+                                                   ep->cfg_index,
+                                                   rkey_cfg_index,
+                                                   &select_param);
+        if ((select_elem == nullptr) ||
+            !ucp_proto_select_elem_query(worker, select_elem, size,
+                                         &query_attr)) {
+            UCS_TEST_ABORT("no put protocol for " << size << " bytes");
+        }
+
+        if (ucs_popcount(query_attr.lane_map) != 1) {
+            UCS_TEST_SKIP_R("put of " + std::to_string(size) + " bytes uses " +
+                            std::to_string(ucs_popcount(query_attr.lane_map)) +
+                            " lanes");
+        }
+
+        lane   = ucs_ffs64(query_attr.lane_map);
+        wiface = ucp_worker_iface(worker, ucp_ep_get_rsc_index(ep, lane));
+        if (!(wiface->attr_v2.cap.flags & UCT_IFACE_FLAG_V2_QUERY_TOKEN)) {
+            UCS_TEST_SKIP_R("token failover is not supported");
+        }
+
+        /* Token failover does not hold the last AM lane */
+        for (ucp_lane_index_t i = 0; i < ucp_ep_num_lanes(ep); ++i) {
+            if (ucp_ep_config(ep)->key.lanes[i].lane_types &
+                UCS_BIT(UCP_LANE_TYPE_AM)) {
+                am_lanes |= UCS_BIT(i);
+            }
+        }
+
+        if (!(am_lanes & ~UCS_BIT(lane))) {
+            UCS_TEST_SKIP_R("the put lane is the only AM lane");
+        }
+
+        UCS_TEST_MESSAGE << "put of " << size << " bytes: " << query_attr.desc
+                         << " on lane " << unsigned(lane);
+        return lane;
+    }
+
+    /* Wait until token failover holds the failed lane. The peer has not
+     * returned its token yet, so the recovery has not reposted or replayed
+     * anything of this lane. */
+    void wait_for_hold(ucp_ep_h ep, ucp_lane_index_t lane, uct_ep_h uct_ep)
+    {
+        wait_for_cond([ep, lane, uct_ep]() {
+            return ucp_ep_tf_is_held(ep, lane, uct_ep);
+        }, [this]() { progress(); });
+
+        if (!ucp_ep_tf_is_held(ep, lane, uct_ep)) {
+            UCS_TEST_ABORT("lane " << unsigned(lane) << " is not held");
+        }
+
+        if (ucp_ep_recovery_arg(ep)->tf[lane].purged) {
+            UCS_TEST_ABORT("lane " << unsigned(lane) << " is already purged");
+        }
+    }
+
+    /* Send the put while the lane has no resources, so it waits in a pending
+     * queue which only the test holds, fail the lane, and wait until the hold
+     * moves the put to the recovery queue */
+    void *put_parked(ucp_ep_h ep, ucp_lane_index_t lane, const mem_buffer &lbuf,
+                     const mapped_buffer &rbuf, ucp_rkey_h rkey, size_t size)
+    {
+        uct_ep_h uct_ep   = ucp_ep_get_lane(ep, lane);
+        uct_iface_h iface = uct_ep->iface;
+        ucs::mock purge_mock;
+        ucs_status_t status;
+        void *put_req;
+
+        m_pending_uct_ep = uct_ep;
+        m_pending_req    = NULL;
+        m_orig_ops       = iface->ops;
+        purge_mock.setup(&iface->ops.ep_pending_purge, pending_purge);
+
+        {
+            ucs::mock put_mock;
+            put_mock.setup(&iface->ops.ep_put_short, put_short_no_resource);
+            put_mock.setup(&iface->ops.ep_put_bcopy, put_bcopy_no_resource);
+            put_mock.setup(&iface->ops.ep_put_zcopy, put_zcopy_no_resource);
+            put_mock.setup(&iface->ops.ep_pending_add, pending_add);
+            put_req = ucp_put_nbx(ep, lbuf.ptr(), size, uintptr_t(rbuf.ptr()),
+                                  rkey, &m_req_empty_param);
+        }
+
+        if (!UCS_PTR_IS_PTR(put_req) || (m_pending_req == NULL)) {
+            UCS_TEST_ABORT("put did not wait in the pending queue of lane "
+                           << unsigned(lane));
+        }
+
+        EXPECT_EQ(&(static_cast<ucp_request_t*>(put_req) - 1)->send.uct,
+                  m_pending_req);
+
+        /* The hold purges the pending queue of the failed lane */
+        status = uct_ep_invalidate(uct_ep, 0);
+        if (status != UCS_OK) {
+            UCS_TEST_ABORT("uct_ep_invalidate failed: "
+                           << ucs_status_string(status));
+        }
+
+        wait_for_hold(ep, lane, uct_ep);
+        EXPECT_EQ(nullptr, m_pending_req);
+        EXPECT_FALSE(
+                ucs_queue_is_empty(&ucp_ep_recovery_arg(ep)->tf_pending_q));
+        return put_req;
+    }
+
+    /* Progress until the request completes, and release it */
+    ucs_status_t wait_and_release(void *req, bool close_req)
+    {
+        ucs_status_t status;
+
+        if (!UCS_PTR_IS_PTR(req)) {
+            return UCS_PTR_STATUS(req);
+        }
+
+        wait_for_cond([req]() {
+            return ucp_request_check_status(req) != UCS_INPROGRESS;
+        }, [this]() { progress(); });
+
+        status = ucp_request_check_status(req);
+        if (status == UCS_INPROGRESS) {
+            return status;
+        }
+
+        if (close_req) {
+            sender().close_ep_req_free(req);
+        } else {
+            ucp_request_free(req);
+        }
+
+        return status;
+    }
+
+    static bool is_delivered(const mem_buffer &lbuf, const mapped_buffer &rbuf,
+                             size_t size)
+    {
+        return mem_buffer::compare(lbuf.ptr(), rbuf.ptr(), size,
+                                   UCS_MEMORY_TYPE_HOST);
+    }
+
+    static ucs_status_t
+    put_short_no_resource(uct_ep_h ep, const void *buffer, unsigned length,
+                          uint64_t remote_addr, uct_rkey_t rkey)
+    {
+        if (ep == m_pending_uct_ep) {
+            return UCS_ERR_NO_RESOURCE;
+        }
+
+        return m_orig_ops.ep_put_short(ep, buffer, length, remote_addr, rkey);
+    }
+
+    static ssize_t
+    put_bcopy_no_resource(uct_ep_h ep, uct_pack_callback_t pack_cb, void *arg,
+                          uint64_t remote_addr, uct_rkey_t rkey)
+    {
+        if (ep == m_pending_uct_ep) {
+            return UCS_ERR_NO_RESOURCE;
+        }
+
+        return m_orig_ops.ep_put_bcopy(ep, pack_cb, arg, remote_addr, rkey);
+    }
+
+    static ucs_status_t
+    put_zcopy_no_resource(uct_ep_h ep, const uct_iov_t *iov, size_t iovcnt,
+                          uint64_t remote_addr, uct_rkey_t rkey,
+                          uct_completion_t *comp)
+    {
+        if (ep == m_pending_uct_ep) {
+            return UCS_ERR_NO_RESOURCE;
+        }
+
+        return m_orig_ops.ep_put_zcopy(ep, iov, iovcnt, remote_addr, rkey,
+                                       comp);
+    }
+
+    static ucs_status_t
+    pending_add(uct_ep_h ep, uct_pending_req_t *req, unsigned flags)
+    {
+        if ((ep == m_pending_uct_ep) && (m_pending_req == NULL)) {
+            m_pending_req = req;
+            return UCS_OK;
+        }
+
+        return m_orig_ops.ep_pending_add(ep, req, flags);
+    }
+
+    static void
+    pending_purge(uct_ep_h ep, uct_pending_purge_callback_t cb, void *arg)
+    {
+        uct_pending_req_t *req = m_pending_req;
+
+        if ((ep == m_pending_uct_ep) && (req != NULL)) {
+            m_pending_req = NULL;
+            cb(req, arg);
+        }
+
+        m_orig_ops.ep_pending_purge(ep, cb, arg);
+    }
+
+    static uct_ep_h m_pending_uct_ep;
+    static uct_pending_req_t *m_pending_req;
+    static uct_iface_ops_t m_orig_ops;
+};
+
+uct_ep_h test_ucp_flush_tf_held::m_pending_uct_ep        = NULL;
+uct_pending_req_t *test_ucp_flush_tf_held::m_pending_req = NULL;
+uct_iface_ops_t test_ucp_flush_tf_held::m_orig_ops;
+
+void test_ucp_flush_tf_held::test_held_put(put_state_t put_state, bool close_ep)
+{
+    const size_t size = rma_msg_size();
+    const char *what  = close_ep ? "close" : "flush";
+    ucs::mock probe_mock;
+    ucs_status_t put_status;
+    ucs_status_t status;
+    ucp_lane_index_t lane;
+    uct_ep_h uct_ep;
+    void *put_req;
+    void *req;
+    ucp_ep_h ep;
+
+    flush_workers();
+    ep = sender().ep(0, INJECTED_EP_INDEX);
+
+    mem_buffer lbuf(size, UCS_MEMORY_TYPE_HOST);
+    mapped_buffer rbuf(size, receiver());
+    ucs::handle<ucp_rkey_h> rkey = rbuf.rkey(sender());
+
+    lane   = put_lane(rkey, size);
+    uct_ep = ucp_ep_get_lane(ep, lane);
+    lbuf.pattern_fill(m_seed);
+    rbuf.memset(0);
+    ASSERT_FALSE(is_delivered(lbuf, rbuf, size));
+
+    if (put_state == PUT_OUTSTANDING) {
+        /* The put is sent on the failed lane before the failure is detected */
+        ASSERT_UCS_OK(uct_ep_invalidate(uct_ep, 0));
+        put_req = ucp_put_nbx(ep, lbuf.ptr(), size, uintptr_t(rbuf.ptr()),
+                              rkey, &m_req_empty_param);
+        ASSERT_FALSE(UCS_PTR_IS_ERR(put_req));
+        wait_for_hold(ep, lane, uct_ep);
+    } else {
+        if (put_state == PUT_PARKED_LANE_DOWN) {
+            /* The probes of the rebuilt lane fail, so it does not recover */
+            mock_recovery_probe(sender().worker(), probe_mock,
+                                recovery_probe_fail);
+        }
+
+        put_req = put_parked(ep, lane, lbuf, rbuf, rkey, size);
+        EXPECT_EQ(UCS_INPROGRESS, ucp_request_check_status(put_req));
+    }
+
+    ASSERT_FALSE(is_delivered(lbuf, rbuf, size));
+
+    if (close_ep) {
+        req = sender().disconnect_nb(0, INJECTED_EP_INDEX);
+    } else {
+        req = ucp_ep_flush_nbx(ep, &m_req_empty_param);
+    }
+
+    ASSERT_FALSE(UCS_PTR_IS_ERR(req));
+    EXPECT_TRUE(UCS_PTR_IS_PTR(req))
+            << what << " completed before the put sent before it";
+
+    /* The put completes before the flush or the close, and its data is
+     * delivered */
+    status = wait_and_release(req, close_ep);
+    EXPECT_EQ(UCS_OK, status) << what << " status "
+                              << ucs_status_string(status);
+    if (UCS_PTR_IS_PTR(put_req)) {
+        EXPECT_NE(UCS_INPROGRESS, ucp_request_check_status(put_req))
+                << "put completed after the " << what;
+    }
+
+    EXPECT_TRUE(is_delivered(lbuf, rbuf, size))
+            << "put data was not delivered when the " << what << " completed";
+
+    if (put_state == PUT_PARKED_LANE_DOWN) {
+        EXPECT_TRUE(ucp_ep_get_failed_lanes(ep) & UCS_BIT(lane))
+                << "lane " << unsigned(lane) << " recovered";
+    }
+
+    put_status = wait_and_release(put_req, false);
+    if (put_status == UCS_INPROGRESS) {
+        ADD_FAILURE() << "put did not complete";
+        /* Let the lane recover, so the recovery sends the put */
+        probe_mock.cleanup();
+        put_status = wait_and_release(put_req, false);
+    }
+
+    EXPECT_EQ(UCS_OK, put_status) << "put status "
+                                  << ucs_status_string(put_status);
+    EXPECT_TRUE(is_delivered(lbuf, rbuf, size)) << "put data was not delivered";
+
+    if ((put_state != PUT_PARKED_LANE_DOWN) && !close_ep) {
+        test_recovery(TEST_OP_PUT);
+    }
+
+    EXPECT_EQ(0, total_err_count());
+}
+
+UCS_TEST_P(test_ucp_flush_tf_held, flush_outstanding_put, "MAX_EAGER_LANES=8",
+           "RECOVERY_RETRIES=100")
+{
+    test_held_put(PUT_OUTSTANDING, false);
+}
+
+UCS_TEST_P(test_ucp_flush_tf_held, flush_parked_put, "MAX_EAGER_LANES=8",
+           "RECOVERY_RETRIES=100")
+{
+    test_held_put(PUT_PARKED, false);
+}
+
+UCS_TEST_P(test_ucp_flush_tf_held, flush_parked_put_lane_down,
+           "MAX_EAGER_LANES=8", "RECOVERY_RETRIES=1000")
+{
+    test_held_put(PUT_PARKED_LANE_DOWN, false);
+}
+
+UCS_TEST_P(test_ucp_flush_tf_held, close_outstanding_put, "MAX_EAGER_LANES=8",
+           "RECOVERY_RETRIES=100")
+{
+    test_held_put(PUT_OUTSTANDING, true);
+}
+
+UCS_TEST_P(test_ucp_flush_tf_held, close_parked_put, "MAX_EAGER_LANES=8",
+           "RECOVERY_RETRIES=100")
+{
+    test_held_put(PUT_PARKED, true);
+}
+
+UCP_INSTANTIATE_TEST_CASE_TLS(test_ucp_flush_tf_held, rcx, "rc_x")
