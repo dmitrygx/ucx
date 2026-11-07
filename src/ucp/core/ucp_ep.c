@@ -3102,6 +3102,64 @@ static void ucp_ep_tf_lane_release(ucp_ep_h ep, ucp_ep_lane_tf_t *tf)
     }
 }
 
+/* Nonzero when a held lane has outstanding operations which are not reposted
+ * yet */
+static int ucp_ep_tf_has_unpurged_lanes(const ucp_ep_recovery_arg_t *arg)
+{
+    const ucp_ep_lane_tf_t *tf;
+
+    ucs_carray_for_each(tf, arg->tf, UCP_MAX_LANES) {
+        if ((tf->state == UCP_EP_TF_LANE_HELD) && (tf->uct_ep != NULL) &&
+            !tf->purged) {
+            return 1;
+        }
+    }
+
+    return 0;
+}
+
+int ucp_ep_tf_flush_must_wait(ucp_ep_h ep)
+{
+    ucp_ep_recovery_arg_t *arg;
+
+    if (!ucp_ep_err_mode_eq(ep, UCP_ERR_HANDLING_MODE_FAILOVER)) {
+        return 0;
+    }
+
+    arg = ucp_ep_recovery_arg(ep);
+    return (arg != NULL) && (!ucs_queue_is_empty(&arg->tf_pending_q) ||
+                             ucp_ep_tf_has_unpurged_lanes(arg));
+}
+
+void ucp_ep_tf_flush_add(ucp_ep_h ep, uct_pending_req_t *req)
+{
+    ucp_ep_recovery_arg_t *arg = ucp_ep_recovery_arg(ep);
+
+    ucs_assert(arg != NULL);
+
+    /* The replay sends the requests queued before the flush first */
+    ucs_queue_push(&arg->tf_pending_q, (ucs_queue_elem_t*)&req->priv);
+}
+
+/* When no held lane has outstanding operations left to repost, the requests
+ * from the pending queues of held lanes can follow them on the live lanes.
+ * Replay them now: the failed lanes can take long to recover, or never
+ * recover. */
+static void ucp_ep_tf_replay_pending(ucp_ep_h ep)
+{
+    ucp_ep_recovery_arg_t *arg = ucp_ep_recovery_arg(ep);
+
+    if ((arg == NULL) || ucs_queue_is_empty(&arg->tf_pending_q) ||
+        (ep->flags & UCP_EP_FLAG_FAILED) ||
+        !ucp_ep_err_mode_eq(ep, UCP_ERR_HANDLING_MODE_FAILOVER) ||
+        ucp_ep_tf_has_unpurged_lanes(arg)) {
+        return;
+    }
+
+    ucs_debug("ep %p: replay requests of held lanes", ep);
+    ucp_wireup_replay_pending_requests(ep, &arg->tf_pending_q);
+}
+
 static void
 ucp_ep_tf_abort_pending(ucs_queue_head_t *pending_q, ucs_status_t status)
 {
@@ -3260,6 +3318,8 @@ void ucp_ep_tf_lanes_purge_outstanding(ucp_ep_h ep, ucp_lane_map_t lanes,
         uct_ep_destroy(tf->uct_ep);
         ucp_ep_tf_lane_release(ep, tf);
     }
+
+    ucp_ep_tf_replay_pending(ep);
 }
 
 static void ucp_ep_tf_cleanup(ucp_ep_h ep)
@@ -3282,8 +3342,9 @@ static void ucp_ep_tf_cleanup(ucp_ep_h ep)
         ucp_ep_tf_lane_release(ep, tf);
     }
 
-    /* Every held lane is done, so pending requests can follow outstanding. */
-    if ((ep->flags & (UCP_EP_FLAG_FAILED | UCP_EP_FLAG_CLOSED)) ||
+    /* Every held lane is done, so pending requests can follow outstanding.
+     * A closed endpoint replays them too: its close flush waits after them. */
+    if ((ep->flags & UCP_EP_FLAG_FAILED) ||
         !ucp_ep_err_mode_eq(ep, UCP_ERR_HANDLING_MODE_FAILOVER)) {
         ucp_ep_tf_abort_pending(&arg->tf_pending_q, UCS_ERR_CANCELED);
     } else {
@@ -3528,6 +3589,7 @@ static unsigned ucp_ep_tf_purge_held_progress(void *arg)
 
     uct_ep_destroy(tf->uct_ep);
     ucp_ep_tf_lane_release(ep, tf);
+    ucp_ep_tf_replay_pending(ep);
 
 out:
     UCS_ASYNC_UNBLOCK(&worker->async);
