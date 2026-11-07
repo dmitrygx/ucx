@@ -573,7 +573,8 @@ typedef struct ucp_ep_recovery_arg {
     ucp_ep_lane_tf_t        tf[UCP_MAX_LANES];
     /* Pending requests from held lanes, replayed after all of their
      * outstanding operations are resolved,
-     * outstanding re-posts also go here */
+     * outstanding re-posts also go here, and flush requests which must
+     * complete after them */
     ucs_queue_head_t        tf_pending_q;
     /* LANES_ADDR reply waiting for error completions. Owned by wireup.
      * NULL when no reply is waiting. */
@@ -1207,6 +1208,23 @@ ucp_ep_tf_invalidate_uct_eps(ucp_ep_h ep, ucp_lane_map_t lanes);
 
 /** Nonzero when @a lane is held and still owns @a uct_ep. */
 int ucp_ep_tf_is_held(ucp_ep_h ep, ucp_lane_index_t lane, uct_ep_h uct_ep);
+
+
+/**
+ * Nonzero when token failover keeps operations which a flush issued now must
+ * wait for: requests in the recovery queue, or outstanding operations of a
+ * held lane which are not reposted yet.
+ */
+int ucp_ep_tf_flush_must_wait(ucp_ep_h ep);
+
+
+/**
+ * Add a flush request which must wait for token failover, see
+ * @ref ucp_ep_tf_flush_must_wait, to the recovery queue. It is replayed after
+ * the requests queued before it, when no held lane has outstanding operations
+ * left to repost. The request must not be in a pending queue.
+ */
+void ucp_ep_tf_flush_add(ucp_ep_h ep, uct_pending_req_t *req);
 
 
 /**
