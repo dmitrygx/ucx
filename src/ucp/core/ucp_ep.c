@@ -5857,10 +5857,13 @@ static ucs_status_t ucp_rkey_update_config(ucp_rkey_h rkey, ucp_ep_h ep)
     ucp_worker_h worker                = ep->worker;
     ucp_rkey_config_t *rkey_cfg        = ucp_rkey_config(worker, rkey);
     ucp_rkey_config_key_t rkey_cfg_key = rkey_cfg->key;
+    ucs_sys_dev_distance_t lanes_distance[UCP_MAX_LANES];
     ucs_status_t status;
 
     rkey_cfg_key.ep_cfg_index = ep->cfg_index;
-    status = ucp_worker_rkey_config_get(worker, &rkey_cfg_key, NULL,
+    ucp_worker_rkey_config_map_distance(worker, rkey->cfg_index, ep->cfg_index,
+                                        lanes_distance);
+    status = ucp_worker_rkey_config_get(worker, &rkey_cfg_key, lanes_distance,
                                         &rkey->cfg_index);
     if (status != UCS_OK) {
         return status;
