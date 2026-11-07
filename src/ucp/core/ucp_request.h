@@ -164,7 +164,9 @@ typedef struct {
 enum {
     UCP_FLUSH_SW_STATE_NOT_STARTED,
     UCP_FLUSH_SW_STATE_STARTED,
-    UCP_FLUSH_SW_STATE_RESTART_PENDING
+    UCP_FLUSH_SW_STATE_RESTART_PENDING,
+    /* Waits until token failover replays it, see ucp_ep_tf_flush_add() */
+    UCP_FLUSH_SW_STATE_REPLAY_PENDING
 };
 
 
