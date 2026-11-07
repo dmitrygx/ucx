@@ -2600,6 +2600,46 @@ static void ucp_worker_dump_rkey_config_key(ucs_string_buffer_t *log_strb,
             ucs_memory_type_names[key->mem_type], key->unreachable_md_map);
 }
 
+/*
+ * Remote-memory distance of each lane of an endpoint configuration, taken
+ * from an rkey configuration of the same remote memory for another endpoint
+ * configuration of the endpoint. Needed when the endpoint is reconfigured
+ * after the rkey was unpacked: the packed distances are gone by then. A lane
+ * on the same resource and remote device keeps its distance; any other lane
+ * gets the default one.
+ */
+void ucp_worker_rkey_config_map_distance(ucp_worker_h worker,
+                                         ucp_worker_cfg_index_t rkey_cfg_index,
+                                         ucp_worker_cfg_index_t ep_cfg_index,
+                                         ucs_sys_dev_distance_t *lanes_distance)
+{
+    const ucp_rkey_config_t *rkey_config = ucp_worker_rkey_config(
+            worker, rkey_cfg_index);
+    const ucp_ep_config_key_t *old_key   = &ucs_array_elem(
+            &worker->ep_config, rkey_config->key.ep_cfg_index).key;
+    const ucp_ep_config_key_t *new_key   = &ucs_array_elem(&worker->ep_config,
+                                                           ep_cfg_index).key;
+    const ucp_ep_config_key_lane_t *new_lane, *old_lane;
+    ucp_lane_index_t lane, old_lane_index;
+
+    for (lane = 0; lane < new_key->num_lanes; ++lane) {
+        new_lane             = &new_key->lanes[lane];
+        lanes_distance[lane] = ucs_topo_default_distance;
+        for (old_lane_index = 0; old_lane_index < old_key->num_lanes;
+             ++old_lane_index) {
+            old_lane = &old_key->lanes[old_lane_index];
+            if ((old_lane->rsc_index == new_lane->rsc_index) &&
+                (old_lane->path_index == new_lane->path_index) &&
+                (old_lane->dst_md_index == new_lane->dst_md_index) &&
+                (old_lane->dst_sys_dev == new_lane->dst_sys_dev)) {
+                lanes_distance[lane] =
+                        rkey_config->lanes_distance[old_lane_index];
+                break;
+            }
+        }
+    }
+}
+
 ucs_status_t
 ucp_worker_add_rkey_config(ucp_worker_h worker,
                            const ucp_rkey_config_key_t *key,
