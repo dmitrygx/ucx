@@ -930,6 +930,7 @@ ucp_proto_select_get(ucp_worker_h worker, ucp_worker_cfg_index_t ep_cfg_index,
                      ucp_worker_cfg_index_t rkey_cfg_index,
                      ucp_worker_cfg_index_t *new_rkey_cfg_index)
 {
+    ucs_sys_dev_distance_t lanes_distance[UCP_MAX_LANES];
     ucp_rkey_config_key_t rkey_config_key;
     ucs_status_t status;
 
@@ -940,8 +941,10 @@ ucp_proto_select_get(ucp_worker_h worker, ucp_worker_cfg_index_t ep_cfg_index,
         rkey_config_key = ucp_worker_rkey_config(worker, rkey_cfg_index)->key;
 
         rkey_config_key.ep_cfg_index = ep_cfg_index;
-        status = ucp_worker_rkey_config_get(worker, &rkey_config_key, NULL,
-                                            new_rkey_cfg_index);
+        ucp_worker_rkey_config_map_distance(worker, rkey_cfg_index,
+                                            ep_cfg_index, lanes_distance);
+        status = ucp_worker_rkey_config_get(worker, &rkey_config_key,
+                                            lanes_distance, new_rkey_cfg_index);
         if (status != UCS_OK) {
             ucs_error("failed to switch to new rkey");
             return NULL;
