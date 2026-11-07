@@ -18,6 +18,7 @@
 static unsigned ucp_ep_flush_resume_slow_path_callback(void *arg);
 static unsigned ucp_ep_flush_failover_oneshot_cb(void *arg);
 static void ucp_ep_flush_request_resched(ucp_ep_h ep, ucp_request_t *req);
+static void ucp_ep_flush_request_reset(ucp_request_t *req);
 
 static void
 ucp_ep_flush_request_update_uct_comp(ucp_request_t *req, int diff,
@@ -114,6 +115,7 @@ static void ucp_ep_flush_error(ucp_request_t *req, ucp_lane_index_t lane,
 static int ucp_ep_flush_is_completed(ucp_request_t *req)
 {
     return (req->send.flush.sw_state != UCP_FLUSH_SW_STATE_RESTART_PENDING) &&
+           (req->send.flush.sw_state != UCP_FLUSH_SW_STATE_REPLAY_PENDING) &&
            (req->send.state.uct_comp.count == 0) && req->send.flush.sw_done;
 }
 
@@ -131,7 +133,8 @@ static void ucp_ep_flush_progress(ucp_request_t *req)
     ucs_assertv(!(ep->flags & UCP_EP_FLAG_BLOCK_FLUSH), "req=%p ep=%p", req,
                 ep);
 
-    if (req->send.flush.sw_state == UCP_FLUSH_SW_STATE_RESTART_PENDING) {
+    if ((req->send.flush.sw_state == UCP_FLUSH_SW_STATE_RESTART_PENDING) ||
+        (req->send.flush.sw_state == UCP_FLUSH_SW_STATE_REPLAY_PENDING)) {
         return;
     }
 
@@ -328,13 +331,60 @@ static ucs_status_t ucp_ep_flush_mem_start(ucp_request_t *req)
     return UCS_INPROGRESS;
 }
 
+/*
+ * Token failover keeps the operations of a held lane until it reposts them,
+ * and the requests from its pending queue until it replays them. A flush which
+ * has flushed the live lanes waits in the recovery queue after these requests,
+ * and the replay makes it flush all lanes again. Return 1 if the flush waits.
+ */
+static int ucp_ep_flush_tf_wait(ucp_request_t *req)
+{
+    ucp_ep_h ep = req->send.ep;
+    int wait;
+
+    /* The endpoint has token failover state only while it recovers lanes */
+    if ((req->status != UCS_OK) || (ucp_ep_recovery_arg(ep) == NULL)) {
+        return 0;
+    }
+
+    UCS_ASYNC_BLOCK(&ep->worker->async);
+
+    wait = ucp_ep_tf_flush_must_wait(ep);
+    if (!wait) {
+        goto out;
+    }
+
+    if ((req->send.lane != UCP_NULL_LANE) &&
+        (ucp_ep_get_live_lanes(ep) & UCS_BIT(req->send.lane))) {
+        /* The pending callback of this lane owns the request until it
+         * returns, so the resume callback adds it to the recovery queue */
+        ucs_callbackq_add_oneshot(&ep->worker->uct->progress_q, req,
+                                  ucp_ep_flush_resume_slow_path_callback, req);
+        goto out;
+    }
+
+    ucp_trace_req(req, "flush ep %p waits for token failover", ep);
+    ucs_callbackq_remove_oneshot(&ep->worker->uct->progress_q, req,
+                                 ucp_ep_flush_slow_path_remove_filter, req);
+    req->send.flush.sw_state = UCP_FLUSH_SW_STATE_REPLAY_PENDING;
+    if (req->send.lane == UCP_NULL_LANE) {
+        ucp_ep_tf_flush_add(ep, &req->send.uct);
+    }
+    /* Otherwise the hold moved the pending queue of the lane, with this
+     * request, to the recovery queue */
+
+out:
+    UCS_ASYNC_UNBLOCK(&ep->worker->async);
+    return wait;
+}
+
 static int ucp_flush_check_completion(ucp_request_t *req)
 {
     ucp_worker_h worker = req->send.ep->worker;
     ucs_status_t status;
 
     /* Check if flushed all lanes */
-    if (!ucp_ep_flush_is_completed(req)) {
+    if (!ucp_ep_flush_is_completed(req) || ucp_ep_flush_tf_wait(req)) {
         return 0;
     }
 
@@ -437,6 +487,16 @@ ucs_status_t ucp_ep_flush_progress_pending(uct_pending_req_t *self)
     ucs_assert(!(req->flags & UCP_REQUEST_FLAG_COMPLETED));
 
     if (req->send.flush.sw_state == UCP_FLUSH_SW_STATE_RESTART_PENDING) {
+        return UCS_OK;
+    }
+
+    if (req->send.flush.sw_state == UCP_FLUSH_SW_STATE_REPLAY_PENDING) {
+        /* Token failover replays the flush after the operations it waited
+         * for, which may have been sent on any lane */
+        ucp_trace_req(req, "flush ep %p replayed by token failover", ep);
+        ucp_ep_flush_request_reset(req);
+        ucs_callbackq_add_oneshot(&ep->worker->uct->progress_q, req,
+                                  ucp_ep_flush_resume_slow_path_callback, req);
         return UCS_OK;
     }
 
@@ -585,6 +645,9 @@ void ucp_ep_flush_request_ff(ucp_request_t *req, ucs_status_t status)
         ucs_callbackq_remove_oneshot(&ep->worker->uct->progress_q, req,
                                      ucp_ep_flush_restart_remove_filter, req);
         req->send.flush.sw_state = UCP_FLUSH_SW_STATE_NOT_STARTED;
+    } else if (req->send.flush.sw_state == UCP_FLUSH_SW_STATE_REPLAY_PENDING) {
+        /* Token failover removed the flush from its queue */
+        req->send.flush.sw_state = UCP_FLUSH_SW_STATE_NOT_STARTED;
     }
 
     ff_lanes = req->send.flush.all_lanes &
@@ -657,7 +720,7 @@ ucp_ep_flush_lanes_internal(ucp_ep_h ep, unsigned req_flags,
     ucp_request_set_send_callback_param(param, req, send);
     ucp_ep_flush_progress(req);
 
-    if (ucp_ep_flush_is_completed(req)) {
+    if (ucp_ep_flush_is_completed(req) && !ucp_ep_flush_tf_wait(req)) {
         status = ucp_ep_flush_mem_start(req);
         if (status == UCS_OK) {
             status = req->status;
