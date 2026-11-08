@@ -2797,3 +2797,219 @@ UCS_TEST_P(test_ucp_am_psn, all_duplicates, "ZCOPY_THRESH=0", "RNDV_THRESH=inf",
 }
 
 UCP_INSTANTIATE_TEST_CASE(test_ucp_am_psn)
+
+
+/* A small eager AM goes out as a short message and completes before
+ * ucp_am_send_nbx returns on a PEER endpoint. A FAILOVER endpoint in token
+ * failover mode should not make it wait for a later progress call. */
+class test_ucp_am_failover_inline : public test_ucp_am_nbx {
+public:
+    test_ucp_am_failover_inline() : test_ucp_am_failover_inline("token")
+    {
+    }
+
+    static void get_test_variants_proto(variant_vec_t &variants)
+    {
+        add_variant_with_value(variants, UCP_FEATURE_AM, 0, "");
+    }
+
+    static void get_test_variants(variant_vec_t &variants)
+    {
+        add_variant_values(variants, get_test_variants_proto,
+                           UCP_ERR_HANDLING_MODE_PEER, "peer");
+        add_variant_values(variants, get_test_variants_proto,
+                           UCP_ERR_HANDLING_MODE_FAILOVER, "failover");
+    }
+
+    void init() override
+    {
+        test_ucp_am_nbx::init();
+        flush_workers();
+
+        /* The endpoint sets its short threshold on the first send */
+        reset_counters();
+        set_am_data_handler(receiver(), TEST_AM_NBX_ID, am_rx_check_cb, this);
+        send_small(1);
+        wait_receives();
+    }
+
+    ucp_ep_params_t get_ep_params() override
+    {
+        ucp_ep_params_t ep_params = test_ucp_am_nbx::get_ep_params();
+
+        ep_params.field_mask |= UCP_EP_PARAM_FIELD_ERR_HANDLING_MODE;
+        ep_params.err_mode    = static_cast<ucp_err_handling_mode_t>(
+                get_variant_value(1));
+        return ep_params;
+    }
+
+protected:
+    test_ucp_am_failover_inline(const std::string &failover_mode)
+    {
+        modify_config("FAILOVER_MODE", failover_mode);
+        /* IB MD key; keeps token mode selected, as in the FT token tests */
+        modify_config("IB_INDIRECT_ATOMIC", "n", SETENV_IF_NOT_EXIST);
+    }
+
+    bool is_failover() const
+    {
+        return get_variant_value(1) == UCP_ERR_HANDLING_MODE_FAILOVER;
+    }
+
+    /* Payload sizes up to max_size that fit a short message on the AM lane */
+    std::vector<size_t> short_sizes(size_t max_size)
+    {
+        const ucp_ep_config_key_t &key = ucp_ep_config(sender().ep())->key;
+        std::vector<size_t> sizes;
+
+        if (key.am_lane == UCP_NULL_LANE) {
+            return sizes;
+        }
+
+        size_t max_short = ucp_worker_iface_get_attr(
+                                   sender().worker(),
+                                   key.lanes[key.am_lane].rsc_index)
+                                   ->cap.am.max_short;
+        for (size_t size : {1, 8, 64, 100, 200}) {
+            if ((size <= max_size) &&
+                ((size + sizeof(ucp_am_hdr_t)) <= max_short)) {
+                sizes.push_back(size);
+            }
+        }
+
+        return sizes;
+    }
+
+    /* Send an eager AM from host memory with a completion callback and return
+     * the status of the send right after ucp_am_send_nbx, with no progress in
+     * between */
+    ucs_status_t send_small(size_t size)
+    {
+        std::string buffer(size, 'n');
+        ucp_request_param_t param;
+
+        param.op_attr_mask = UCP_OP_ATTR_FIELD_FLAGS |
+                             UCP_OP_ATTR_FIELD_MEMORY_TYPE |
+                             UCP_OP_ATTR_FIELD_CALLBACK;
+        param.flags        = UCP_AM_SEND_FLAG_EAGER;
+        param.memory_type  = UCS_MEMORY_TYPE_HOST;
+        param.cb.send      = send_cb;
+
+        ucs_status_ptr_t sptr = update_counter_and_send_am(NULL, 0,
+                                                           buffer.data(), size,
+                                                           TEST_AM_NBX_ID,
+                                                           &param);
+        ucs_status_t status   = UCS_PTR_IS_PTR(sptr) ?
+                                        ucp_request_check_status(sptr) :
+                                        UCS_PTR_STATUS(sptr);
+
+        EXPECT_UCS_OK(request_wait(sptr));
+        return status;
+    }
+
+    /* Send an eager AM that must complete immediately */
+    ucs_status_t send_imm(size_t size)
+    {
+        std::string buffer(size, 'i');
+        ucp_request_param_t param;
+
+        param.op_attr_mask = UCP_OP_ATTR_FIELD_FLAGS |
+                             UCP_OP_ATTR_FIELD_MEMORY_TYPE |
+                             UCP_OP_ATTR_FLAG_FORCE_IMM_CMPL;
+        param.flags        = UCP_AM_SEND_FLAG_EAGER;
+        param.memory_type  = UCS_MEMORY_TYPE_HOST;
+
+        ucs_status_ptr_t sptr = update_counter_and_send_am(NULL, 0,
+                                                           buffer.data(), size,
+                                                           TEST_AM_NBX_ID,
+                                                           &param);
+        if (UCS_PTR_IS_PTR(sptr)) {
+            ADD_FAILURE() << "send with FORCE_IMM_CMPL returned a request";
+            EXPECT_UCS_OK(request_wait(sptr));
+            return UCS_INPROGRESS;
+        }
+
+        if (UCS_PTR_STATUS(sptr) != UCS_OK) {
+            /* Nothing was sent */
+            --m_send_counter;
+        }
+
+        return UCS_PTR_STATUS(sptr);
+    }
+
+    static void send_cb(void *request, ucs_status_t status, void *user_data)
+    {
+    }
+};
+
+UCS_TEST_P(test_ucp_am_failover_inline, small_eager_send)
+{
+    std::vector<size_t> sizes = short_sizes(200);
+
+    if (sizes.empty()) {
+        UCS_TEST_SKIP_R("no short message fits the AM lane");
+    }
+
+    for (size_t size : sizes) {
+        EXPECT_EQ(UCS_OK, send_small(size))
+                << "size " << size << ": the send did not complete inline, "
+                << "max_eager_short "
+                << ucp_ep_config(sender().ep())
+                           ->am_u.max_eager_short.memtype_on;
+    }
+
+    wait_receives();
+    EXPECT_EQ(m_send_counter, m_recv_counter);
+}
+
+UCS_TEST_P(test_ucp_am_failover_inline, force_imm_cmpl)
+{
+    std::vector<size_t> sizes = short_sizes(100);
+
+    if (sizes.empty()) {
+        UCS_TEST_SKIP_R("no short message fits the AM lane");
+    }
+
+    for (size_t size : sizes) {
+        EXPECT_EQ(UCS_OK, send_imm(size)) << "size " << size;
+    }
+
+    wait_receives();
+    EXPECT_EQ(m_send_counter, m_recv_counter);
+}
+
+UCP_INSTANTIATE_TEST_CASE_TLS(test_ucp_am_failover_inline, rcx, "rc_x")
+
+
+/* In sw failover mode an AM completed at post could not be sent again after a
+ * lane failure, so a FAILOVER endpoint keeps small AMs on a protocol that
+ * completes on the send completion */
+class test_ucp_am_failover_inline_sw : public test_ucp_am_failover_inline {
+public:
+    test_ucp_am_failover_inline_sw() : test_ucp_am_failover_inline("sw")
+    {
+    }
+};
+
+UCS_TEST_P(test_ucp_am_failover_inline_sw, force_imm_cmpl)
+{
+    const ucs_status_t exp_status = is_failover() ? UCS_ERR_NO_RESOURCE :
+                                                    UCS_OK;
+    std::vector<size_t> sizes     = short_sizes(100);
+
+    if (sizes.empty()) {
+        UCS_TEST_SKIP_R("no short message fits the AM lane");
+    }
+
+    for (size_t size : sizes) {
+        EXPECT_EQ(exp_status, send_imm(size)) << "size " << size;
+        /* A plain send completes inline only on the PEER endpoint */
+        EXPECT_EQ(is_failover() ? UCS_INPROGRESS : UCS_OK, send_small(size))
+                << "size " << size;
+    }
+
+    wait_receives();
+    EXPECT_EQ(m_send_counter, m_recv_counter);
+}
+
+UCP_INSTANTIATE_TEST_CASE_TLS(test_ucp_am_failover_inline_sw, rcx, "rc_x")
