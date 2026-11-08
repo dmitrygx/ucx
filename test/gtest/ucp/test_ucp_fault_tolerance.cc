@@ -17,6 +17,8 @@ extern "C" {
 #include <ucp/core/ucp_worker.inl>
 #include <ucp/proto/proto.h>
 #include <ucp/proto/proto_debug.h>
+#include <ucp/proto/proto_multi.h>
+#include <ucp/proto/proto_single.h>
 #include <ucp/proto/proto_select.inl>
 #include <ucp/wireup/wireup_ep.h>
 #include <uct/base/uct_iface.h>
@@ -908,12 +910,102 @@ protected:
     static ucs::mock        *m_probe_mock;
     static unsigned          m_probe_count;
 
+    /* AM id and payload size of the order test: a small notification */
+    static constexpr uint16_t ORDER_AM_ID   = 1;
+    static constexpr size_t   ORDER_AM_SIZE = 100;
+
+    static ucs_status_t am_order_recv_cb(void *arg, const void *header,
+                                         size_t header_length, void *data,
+                                         size_t length,
+                                         const ucp_am_recv_param_t *param) {
+        test_ucp_fault_tolerance *self =
+            reinterpret_cast<test_ucp_fault_tolerance*>(arg);
+        uint64_t seq;
+
+        EXPECT_EQ(size_t(ORDER_AM_SIZE), length);
+        memcpy(&seq, data, sizeof(seq));
+        if (seq < self->m_order_rx.size()) {
+            ++self->m_order_rx[seq];
+        } else {
+            ADD_FAILURE() << "unexpected AM sequence number " << seq;
+        }
+
+        ++self->m_order_rx_total;
+        return UCS_OK;
+    }
+
+    static void am_order_send_cb(void *request, ucs_status_t status,
+                                 void *user_data) {
+    }
+
+    /* Send an eager AM from host memory with a completion callback */
+    ucs_status_ptr_t send_order_am(ucp_ep_h ep, std::vector<uint8_t> &buffer,
+                                   uint64_t seq) {
+        ucp_request_param_t param;
+
+        memcpy(buffer.data(), &seq, sizeof(seq));
+        param.op_attr_mask = UCP_OP_ATTR_FIELD_FLAGS |
+                             UCP_OP_ATTR_FIELD_MEMORY_TYPE |
+                             UCP_OP_ATTR_FIELD_CALLBACK;
+        param.flags        = UCP_AM_SEND_FLAG_EAGER;
+        param.memory_type  = UCS_MEMORY_TYPE_HOST;
+        param.cb.send      = am_order_send_cb;
+
+        return ucp_am_send_nbx(ep, ORDER_AM_ID, NULL, 0, buffer.data(),
+                               buffer.size(), &param);
+    }
+
+    /* First lane of the protocol for an ORDER_AM_SIZE eager AM: the psn
+     * protocol, or a short or bcopy protocol on one lane. UCP_NULL_LANE for any
+     * other protocol. */
+    ucp_lane_index_t order_am_first_lane(ucp_ep_h ep) {
+        ucp_proto_select_param_t select_param;
+        ucp_proto_select_elem_t *select_elem;
+        const ucp_proto_config_t *proto_config;
+        ucp_memory_info_t mem_info;
+
+        ucp_memory_info_set_host(&mem_info);
+        ucp_proto_select_param_init(&select_param, UCP_OP_ID_AM_SEND, 0,
+                                    UCP_PROTO_SELECT_OP_FLAG_AM_EAGER,
+                                    UCP_DATATYPE_CONTIG, &mem_info, 1);
+        select_elem = ucp_proto_select_lookup_slow(
+                sender().worker(), &ucp_ep_config(ep)->proto_select, 0,
+                ep->cfg_index, UCP_WORKER_CFG_INDEX_NULL, &select_param);
+        if (select_elem == nullptr) {
+            return UCP_NULL_LANE;
+        }
+
+        proto_config = &ucp_proto_thresholds_search_slow(
+                                select_elem->thresholds, ORDER_AM_SIZE)
+                                ->proto_config;
+        UCS_TEST_MESSAGE << size_t(ORDER_AM_SIZE) << " B eager AM protocol: "
+                         << proto_config->proto->name;
+        if (!strcmp(proto_config->proto->name, "am/egr/multi/zcopy/psn")) {
+            return static_cast<const ucp_proto_multi_priv_t*>(
+                           proto_config->priv)
+                    ->lanes[0].super.lane;
+        }
+
+        if (!strcmp(proto_config->proto->name, "am/egr/short") ||
+            !strcmp(proto_config->proto->name, "am/egr/single/bcopy")) {
+            return static_cast<const ucp_proto_single_priv_t*>(
+                           proto_config->priv)
+                    ->super.lane;
+        }
+
+        return UCP_NULL_LANE;
+    }
+
+    std::vector<unsigned> m_order_rx;
+    volatile size_t       m_order_rx_total = 0;
+
     void run_initiator_failure();
     void run_target_failure();
     void run_probe_gated_recovery();
     void run_teardown_with_outstanding_probe();
     void run_worker_flush_during_recovery();
     void run_recovery_retries_exhausted_live_lanes();
+    void run_am_order_after_lane_failure();
 
 private:
     size_t m_initiator_err_count = 0;
@@ -1278,6 +1370,87 @@ void test_ucp_fault_tolerance::run_recovery_retries_exhausted_live_lanes()
             << "data did not flow on live lanes after recovery give-up";
 }
 
+/* AMs that wait on a failed lane are sent again later, after the AMs posted
+ * since the failure; each of them must still arrive exactly once. */
+void test_ucp_fault_tolerance::run_am_order_after_lane_failure()
+{
+    static constexpr size_t num_old = 4;
+    static constexpr size_t num_new = 4;
+    ucp_ep_h ep                     = sender().ep(0, INJECTED_EP_INDEX);
+    std::vector<std::vector<uint8_t>> buffers(
+            num_old + num_new, std::vector<uint8_t>(ORDER_AM_SIZE));
+    std::vector<void*> requests;
+    ucp_am_handler_param_t param;
+    size_t num_old_in_progress;
+
+    skip_unless_rc_probe_gate();
+    flush_workers();
+    get_lanes(TEST_OP_AM);
+
+    const ucp_lane_index_t lane = order_am_first_lane(ep);
+    if (lane == UCP_NULL_LANE) {
+        UCS_TEST_SKIP_R("eager AM protocol is not psn, short or bcopy");
+    }
+
+    if (strcmp(ucp_ep_get_tl_rsc(ep, lane)->tl_name, "rc_mlx5")) {
+        UCS_TEST_SKIP_R("AM lane is not rc_mlx5");
+    }
+
+    m_order_rx.assign(num_old + num_new, 0);
+    param.field_mask = UCP_AM_HANDLER_PARAM_FIELD_ID |
+                       UCP_AM_HANDLER_PARAM_FIELD_CB |
+                       UCP_AM_HANDLER_PARAM_FIELD_ARG;
+    param.id         = ORDER_AM_ID;
+    param.cb         = am_order_recv_cb;
+    param.arg        = reinterpret_cast<void*>(this);
+    ASSERT_UCS_OK(ucp_worker_set_am_recv_handler(receiver().worker(), &param));
+
+    /* The QP is in the error state before the old AMs are posted, so none of
+     * them can be delivered before the failure is handled */
+    ASSERT_UCS_OK(uct_ep_invalidate(ucp_ep_get_lane(ep, lane), 0));
+    for (uint64_t seq = 0; seq < num_old; ++seq) {
+        requests.push_back(send_order_am(ep, buffers[seq], seq));
+        ASSERT_FALSE(UCS_PTR_IS_ERR(requests.back()));
+    }
+
+    /* Progress only the sender, so the receiver does not answer the token
+     * request before the new AMs are posted */
+    wait_for_cond([ep, lane]() {
+        return ucp_ep_get_failed_lanes(ep) & UCS_BIT(lane);
+    }, [this]() { sender().progress(); });
+    ASSERT_TRUE(ucp_ep_get_failed_lanes(ep) & UCS_BIT(lane))
+            << "lane " << int(lane) << " was not marked as failed";
+
+    num_old_in_progress = std::count_if(requests.begin(), requests.end(),
+                                        [](void *request) {
+        return UCS_PTR_IS_PTR(request) &&
+               (ucp_request_check_status(request) == UCS_INPROGRESS);
+    });
+    UCS_TEST_MESSAGE << num_old_in_progress << " of " << num_old
+                     << " old AMs are in progress after the failure";
+
+    EXPECT_NE(lane, order_am_first_lane(ep)) << "new AMs use the failed lane";
+    for (uint64_t seq = num_old; seq < (num_old + num_new); ++seq) {
+        requests.push_back(send_order_am(ep, buffers[seq], seq));
+        ASSERT_FALSE(UCS_PTR_IS_ERR(requests.back()));
+    }
+
+    EXPECT_UCS_OK(requests_wait(requests));
+    wait_for_cond([this]() {
+        return m_order_rx_total >= (num_old + num_new);
+    }, [this]() { short_progress_loop(); });
+
+    for (uint64_t seq = 0; seq < (num_old + num_new); ++seq) {
+        EXPECT_EQ(1u, m_order_rx[seq])
+                << "AM " << seq << ((seq < num_old) ? " (posted before"
+                                                    : " (posted after")
+                << " the failure was handled) arrived " << m_order_rx[seq]
+                << " times";
+    }
+
+    EXPECT_EQ(0, total_err_count());
+}
+
 #define UCP_FT_TEST(_fixture, _name, ...) \
     UCS_TEST_P(_fixture, _name, __VA_ARGS__) \
     { \
@@ -1305,6 +1478,14 @@ UCP_FT_TESTS(test_ucp_fault_tolerance_tf)
 
 #undef UCP_FT_TEST
 #undef UCP_FT_TESTS
+
+/* Token mode with the default thresholds and recovery retries, where a small
+ * AM may use a protocol that completes it at post */
+UCS_TEST_P(test_ucp_fault_tolerance_tf, am_order_after_lane_failure,
+           "MAX_EAGER_LANES=8", "KEEPALIVE_INTERVAL=0.1s")
+{
+    run_am_order_after_lane_failure();
+}
 
 UCP_INSTANTIATE_TEST_CASE(test_ucp_fault_tolerance)
 UCP_INSTANTIATE_TEST_CASE_TLS(test_ucp_fault_tolerance_tf, rcx, "rc_x")
