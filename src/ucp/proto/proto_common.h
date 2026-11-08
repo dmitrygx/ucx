@@ -79,7 +79,14 @@ typedef enum {
     UCP_PROTO_COMMON_KEEP_MD_MAP             = UCS_BIT(11),
 
     /* Supports failover error handling mode */
-    UCP_PROTO_COMMON_INIT_FLAG_FAILOVER      = UCS_BIT(12)
+    UCP_PROTO_COMMON_INIT_FLAG_FAILOVER      = UCS_BIT(12),
+
+    /* Supports failover error handling mode only when token failover can hold
+     * all lanes that send it and recovery never gives up on a held lane
+     * (UCX_RECOVERY_RETRIES=inf): the request completes when it is posted, and
+     * after a lane failure the transport copy of an undelivered operation is
+     * sent again */
+    UCP_PROTO_COMMON_INIT_FLAG_FAILOVER_TF   = UCS_BIT(13)
 } ucp_proto_common_init_flags_t;
 
 
@@ -241,6 +248,21 @@ ucp_memory_info_t ucp_proto_common_select_param_mem_info(
  */
 int ucp_proto_common_init_check_err_handling(
         const ucp_proto_common_init_params_t *init_params);
+
+
+/**
+ * Largest message which every lane with @a tl_cap_flags can send in one
+ * fragment of the protocol, so that any of them can send it again after a lane
+ * failure.
+ *
+ * @param [in] init_params      Protocol initialization parameters.
+ * @param [in] tl_cap_flags     Transport capabilities of the send operation.
+ *
+ * @return Maximal message length, at most init_params->max_length.
+ */
+size_t ucp_proto_common_init_max_length_all_lanes(
+        const ucp_proto_common_init_params_t *init_params,
+        uint64_t tl_cap_flags);
 
 void ucp_proto_common_lane_priv_init(const ucp_proto_common_init_params_t *params,
                                      ucp_md_map_t md_map, ucp_lane_index_t lane,

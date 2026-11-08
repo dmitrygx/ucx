@@ -87,6 +87,28 @@ ucp_am_eager_short_proto_progress_common(uct_pending_req_t *self, int is_reply)
     return UCS_OK;
 }
 
+/* On a failover endpoint a short or bcopy message is resent from the transport
+ * copy, possibly on another lane. So use the AM lane, which the short fast path
+ * sends on, and send only what every lane can send again. */
+static void
+ucp_am_eager_single_init_failover(ucp_proto_single_init_params_t *params)
+{
+    const ucp_ep_config_key_t *key = params->super.super.ep_config_key;
+
+    if (key->err_mode != UCP_ERR_HANDLING_MODE_FAILOVER) {
+        return;
+    }
+
+    if (key->am_lane == UCP_NULL_LANE) {
+        params->super.exclude_map = UCS_MASK(UCP_MAX_LANES);
+        return;
+    }
+
+    params->super.exclude_map |= ~UCS_BIT(key->am_lane);
+    params->super.max_length   = ucp_proto_common_init_max_length_all_lanes(
+            &params->super, params->tl_cap_flags);
+}
+
 static void
 ucp_am_eager_short_probe_common(const ucp_proto_init_params_t *init_params,
                                 ucp_operation_id_t op_id)
@@ -109,7 +131,8 @@ ucp_am_eager_short_probe_common(const ucp_proto_init_params_t *init_params,
         .super.memtype_op    = UCT_EP_OP_LAST,
         .super.flags         = UCP_PROTO_COMMON_INIT_FLAG_SINGLE_FRAG  |
                                UCP_PROTO_COMMON_INIT_FLAG_CAP_SEG_SIZE |
-                               UCP_PROTO_COMMON_INIT_FLAG_ERR_HANDLING,
+                               UCP_PROTO_COMMON_INIT_FLAG_ERR_HANDLING |
+                               UCP_PROTO_COMMON_INIT_FLAG_FAILOVER_TF,
         .super.exclude_map   = ~UCP_MAX_FAST_PATH_LANES_MASK,
         .super.reg_mem_info  = ucp_mem_info_unknown,
         .lane_type           = UCP_LANE_TYPE_AM,
@@ -122,6 +145,7 @@ ucp_am_eager_short_probe_common(const ucp_proto_init_params_t *init_params,
         return;
     }
 
+    ucp_am_eager_single_init_failover(&params);
     ucp_proto_single_probe(&params);
 }
 
@@ -241,7 +265,8 @@ static void ucp_am_eager_single_bcopy_probe_common(
         .super.memtype_op    = UCT_EP_OP_GET_SHORT,
         .super.flags         = UCP_PROTO_COMMON_INIT_FLAG_SINGLE_FRAG  |
                                UCP_PROTO_COMMON_INIT_FLAG_CAP_SEG_SIZE |
-                               UCP_PROTO_COMMON_INIT_FLAG_ERR_HANDLING,
+                               UCP_PROTO_COMMON_INIT_FLAG_ERR_HANDLING |
+                               UCP_PROTO_COMMON_INIT_FLAG_FAILOVER_TF,
         .super.exclude_map   = ~UCP_MAX_FAST_PATH_LANES_MASK,
         .super.reg_mem_info  = ucp_mem_info_unknown,
         .lane_type           = UCP_LANE_TYPE_AM,
@@ -253,6 +278,7 @@ static void ucp_am_eager_single_bcopy_probe_common(
         return;
     }
 
+    ucp_am_eager_single_init_failover(&params);
     ucp_proto_single_probe(&params);
 }
 

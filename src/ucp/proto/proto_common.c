@@ -49,7 +49,18 @@ int ucp_proto_common_init_check_err_handling(
     case UCP_ERR_HANDLING_MODE_PEER:
         return !!(init_params->flags & UCP_PROTO_COMMON_INIT_FLAG_ERR_HANDLING);
     case UCP_ERR_HANDLING_MODE_FAILOVER:
-        return !!(init_params->flags & UCP_PROTO_COMMON_INIT_FLAG_FAILOVER);
+        if (init_params->flags & UCP_PROTO_COMMON_INIT_FLAG_FAILOVER) {
+            return 1;
+        }
+
+        /* Only the token purge sends such an operation again. A recovery that
+         * gives up with live lanes cancels the held operations instead, which
+         * restarts only those that still have a request. */
+        return (init_params->flags & UCP_PROTO_COMMON_INIT_FLAG_FAILOVER_TF) &&
+               (init_params->super.worker->context->config.ext
+                        .recovery_retries == UINT_MAX) &&
+               ucp_ep_config_key_tf_supported(init_params->super.worker,
+                                              init_params->super.ep_config_key);
     default:
         return 0;
     }
@@ -239,6 +250,39 @@ ucp_proto_common_get_frag_size(const ucp_proto_common_init_params_t *params,
         *max_frag_p = ucs_min(*max_frag_p,
                               context->config.ext.rma_zcopy_max_seg_size);
     }
+}
+
+size_t ucp_proto_common_init_max_length_all_lanes(
+        const ucp_proto_common_init_params_t *init_params,
+        uint64_t tl_cap_flags)
+{
+    const ucp_ep_config_key_t *key = init_params->super.ep_config_key;
+    size_t max_length              = init_params->max_length;
+    const uct_iface_attr_t *iface_attr;
+    size_t min_frag, max_frag;
+    ucp_lane_index_t lane;
+
+    for (lane = 0; lane < key->num_lanes; ++lane) {
+        if (key->lanes[lane].rsc_index == UCP_NULL_RESOURCE) {
+            continue;
+        }
+
+        iface_attr = ucp_proto_common_get_iface_attr(&init_params->super,
+                                                     lane);
+        if (!ucs_test_all_flags(iface_attr->cap.flags, tl_cap_flags)) {
+            continue;
+        }
+
+        ucp_proto_common_get_frag_size(init_params, iface_attr, lane,
+                                       &min_frag, &max_frag);
+        if (max_frag <= init_params->hdr_size) {
+            return 0;
+        }
+
+        max_length = ucs_min(max_length, max_frag - init_params->hdr_size);
+    }
+
+    return max_length;
 }
 
 /* Update 'perf' with the distance */

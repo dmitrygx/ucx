@@ -2725,26 +2725,22 @@ static void ucp_ep_tf_note_ids(ucp_ep_lane_tf_t *tf, uint32_t request_id,
     }
 }
 
-/* A lane can enter the token path only when a later hold would accept it.
- * Anything else stays on the software discard path. */
-static int
-ucp_ep_tf_lane_supported(ucp_ep_h ep, ucp_lane_index_t lane, uct_ep_h uct_ep)
+/* The checks of the token path that do not depend on the endpoint state */
+static int ucp_ep_config_key_tf_lane_supported(ucp_worker_h worker,
+                                               const ucp_ep_config_key_t *key,
+                                               ucp_lane_index_t lane)
 {
     ucp_worker_iface_t *wiface;
     size_t tx_len;
 
-    if ((ep->worker->context->config.ext.failover_mode ==
-         UCP_FAILOVER_MODE_SW) ||
-        (ep->flags & UCP_EP_FLAG_FAILED) ||
-        !ucp_ep_err_mode_eq(ep, UCP_ERR_HANDLING_MODE_FAILOVER) ||
-        ucp_ep_has_cm_lane(ep) ||
-        (ucp_ep_config(ep)->key.dst_version <
-         UCP_MIN_DST_VERSION_WIREUP_ADDR_TOKEN) ||
-        (ucp_ep_get_lane(ep, lane) != uct_ep)) {
+    if ((worker->context->config.ext.failover_mode == UCP_FAILOVER_MODE_SW) ||
+        (key->err_mode != UCP_ERR_HANDLING_MODE_FAILOVER) ||
+        ucp_ep_config_key_has_cm_lane(key) ||
+        (key->dst_version < UCP_MIN_DST_VERSION_WIREUP_ADDR_TOKEN)) {
         return 0;
     }
 
-    wiface = ucp_worker_iface(ep->worker, ucp_ep_get_rsc_index(ep, lane));
+    wiface = ucp_worker_iface(worker, key->lanes[lane].rsc_index);
     if ((wiface == NULL) ||
         !(wiface->attr_v2.field_mask & UCT_IFACE_ATTR_FIELD_TX_TOKEN_LENGTH) ||
         !(wiface->attr_v2.cap.flags & UCT_IFACE_FLAG_V2_QUERY_TOKEN)) {
@@ -2754,6 +2750,36 @@ ucp_ep_tf_lane_supported(ucp_ep_h ep, ucp_lane_index_t lane, uct_ep_h uct_ep)
     /* The trailer stores one uint8_t length per lane. */
     tx_len = wiface->attr_v2.tx_token_length;
     return (tx_len > 0) && (tx_len <= UINT8_MAX);
+}
+
+int ucp_ep_config_key_tf_supported(ucp_worker_h worker,
+                                   const ucp_ep_config_key_t *key)
+{
+    ucp_rsc_index_t rsc_index;
+    ucp_lane_index_t lane;
+
+    for (lane = 0; lane < key->num_lanes; ++lane) {
+        rsc_index = key->lanes[lane].rsc_index;
+        if ((rsc_index != UCP_NULL_RESOURCE) &&
+            (ucp_worker_iface_get_attr(worker, rsc_index)->cap.flags &
+             (UCT_IFACE_FLAG_AM_SHORT | UCT_IFACE_FLAG_AM_BCOPY)) &&
+            !ucp_ep_config_key_tf_lane_supported(worker, key, lane)) {
+            return 0;
+        }
+    }
+
+    return 1;
+}
+
+/* A lane can enter the token path only when a later hold would accept it.
+ * Anything else stays on the software discard path. */
+static int
+ucp_ep_tf_lane_supported(ucp_ep_h ep, ucp_lane_index_t lane, uct_ep_h uct_ep)
+{
+    return !(ep->flags & UCP_EP_FLAG_FAILED) &&
+           (ucp_ep_get_lane(ep, lane) == uct_ep) &&
+           ucp_ep_config_key_tf_lane_supported(ep->worker,
+                                               &ucp_ep_config(ep)->key, lane);
 }
 
 /* 0 is unseen. A wrapped id stays newer until half the counter space. */

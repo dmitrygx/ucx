@@ -1144,6 +1144,14 @@ void ucp_ep_tf_schedule_token_purge(ucp_ep_h ep, ucp_lane_index_t lane);
 int ucp_ep_tf_peer_req_is_newer(uint16_t seen, uint16_t request_id);
 
 
+/**
+ * Nonzero when every lane of @a key that can send an active message without a
+ * completion (short or bcopy) supports the token path.
+ */
+int ucp_ep_config_key_tf_supported(ucp_worker_h worker,
+                                   const ucp_ep_config_key_t *key);
+
+
 /** Nonzero when @a lanes is not empty and @a request_id is accepted. */
 int ucp_ep_tf_accept_peer_req(ucp_ep_h ep, ucp_lane_map_t lanes,
                               uint32_t request_id);
