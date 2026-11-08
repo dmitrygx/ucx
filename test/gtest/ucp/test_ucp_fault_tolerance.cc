@@ -21,6 +21,9 @@ extern "C" {
 #include <ucp/proto/proto_select.inl>
 #include <ucp/wireup/wireup_ep.h>
 #include <uct/base/uct_iface.h>
+#if HAVE_IB
+#include <uct/ib/ud/base/ud_iface.h>
+#endif
 }
 
 /**
@@ -966,12 +969,47 @@ protected:
     ucp_lane_index_t setup_one_failed_lane(ucs::mock &mock);
     void run_probe_completes_after_handshake();
     void run_probe_fail_after_peer_recovered();
+
+#if HAVE_IB && UCT_UD_EP_DEBUG_HOOKS
+    static ucs_status_t drop_ud_rx(uct_ud_iface_t *iface, uct_ud_neth_t *neth)
+    {
+        return UCS_ERR_BUSY;
+    }
+
+    /* The UD interface of entity @a e on the device of @a lane of @a ep */
+    static uct_ud_iface_t *
+    lane_ud_iface(const entity &e, ucp_ep_h ep, ucp_lane_index_t lane)
+    {
+        ucp_context_h context    = e.ucph();
+        ucp_rsc_index_t lane_rsc = ucp_ep_get_rsc_index(ep, lane);
+        ucp_worker_iface_t *wiface;
+        ucp_rsc_index_t rsc_index;
+
+        for (rsc_index = 0; rsc_index < context->num_tls; ++rsc_index) {
+            if (!UCS_STATIC_BITMAP_GET(context->tl_bitmap, rsc_index) ||
+                (context->tl_rscs[rsc_index].dev_index !=
+                 context->tl_rscs[lane_rsc].dev_index)) {
+                continue;
+            }
+
+            wiface = ucp_worker_iface(e.worker(), rsc_index);
+            if ((wiface != NULL) && (wiface->iface != NULL) &&
+                (wiface->iface->ops.iface_flush == uct_ud_iface_flush)) {
+                return ucs_derived_of(wiface->iface, uct_ud_iface_t);
+            }
+        }
+
+        return NULL;
+    }
+#endif
+
     void run_initiator_failure();
     void run_target_failure();
     void run_probe_gated_recovery();
     void run_teardown_with_outstanding_probe();
     void run_worker_flush_during_recovery();
     void run_recovery_retries_exhausted_live_lanes();
+    void run_recovery_one_way_link();
     void run_recovery_probe_after_peer_connected();
 
     /* A lane of @a lanes on which an endpoint sends nothing by itself: no AM,
@@ -1517,6 +1555,85 @@ void test_ucp_fault_tolerance::run_probe_fail_after_peer_recovered()
 }
 
 /*
+ * The link of a lane works in one direction only: nothing the receiver sends
+ * on the lane device reaches the sender, as when a switch or the receiver NIC
+ * drops its transmit traffic. The receiver must keep the lane failed until
+ * its own packets reach the sender. Here the receiver loses the UD traffic of
+ * the recovery probes, its RC queue pair is not blocked.
+ */
+void test_ucp_fault_tolerance::run_recovery_one_way_link()
+{
+    skip_unless_rc_probe_gate();
+
+#if HAVE_IB && UCT_UD_EP_DEBUG_HOOKS
+    const double block_sec = 3.0;
+    ucp_ep_h sender_ep, receiver_ep;
+    std::vector<ucp_lane_index_t> lanes;
+    uct_ud_iface_t *ud_iface;
+    ucp_lane_index_t lane;
+    ucs_time_t deadline;
+    ucs_status_t status;
+    bool recovered;
+
+    flush_workers();
+    lanes       = get_lanes(TEST_OP_AM);
+    lane        = lanes[0];
+    sender_ep   = sender().ep(0, INJECTED_EP_INDEX);
+    receiver_ep = receiver().ep(0, INJECTED_EP_INDEX);
+    if (!ucp_ep_is_lane_p2p(receiver_ep, lane)) {
+        UCS_TEST_SKIP_R("the lane is not a p2p lane");
+    }
+
+    ud_iface = lane_ud_iface(sender(), sender_ep, lane);
+    if (ud_iface == NULL) {
+        UCS_TEST_SKIP_R("no UD transport on the lane device");
+    }
+
+    status = uct_ep_invalidate(ucp_ep_get_lane(sender_ep, lane), 0);
+    if (status == UCS_ERR_UNSUPPORTED) {
+        UCS_TEST_SKIP_R("uct_ep_invalidate is not supported");
+    }
+
+    ASSERT_UCS_OK(status);
+    UCS_TEST_MESSAGE << "lane " << size_t(lane)
+                     << ": the sender drops UD packets of the receiver";
+    ud_iface->rx.hook = drop_ud_rx;
+    EXPECT_UCS_OK(do_am_send_and_wait(sender_ep, am_msg_size(), false));
+
+    wait_for_cond([receiver_ep, lane]() {
+        return ucp_ep_get_failed_lanes(receiver_ep) & UCS_BIT(lane);
+    }, [this]() { short_progress_loop(); });
+    recovered = !(ucp_ep_get_failed_lanes(receiver_ep) & UCS_BIT(lane));
+    if (!recovered) {
+        deadline = ucs_get_time() + ucs_time_from_sec(block_sec);
+        while (!recovered && (ucs_get_time() < deadline)) {
+            short_progress_loop();
+            recovered = !(ucp_ep_get_failed_lanes(receiver_ep) &
+                          UCS_BIT(lane));
+        }
+    }
+
+    ud_iface->rx.hook = uct_ud_iface_null_hook;
+    EXPECT_FALSE(recovered)
+            << "lane " << size_t(lane) << " was recovered by the receiver,"
+            << " whose packets do not reach the sender";
+
+    wait_for_cond([sender_ep, receiver_ep]() {
+        return (ucp_ep_get_failed_lanes(sender_ep) == 0) &&
+               (ucp_ep_get_failed_lanes(receiver_ep) == 0);
+    }, [this]() { short_progress_loop(); });
+    EXPECT_EQ(0, ucp_ep_get_failed_lanes(sender_ep))
+            << "the sender did not recover the lane";
+    EXPECT_EQ(0, ucp_ep_get_failed_lanes(receiver_ep))
+            << "the receiver did not recover the lane";
+    EXPECT_UCS_OK(do_am_send_and_wait(sender_ep, am_msg_size(), true));
+    EXPECT_EQ(0, total_err_count());
+#else
+    UCS_TEST_SKIP_R("UD debug hooks are not enabled");
+#endif
+}
+
+/*
  * The recovery probe of the sender completes only after the receiver has
  * connected its replacement queue pair and put the lane back into its
  * endpoint. The sender has the address of that queue pair from the address
@@ -1636,6 +1753,8 @@ void test_ucp_fault_tolerance::run_recovery_probe_after_peer_connected()
     UCP_FT_TEST(_fixture, recovery_retries_exhausted_live_lanes, \
                 "MAX_EAGER_LANES=8", "RECOVERY_RETRIES=2", \
                 "KEEPALIVE_INTERVAL=0.1s") \
+    UCP_FT_TEST(_fixture, recovery_one_way_link, "MAX_EAGER_LANES=8", \
+                "RECOVERY_RETRIES=1000") \
     UCP_FT_TEST(_fixture, recovery_probe_after_peer_connected, \
                 "MAX_EAGER_LANES=8", "RECOVERY_RETRIES=1000")
 
