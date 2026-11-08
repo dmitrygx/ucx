@@ -714,6 +714,8 @@ protected:
     }
 
     ucs_status_t do_am_send_and_wait(ucp_ep_h ep, size_t size, bool flush_after) {
+        const size_t err_count = m_initiator_err_count;
+
         m_am_received = false;
 
         mem_buffer sbuf(size, UCS_MEMORY_TYPE_HOST);
@@ -737,7 +739,16 @@ protected:
             return status;
         }
 
-        wait_for_value(&m_am_received, true);
+        /* The send can complete before the AM is delivered, so wait for the
+         * AM or for an error callback of the endpoint */
+        wait_for_cond([this, err_count]() {
+            return m_am_received || (m_initiator_err_count != err_count);
+        }, [this]() { short_progress_loop(); });
+        if (!m_am_received) {
+            return (m_initiator_err_count != err_count) ? m_err_status :
+                                                          UCS_ERR_TIMED_OUT;
+        }
+
         mem_buffer::pattern_check(m_am_rbuf.data(), size, m_seed);
         return UCS_OK;
     }
