@@ -43,8 +43,9 @@ ucp_proto_bcopy_send_func_status(ssize_t packed_size)
     return UCS_OK;
 }
 
+/* Take the id of a multi-fragment message from the counter *next_id_p */
 static UCS_F_ALWAYS_INLINE ucs_status_t
-ucp_proto_msg_multi_request_init(ucp_request_t *req)
+ucp_proto_msg_multi_request_init_id(ucp_request_t *req, uint64_t *next_id_p)
 {
     if (!ucp_datatype_iter_is_begin(&req->send.state.dt_iter)) {
         return UCS_OK;
@@ -54,9 +55,16 @@ ucp_proto_msg_multi_request_init(ucp_request_t *req)
         return UCS_OK;
     }
 
-    req->send.msg_proto.message_id = req->send.ep->worker->am_message_id++;
+    req->send.msg_proto.message_id = (*next_id_p)++;
     req->flags |= UCP_REQUEST_FLAG_MSG_ID_SET;
     return UCS_OK;
+}
+
+static UCS_F_ALWAYS_INLINE ucs_status_t
+ucp_proto_msg_multi_request_init(ucp_request_t *req)
+{
+    return ucp_proto_msg_multi_request_init_id(
+            req, &req->send.ep->worker->am_message_id);
 }
 
 static UCS_F_ALWAYS_INLINE void

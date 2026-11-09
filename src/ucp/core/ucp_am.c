@@ -81,7 +81,8 @@ void ucp_am_ep_init(ucp_ep_h ep)
     if (ep->worker->context->config.features & UCP_FEATURE_AM) {
         ucs_list_head_init(&ep_ext->am.started_ams);
         ucs_queue_head_init(&ep_ext->am.mid_rdesc_q);
-        ep_ext->am.psn = 0;
+        ep_ext->am.psn       = 0;
+        ep_ext->am.tx_msg_id = 1; /* 0 is not a valid message id */
     }
 }
 

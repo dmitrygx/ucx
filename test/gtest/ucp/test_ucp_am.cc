@@ -2758,8 +2758,8 @@ public:
                     send_am(sdt_desc, get_send_flag(), NULL, 0, NULL));
         }
 
-        /* Rewind worker's message ID counter by num_duplicates */
-        sender().worker()->am_message_id -= num_duplicates;
+        /* Rewind the endpoint's message ID counter by num_duplicates */
+        sender().ep()->ext->am.tx_msg_id -= num_duplicates;
 
         /* Send all messages */
         for (size_t i = 0; i < total_msgs; i++) {

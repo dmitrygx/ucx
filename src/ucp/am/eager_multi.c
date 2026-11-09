@@ -152,6 +152,15 @@ static UCS_F_ALWAYS_INLINE ucs_status_t ucp_am_eager_multi_bcopy_send_func(
     return ucp_proto_bcopy_send_func_status(packed_size);
 }
 
+/* The receiver drops duplicate AMs by the ids it delivered on the endpoint,
+ * so number the AMs of each endpoint without gaps */
+static UCS_F_ALWAYS_INLINE ucs_status_t
+ucp_am_eager_multi_request_init(ucp_request_t *req)
+{
+    return ucp_proto_msg_multi_request_init_id(
+            req, &req->send.ep->ext->am.tx_msg_id);
+}
+
 static ucs_status_t
 ucp_am_eager_multi_bcopy_proto_progress(uct_pending_req_t *uct_req)
 {
@@ -159,7 +168,7 @@ ucp_am_eager_multi_bcopy_proto_progress(uct_pending_req_t *uct_req)
 
     /* coverity[tainted_data_downcast] */
     return ucp_proto_multi_bcopy_progress(
-            req, req->send.proto_config->priv, ucp_proto_msg_multi_request_init,
+            req, req->send.proto_config->priv, ucp_am_eager_multi_request_init,
             ucp_am_eager_multi_bcopy_send_func,
             ucp_proto_request_am_bcopy_complete_success);
 }
@@ -329,7 +338,7 @@ static ucs_status_t ucp_am_eager_multi_zcopy_init(ucp_request_t *req)
         return status;
     }
 
-    return ucp_proto_msg_multi_request_init(req);
+    return ucp_am_eager_multi_request_init(req);
 }
 
 static ucs_status_t
