@@ -180,4 +180,35 @@ ucs_interval_tree_is_equal_range(const ucs_interval_tree_t *tree,
            (root->end == range.end);
 }
 
+
+/**
+ * Check if an interval of the tree contains a value
+ *
+ * @param [in]  tree   Interval tree
+ * @param [in]  value  Value to look up
+ *
+ * @return Non-zero if the tree has an interval with start <= value <= end,
+ *         0 otherwise
+ */
+static UCS_F_ALWAYS_INLINE int
+ucs_interval_tree_contains(const ucs_interval_tree_t *tree, uint64_t value)
+{
+    ucs_rbtree_node_t *rb_node = tree->rb.root;
+    ucs_interval_node_t *node;
+
+    /* The intervals are disjoint, so they are ordered by end as well */
+    while (rb_node != NULL) {
+        node = ucs_interval_tree_node(rb_node);
+        if (value < node->start) {
+            rb_node = rb_node->left;
+        } else if (value > node->end) {
+            rb_node = rb_node->right;
+        } else {
+            return 1;
+        }
+    }
+
+    return 0;
+}
+
 #endif

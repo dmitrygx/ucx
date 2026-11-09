@@ -296,6 +296,40 @@ UCS_TEST_F(test_interval_tree, is_empty) {
     EXPECT_TRUE(ucs_interval_tree_is_empty(&m_tree));
 }
 
+UCS_TEST_F(test_interval_tree, contains) {
+    const uint64_t n = 100;
+    uint64_t value;
+
+    EXPECT_FALSE(ucs_interval_tree_contains(&m_tree, 0));
+
+    /* Disjoint intervals [4 * i, 4 * i + 1], inserted out of order */
+    for (uint64_t i = 0; i < n; i++) {
+        value = ((i * 37) % n) * 4;
+        insert_intervals({{value, value + 1}});
+    }
+
+    ASSERT_EQ(n, ucs_interval_tree_count(&m_tree));
+    for (value = 0; value < (4 * n); value++) {
+        EXPECT_EQ((value % 4) < 2,
+                  bool(ucs_interval_tree_contains(&m_tree, value)))
+                << "value " << value;
+    }
+
+    /* Fill the gaps, which merges all intervals into one */
+    for (uint64_t i = 0; i < n; i++) {
+        insert_intervals({{(4 * i) + 2, (4 * i) + 3}});
+    }
+
+    ASSERT_EQ(1u, ucs_interval_tree_count(&m_tree));
+    for (value = 0; value < (4 * n); value++) {
+        EXPECT_TRUE(ucs_interval_tree_contains(&m_tree, value))
+                << "value " << value;
+    }
+
+    EXPECT_FALSE(ucs_interval_tree_contains(&m_tree, 4 * n));
+    EXPECT_FALSE(ucs_interval_tree_contains(&m_tree, UINT64_MAX));
+}
+
 UCS_TEST_F(test_interval_tree, count_tracking) {
     EXPECT_EQ(0u, ucs_interval_tree_count(&m_tree));
 
