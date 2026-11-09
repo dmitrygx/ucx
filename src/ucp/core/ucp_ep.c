@@ -3141,33 +3141,33 @@ ucp_ep_tf_purge_lane(ucp_ep_h ep, ucp_lane_index_t lane, ucp_ep_lane_tf_t *tf)
     return status;
 }
 
-void ucp_ep_tf_lanes_purge_outstanding(ucp_ep_h ep, ucp_lane_map_t lanes,
-                                       uint32_t request_id, int from_ack,
-                                       ucp_lane_map_t release_lanes)
+/* The token failover state of @a lane if it is held and still has its
+ * transport endpoint, otherwise NULL */
+static ucp_ep_lane_tf_t *ucp_ep_tf_get_held(ucp_ep_h ep, ucp_lane_index_t lane)
+{
+    ucp_ep_lane_tf_t *tf = ucp_ep_tf_get(ep, lane);
+
+    if ((tf == NULL) || (tf->state != UCP_EP_TF_LANE_HELD) ||
+        (tf->uct_ep == NULL)) {
+        ucs_trace("ep %p: lane %d skip purge, not held", ep, lane);
+        return NULL;
+    }
+
+    return tf;
+}
+
+/* Purge held lanes after a LANES_ADDR message completed their exchange, see
+ * ucp_ep_tf_schedule_lanes_purge() */
+static void ucp_ep_tf_lanes_purge(ucp_ep_h ep, ucp_lane_map_t lanes,
+                                  ucp_lane_map_t release_lanes)
 {
     ucp_ep_lane_tf_t *tf;
     ucp_lane_index_t lane;
     ucs_status_t status;
-    uint32_t expect;
 
     ucs_for_each_bit(lane, lanes) {
-        tf = ucp_ep_tf_get(ep, lane);
+        tf = ucp_ep_tf_get_held(ep, lane);
         if (tf == NULL) {
-            ucs_trace("ep %p: lane %d skip purge, no tf", ep, lane);
-            continue;
-        }
-
-        if ((tf->state != UCP_EP_TF_LANE_HELD) || (tf->uct_ep == NULL)) {
-            ucs_trace("ep %p: lane %d skip purge state %u uct_ep %p rx %p", ep,
-                      lane, (unsigned)tf->state, tf->uct_ep, tf->rx_token);
-            continue;
-        }
-
-        expect = from_ack ? tf->peer_id : tf->request_id;
-        if ((request_id == 0) || (request_id != expect)) {
-            ucs_trace("ep %p: lane %d skip purge id 0x%x expect 0x%x"
-                      " from_ack %d",
-                      ep, lane, request_id, expect, from_ack);
             continue;
         }
 
@@ -3206,6 +3206,74 @@ void ucp_ep_tf_lanes_purge_outstanding(ucp_ep_h ep, ucp_lane_map_t lanes,
         uct_ep_destroy(tf->uct_ep);
         ucp_ep_tf_lane_release(ep, tf);
     }
+}
+
+typedef struct {
+    ucp_ep_h       ep;
+    ucp_lane_map_t lanes;
+    ucp_lane_map_t release_lanes;
+} ucp_ep_tf_lanes_purge_arg_t;
+
+static unsigned ucp_ep_tf_lanes_purge_progress(void *arg)
+{
+    ucp_ep_tf_lanes_purge_arg_t *purge_arg = arg;
+    ucp_worker_h worker                    = purge_arg->ep->worker;
+
+    UCS_ASYNC_BLOCK(&worker->async);
+    ucp_ep_tf_lanes_purge(purge_arg->ep, purge_arg->lanes,
+                          purge_arg->release_lanes);
+    UCS_ASYNC_UNBLOCK(&worker->async);
+
+    ucs_free(purge_arg);
+    return 1;
+}
+
+void ucp_ep_tf_schedule_lanes_purge(ucp_ep_h ep, ucp_lane_map_t lanes,
+                                    uint32_t request_id, int from_ack,
+                                    ucp_lane_map_t release_lanes)
+{
+    ucp_lane_map_t purge_lanes = 0;
+    ucp_ep_tf_lanes_purge_arg_t *purge_arg;
+    ucp_ep_lane_tf_t *tf;
+    ucp_lane_index_t lane;
+    uint32_t expect;
+
+    /* The message completes the exchange of a lane only if it answers the
+     * current one, which a later request may replace before the purge */
+    ucs_for_each_bit(lane, lanes) {
+        tf = ucp_ep_tf_get_held(ep, lane);
+        if (tf == NULL) {
+            continue;
+        }
+
+        expect = from_ack ? tf->peer_id : tf->request_id;
+        if ((request_id == 0) || (request_id != expect)) {
+            ucs_trace("ep %p: lane %d skip purge id 0x%x expect 0x%x"
+                      " from_ack %d",
+                      ep, lane, request_id, expect, from_ack);
+            continue;
+        }
+
+        purge_lanes |= UCS_BIT(lane);
+    }
+
+    if (purge_lanes == 0) {
+        return;
+    }
+
+    purge_arg = ucs_malloc(sizeof(*purge_arg), "ucp_tf_lanes_purge_arg");
+    if (purge_arg == NULL) {
+        ucs_error("ep %p: failed to allocate lanes purge argument", ep);
+        return;
+    }
+
+    purge_arg->ep            = ep;
+    purge_arg->lanes         = purge_lanes;
+    purge_arg->release_lanes = release_lanes;
+    ucs_callbackq_add_oneshot(&ep->worker->uct->progress_q, ep,
+                              ucp_ep_tf_lanes_purge_progress, purge_arg);
+    /* A worker in wait() does not run this callback until it is signaled */
+    ucp_worker_signal_internal(ep->worker);
 }
 
 static void ucp_ep_tf_cleanup(ucp_ep_h ep)
@@ -3483,10 +3551,14 @@ out:
 static int
 ucp_ep_tf_purge_remove_filter(const ucs_callbackq_elem_t *elem, void *arg)
 {
-    ucp_ep_tf_purge_arg_t *purge_arg = elem->arg;
+    ucp_ep_tf_lanes_purge_arg_t *lanes_arg = elem->arg;
+    ucp_ep_tf_purge_arg_t *purge_arg       = elem->arg;
 
-    if ((elem->cb == ucp_ep_tf_purge_held_progress) && (purge_arg->ep == arg)) {
-        ucs_free(purge_arg);
+    if (((elem->cb == ucp_ep_tf_purge_held_progress) &&
+         (purge_arg->ep == arg)) ||
+        ((elem->cb == ucp_ep_tf_lanes_purge_progress) &&
+         (lanes_arg->ep == arg))) {
+        ucs_free(elem->arg);
         return 1;
     }
 

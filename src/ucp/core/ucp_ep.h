@@ -1219,7 +1219,11 @@ void ucp_ep_tf_save_rx(ucp_ep_h ep, ucp_lane_index_t lane, uint32_t request_id,
 
 
 /**
- * Purge held lanes in @a lanes whose stored RX token matches @a request_id.
+ * Schedule the purge of the held lanes in @a lanes whose token exchange the
+ * message with @a request_id completes. The purge runs from the progress
+ * queue: it sends operations again, completes requests and destroys transport
+ * endpoints, while the wireup message handler which calls this function can
+ * run on the async thread.
  *
  * A reply matches the lane's own request_id. An ACK matches peer_id.
  * @a from_ack selects which one. A successful purge destroys the UCT
@@ -1227,9 +1231,9 @@ void ucp_ep_tf_save_rx(ucp_ep_h ep, ucp_lane_index_t lane, uint32_t request_id,
  * other lane stays held, so a later reply can still read that transport
  * endpoint while building the ACK token.
  */
-void ucp_ep_tf_lanes_purge_outstanding(ucp_ep_h ep, ucp_lane_map_t lanes,
-                                       uint32_t request_id, int from_ack,
-                                       ucp_lane_map_t release_lanes);
+void ucp_ep_tf_schedule_lanes_purge(ucp_ep_h ep, ucp_lane_map_t lanes,
+                                    uint32_t request_id, int from_ack,
+                                    ucp_lane_map_t release_lanes);
 
 
 /**

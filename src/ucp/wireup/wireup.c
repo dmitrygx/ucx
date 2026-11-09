@@ -1794,8 +1794,8 @@ ucp_wireup_process_lanes_addr_reply(
                                    lanes_info->provided_lane_map, 0, request_id,
                                    rx_tokens);
     ucp_wireup_free_lane_tokens(lanes_info->provided_lane_map, rx_tokens);
-    ucp_ep_tf_lanes_purge_outstanding(ep, lanes_info->requested_lane_map,
-                                      request_id, 0, acked);
+    ucp_ep_tf_schedule_lanes_purge(ep, lanes_info->requested_lane_map,
+                                   request_id, 0, acked);
 }
 
 /* Locate the lanes info and the optional token trailer of a LANES_ADDR
@@ -1971,9 +1971,9 @@ static ucs_status_t ucp_wireup_msg_handler(void *arg, void *data,
         ucs_debug("ep %p: LANES_ADDR_ACK request_id=0x%" PRIx32
                   " requested=0x%" PRIx64,
                   ep, request_id, lanes_info->requested_lane_map);
-        ucp_ep_tf_lanes_purge_outstanding(ep, lanes_info->requested_lane_map,
-                                          request_id, 1,
-                                          lanes_info->requested_lane_map);
+        ucp_ep_tf_schedule_lanes_purge(ep, lanes_info->requested_lane_map,
+                                       request_id, 1,
+                                       lanes_info->requested_lane_map);
     } else {
         ucs_bug("invalid wireup message");
     }
