@@ -81,9 +81,17 @@ void ucp_am_ep_init(ucp_ep_h ep)
     if (ep->worker->context->config.features & UCP_FEATURE_AM) {
         ucs_list_head_init(&ep_ext->am.started_ams);
         ucs_queue_head_init(&ep_ext->am.mid_rdesc_q);
-        ep_ext->am.psn       = 0;
-        ep_ext->am.tx_msg_id = 1; /* 0 is not a valid message id */
+        ep_ext->am.psn        = 0;
+        ep_ext->am.rx_msg_ids = NULL;
+        ep_ext->am.tx_msg_id  = 1; /* 0 is not a valid message id */
     }
+}
+
+static void ucp_am_rx_msg_ids_destroy(ucp_ep_ext_t *ep_ext)
+{
+    ucs_interval_tree_cleanup(ep_ext->am.rx_msg_ids);
+    ucs_free(ep_ext->am.rx_msg_ids);
+    ep_ext->am.rx_msg_ids = NULL;
 }
 
 static UCS_F_ALWAYS_INLINE void ucp_am_release_long_desc(ucp_recv_desc_t *desc)
@@ -123,6 +131,10 @@ void ucp_am_ep_cleanup(ucp_ep_h ep)
     }
     ucs_trace_data("worker %p: %zu unhandled middle AM fragments have been"
                    " dropped on ep %p", ep->worker, count, ep);
+
+    if (ep_ext->am.rx_msg_ids != NULL) {
+        ucp_am_rx_msg_ids_destroy(ep_ext);
+    }
 }
 
 static void ucp_am_rndv_send_ats(ucp_worker_h worker, ucp_rndv_rts_hdr_t *rts,
@@ -1394,6 +1406,61 @@ UCS_PROFILE_FUNC(ucs_status_t, ucp_am_handler,
                                  "am_handler");
 }
 
+/* The peer leaves no gaps between the AM ids of an endpoint, so the exact set
+ * of the delivered ids takes few ranges */
+static void ucp_am_rx_msg_ids_create(ucp_ep_h ep)
+{
+    ucs_interval_tree_t *rx_msg_ids;
+
+    rx_msg_ids = ucs_malloc(sizeof(*rx_msg_ids), "ucp_am_rx_msg_ids");
+    if (rx_msg_ids == NULL) {
+        ucs_debug("ep %p: failed to allocate the delivered AM ids", ep);
+        return;
+    }
+
+    ucs_interval_tree_init(rx_msg_ids, &ep->worker->am.frag_tree_mpool);
+    ep->ext->am.rx_msg_ids = rx_msg_ids;
+}
+
+/* Too many gaps between the delivered ids, or no memory: keep only the highest
+ * delivered id, as for a peer which leaves gaps between the ids */
+static void ucp_am_rx_msg_ids_fall_back(ucp_ep_ext_t *ep_ext, uint64_t msg_id)
+{
+    ucs_interval_tree_range_t range;
+
+    ucs_debug("ep %p: keep only the highest delivered AM id instead of %zu "
+              "ranges", ep_ext->ep,
+              ucs_interval_tree_count(ep_ext->am.rx_msg_ids));
+
+    ep_ext->am.psn = msg_id;
+    while (ucs_interval_tree_pop_any(ep_ext->am.rx_msg_ids, &range)) {
+        ep_ext->am.psn = ucs_max(ep_ext->am.psn, range.end);
+    }
+
+    ucp_am_rx_msg_ids_destroy(ep_ext);
+}
+
+/* Record that the endpoint delivered the AM msg_id */
+static UCS_F_ALWAYS_INLINE void
+ucp_am_rx_msg_ids_add(ucp_ep_ext_t *ep_ext, uint64_t msg_id)
+{
+    ucs_interval_tree_range_t range = {msg_id, msg_id};
+    ucs_interval_tree_t *rx_msg_ids = ep_ext->am.rx_msg_ids;
+    ucs_status_t status;
+
+    if (rx_msg_ids == NULL) {
+        ep_ext->am.psn = msg_id;
+        return;
+    }
+
+    status = ucs_interval_tree_insert(rx_msg_ids, range);
+    if (ucs_unlikely((status != UCS_OK) ||
+                     (ucs_interval_tree_count(rx_msg_ids) >
+                      UCP_AM_RX_MSG_IDS_MAX_RANGES))) {
+        ucp_am_rx_msg_ids_fall_back(ep_ext, msg_id);
+    }
+}
+
 static UCS_F_ALWAYS_INLINE ucp_recv_desc_t *
 ucp_am_find_first_rdesc(ucp_worker_h worker, ucp_ep_ext_t *ep_ext,
                         uint64_t msg_id)
@@ -1476,7 +1543,7 @@ ucp_am_handle_unfinished(ucp_worker_h worker, ucp_recv_desc_t *rdesc,
         * ep AM extension */
         ucs_list_del(&first_rdesc->am_first.list);
         ucs_interval_tree_cleanup(ucp_am_rdesc_frag_tree(first_rdesc));
-        ep_ext->am.psn  = first_ftr->super.msg_id;
+        ucp_am_rx_msg_ids_add(ep_ext, first_ftr->super.msg_id);
         hdr             = (ucp_am_hdr_t*)(first_ftr + 1);
         recv_flags      = ucp_am_hdr_reply_ep(worker, hdr->flags, reply_ep,
                                             &reply_ep) |
@@ -1591,8 +1658,8 @@ UCS_PROFILE_FUNC(ucs_status_t, ucp_am_long_first_handler,
                                        first_ftr->super.msg_id);
         }
 
-        recv_flags     = ucp_am_hdr_reply_ep(worker, hdr->flags, ep, &ep);
-        ep_ext->am.psn = first_ftr->super.msg_id;
+        recv_flags = ucp_am_hdr_reply_ep(worker, hdr->flags, ep, &ep);
+        ucp_am_rx_msg_ids_add(ep_ext, first_ftr->super.msg_id);
 
         return ucp_am_handler_common(worker, hdr, first_payload_length, ep,
                                      am_flags, recv_flags,
@@ -1746,6 +1813,7 @@ UCS_PROFILE_FUNC(ucs_status_t, ucp_am_long_middle_handler,
 static UCS_F_ALWAYS_INLINE int
 ucp_am_is_duplicate_psn(ucp_worker_h worker, ucp_am_mid_ftr_t *ftr)
 {
+    ucp_ep_ext_t *ep_ext;
     ucp_ep_h ep;
 
     UCP_WORKER_GET_VALID_EP_BY_ID(&ep, worker, ftr->ep_id, return UCS_OK,
@@ -1753,17 +1821,27 @@ ucp_am_is_duplicate_psn(ucp_worker_h worker, ucp_am_mid_ftr_t *ftr)
 
     ucs_assertv(ftr->msg_id != 0, "msg_id=%lu", ftr->msg_id);
 
-    /* Drop packet if:
-     * 1. This is not the first message for this EP and
-     * 2. message id is less or equal to the last one seen */
-    if (ucs_unlikely(ftr->msg_id <= ep->ext->am.psn) &&
-        (ep->ext->am.psn != 0)) {
-        ucs_debug("dropped duplicate message ep_id=%lu msg_id=%lu, psn=%lu",
-                  ftr->ep_id, ftr->msg_id, ep->ext->am.psn);
-        return 1;
+    ep_ext = ep->ext;
+    if (ep_ext->am.rx_msg_ids != NULL) {
+        if (!ucs_interval_tree_contains(ep_ext->am.rx_msg_ids, ftr->msg_id)) {
+            return 0;
+        }
+    } else if (ep_ext->am.psn == 0) {
+        /* No AM was delivered on the endpoint yet */
+        if (ucp_ep_config(ep)->key.dst_version >=
+            UCP_MIN_DST_VERSION_AM_PSN_EP_ID) {
+            ucp_am_rx_msg_ids_create(ep);
+        }
+
+        return 0;
+    } else if (ftr->msg_id > ep_ext->am.psn) {
+        /* Only the last delivered id is known, drop any id up to it */
+        return 0;
     }
 
-    return 0;
+    ucs_debug("dropped duplicate message ep_id=%lu msg_id=%lu", ftr->ep_id,
+              ftr->msg_id);
+    return 1;
 }
 
 UCS_PROFILE_FUNC(ucs_status_t, ucp_am_handler_first_psn,

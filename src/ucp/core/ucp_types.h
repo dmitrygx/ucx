@@ -380,7 +380,9 @@ enum {
     /* The rendezvous protocols of RMA operations */
     UCP_MIN_DST_VERSION_PROTO_RMA_RNDV            = 22,
     /* The token trailer of the LANES_ADDR messages */
-    UCP_MIN_DST_VERSION_WIREUP_ADDR_TOKEN         = 24
+    UCP_MIN_DST_VERSION_WIREUP_ADDR_TOKEN         = 24,
+    /* The multi-fragment AM ids come from a counter of the endpoint */
+    UCP_MIN_DST_VERSION_AM_PSN_EP_ID              = 24
 };
 
 

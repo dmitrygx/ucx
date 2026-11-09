@@ -17,6 +17,7 @@
 #include <uct/api/uct.h>
 #include <uct/api/v2/uct_v2.h>
 #include <ucs/datastruct/queue.h>
+#include <ucs/datastruct/interval_tree.h>
 #include <ucs/datastruct/ptr_map.h>
 #include <ucs/datastruct/strided_alloc.h>
 #include <ucs/debug/assert.h>
@@ -623,7 +624,9 @@ typedef struct ucp_ep_ext {
         ucs_list_link_t           started_ams;
         ucs_queue_head_t          mid_rdesc_q;    /* Queue of middle fragments, which
                                                      arrived before the first one */
-        uint64_t                  psn;
+        uint64_t                  psn;            /* Last delivered AM id, if
+                                                     rx_msg_ids is NULL */
+        ucs_interval_tree_t       *rx_msg_ids;    /* Delivered AM ids */
         uint64_t                  tx_msg_id;      /* Id of the next
                                                      multi-fragment AM */
     } am;

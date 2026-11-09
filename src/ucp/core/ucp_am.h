@@ -26,6 +26,12 @@
  */
 #define UCP_AM_SEND_SHORT_MIN_IOV 4
 
+/*
+ * Maximal number of ranges of delivered AM ids which an endpoint keeps; with
+ * more gaps between the ids, it keeps only the highest delivered id
+ */
+#define UCP_AM_RX_MSG_IDS_MAX_RANGES 64
+
 enum {
     UCP_AM_CB_PRIV_FIRST_FLAG = UCS_BIT(15),
 

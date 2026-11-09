@@ -3019,4 +3019,37 @@ UCS_TEST_P(test_ucp_am_psn, restart_after_partial, "ZCOPY_THRESH=0",
             << "fragment";
 }
 
+/* With more gaps between the delivered AM ids than an endpoint keeps ranges,
+ * it keeps only the highest delivered id: the delivered AMs are still dropped
+ * and a newer AM is delivered */
+UCS_TEST_P(test_ucp_am_psn, rx_msg_ids_max_ranges, "ZCOPY_THRESH=0",
+           "RNDV_THRESH=inf", "PROTO_REQUEST_RESET=n")
+{
+    const uint64_t max_id = 2 * (UCP_AM_RX_MSG_IDS_MAX_RANGES + 1);
+    std::map<uint64_t, unsigned> rx;
+
+    flush_workers();
+    set_am_data_handler(receiver(), FORGED_AM_ID, forged_am_cb, this);
+
+    /* Every other id, so each AM adds a range */
+    for (uint64_t msg_id = 2; msg_id <= max_id; msg_id += 2) {
+        forged_inject(forged_first(msg_id, FORGED_AM_SIZE));
+        EXPECT_EQ(1u, m_forged_rx[msg_id]) << "AM " << msg_id;
+    }
+
+    EXPECT_TRUE(receiver().ep()->ext->am.rx_msg_ids == NULL)
+            << "the endpoint keeps more than " << UCP_AM_RX_MSG_IDS_MAX_RANGES
+            << " ranges of delivered AM ids";
+
+    rx = m_forged_rx;
+    for (uint64_t msg_id = 2; msg_id <= max_id; msg_id += 2) {
+        forged_inject(forged_first(msg_id, FORGED_AM_SIZE));
+    }
+
+    EXPECT_EQ(rx, m_forged_rx) << "delivered AMs were delivered again";
+
+    forged_inject(forged_first(max_id + 1, FORGED_AM_SIZE));
+    EXPECT_EQ(1u, m_forged_rx[max_id + 1]) << "a newer AM was not delivered";
+}
+
 UCP_INSTANTIATE_TEST_CASE(test_ucp_am_psn)
