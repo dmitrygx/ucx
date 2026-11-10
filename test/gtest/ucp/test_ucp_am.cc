@@ -6,6 +6,7 @@
  */
 #include <algorithm>
 #include <list>
+#include <map>
 #include <numeric>
 #include <set>
 #include <vector>
@@ -2778,6 +2779,129 @@ public:
         EXPECT_EQ(total_msgs + num_duplicates, m_send_counter);
         EXPECT_EQ(total_msgs, m_recv_counter);
     }
+
+protected:
+    /* A psn AM fragment as a transport passes it to UCP: the UCP AM id of its
+     * handler and the data */
+    using psn_frame_t = std::pair<ucp_am_id_t, std::vector<uint8_t>>;
+
+    /* User AM id and payload size of the forged AMs */
+    static constexpr uint16_t FORGED_AM_ID   = 1;
+    static constexpr size_t   FORGED_AM_SIZE = 128;
+
+    static std::vector<uint8_t> forged_payload(uint64_t msg_id)
+    {
+        std::vector<uint8_t> payload(FORGED_AM_SIZE);
+
+        mem_buffer::pattern_fill(payload.data(), payload.size(),
+                                 SEED + msg_id);
+        return payload;
+    }
+
+    static void frame_append(std::vector<uint8_t> &frame, const void *data,
+                             size_t length)
+    {
+        const uint8_t *bytes = reinterpret_cast<const uint8_t*>(data);
+
+        frame.insert(frame.end(), bytes, bytes + length);
+    }
+
+    /* First fragment of the forged AM msg_id, with the first length bytes of
+     * its payload: the AM has a single fragment if length is FORGED_AM_SIZE */
+    psn_frame_t forged_first(uint64_t msg_id, size_t length, uint16_t flags = 0)
+    {
+        std::vector<uint8_t> payload = forged_payload(msg_id);
+        std::vector<uint8_t> frame;
+        ucp_am_hdr_t hdr;
+        ucp_am_first_ftr_t ftr;
+
+        hdr.u64           = 0;
+        hdr.am_id         = FORGED_AM_ID;
+        hdr.flags         = flags;
+        hdr.header_length = sizeof(msg_id);
+        ftr.super.msg_id  = msg_id;
+        ftr.super.ep_id   = ucp_ep_local_id(receiver().ep());
+        ftr.total_size    = FORGED_AM_SIZE;
+
+        /* ucp_am_hdr_t | payload | user header | ucp_am_first_ftr_t */
+        frame_append(frame, &hdr, sizeof(hdr));
+        frame_append(frame, payload.data(), length);
+        frame_append(frame, &msg_id, sizeof(msg_id));
+        frame_append(frame, &ftr, sizeof(ftr));
+        return {UCP_AM_ID_AM_FIRST_PSN, frame};
+    }
+
+    /* Middle fragment of the forged AM msg_id, with its payload from offset
+     * to the end */
+    psn_frame_t forged_middle(uint64_t msg_id, size_t offset)
+    {
+        std::vector<uint8_t> payload = forged_payload(msg_id);
+        std::vector<uint8_t> frame;
+        ucp_am_mid_hdr_t hdr;
+        ucp_am_mid_ftr_t ftr;
+
+        hdr.offset = offset;
+        ftr.msg_id = msg_id;
+        ftr.ep_id  = ucp_ep_local_id(receiver().ep());
+
+        /* ucp_am_mid_hdr_t | payload | ucp_am_mid_ftr_t */
+        frame_append(frame, &hdr, sizeof(hdr));
+        frame_append(frame, payload.data() + offset, payload.size() - offset);
+        frame_append(frame, &ftr, sizeof(ftr));
+        return {UCP_AM_ID_AM_MIDDLE_PSN, frame};
+    }
+
+    /* Pass a fragment to the receiver's psn handler, as a transport does */
+    void forged_inject(psn_frame_t frame)
+    {
+        ucp_worker_h worker = receiver().worker();
+        ucs_status_t status;
+
+        UCS_ASYNC_BLOCK(&worker->async);
+        status = ucp_am_handlers[frame.first]->cb(worker, frame.second.data(),
+                                                  frame.second.size(), 0);
+        UCS_ASYNC_UNBLOCK(&worker->async);
+        EXPECT_UCS_OK(status);
+    }
+
+    /* AMs whose first fragment arrived and which wait for other fragments */
+    size_t num_partial_ams()
+    {
+        return ucs_list_length(&receiver().ep()->ext->am.started_ams);
+    }
+
+    /* Middle fragments which wait for the first fragment of their AM */
+    size_t num_early_middle_frags()
+    {
+        return ucs_queue_length(&receiver().ep()->ext->am.mid_rdesc_q);
+    }
+
+    static ucs_status_t forged_am_cb(void *arg, const void *header,
+                                     size_t header_length, void *data,
+                                     size_t length,
+                                     const ucp_am_recv_param_t *param)
+    {
+        test_ucp_am_psn *self = reinterpret_cast<test_ucp_am_psn*>(arg);
+        uint64_t msg_id;
+
+        if (header_length != sizeof(msg_id)) {
+            ADD_FAILURE() << "forged AM with a " << header_length
+                          << " byte user header";
+            return UCS_OK;
+        }
+
+        memcpy(&msg_id, header, sizeof(msg_id));
+        std::vector<uint8_t> payload = forged_payload(msg_id);
+        EXPECT_TRUE((length == payload.size()) &&
+                    (memcmp(data, payload.data(), length) == 0))
+                << "AM " << msg_id << " arrived with wrong data, length "
+                << length;
+        ++self->m_forged_rx[msg_id];
+        return UCS_OK;
+    }
+
+    /* How many times each forged AM was delivered */
+    std::map<uint64_t, unsigned> m_forged_rx;
 };
 
 UCS_TEST_P(test_ucp_am_psn, no_duplicates, "ZCOPY_THRESH=0", "RNDV_THRESH=inf", "PROTO_REQUEST_RESET=n")
@@ -2794,6 +2918,105 @@ UCS_TEST_P(test_ucp_am_psn, some_duplicates, "ZCOPY_THRESH=0",
 UCS_TEST_P(test_ucp_am_psn, all_duplicates, "ZCOPY_THRESH=0", "RNDV_THRESH=inf", "PROTO_REQUEST_RESET=n")
 {
     test_psn_send_recv(400, 400);
+}
+
+/* After a lane failure a psn AM is sent again with its message id, behind the
+ * AMs posted since the failure, and with several eager lanes a newer AM can
+ * overtake the middle fragment of an older one. Each AM must be delivered
+ * once, a fragment of a delivered AM must be dropped, and a real AM must still
+ * arrive. */
+UCS_TEST_P(test_ucp_am_psn, restart_after_newer, "ZCOPY_THRESH=0",
+           "RNDV_THRESH=inf", "PROTO_REQUEST_RESET=n")
+{
+    const size_t half_size = FORGED_AM_SIZE / 2;
+    std::vector<psn_frame_t> frames;
+    std::map<uint64_t, unsigned> rx;
+    size_t num_partial;
+
+    flush_workers();
+    set_am_data_handler(receiver(), FORGED_AM_ID, forged_am_cb, this);
+
+    /* AM 1001 is sent again and arrives after the newer AM 1002 */
+    frames.push_back(forged_first(1002, FORGED_AM_SIZE));
+    frames.push_back(forged_first(1001, FORGED_AM_SIZE,
+                                  UCP_AM_HDR_FLAG_RESEND));
+    forged_inject(frames[0]);
+    forged_inject(frames[1]);
+    EXPECT_EQ(1u, m_forged_rx[1002]) << "AM 1002 was not delivered";
+    EXPECT_EQ(1u, m_forged_rx[1001])
+            << "AM 1001, sent again after the newer AM 1002 was delivered, "
+            << "was dropped as a duplicate";
+
+    /* The newer AM 1005 arrives between the first and the middle fragment of
+     * AM 1004 */
+    frames.push_back(forged_first(1004, half_size));
+    frames.push_back(forged_first(1005, FORGED_AM_SIZE));
+    frames.push_back(forged_middle(1004, half_size));
+    for (size_t i = 2; i < frames.size(); ++i) {
+        forged_inject(frames[i]);
+    }
+
+    EXPECT_EQ(1u, m_forged_rx[1005]) << "AM 1005 was not delivered";
+    EXPECT_EQ(1u, m_forged_rx[1004])
+            << "the middle fragment of AM 1004 arrived after the newer AM "
+            << "1005 and was dropped as a duplicate, so AM 1004 was lost";
+    EXPECT_EQ(0u, num_partial_ams())
+            << "partially received AMs are left on the endpoint, every later "
+            << "multi-fragment AM waits behind them";
+
+    /* A fragment of a delivered AM is a duplicate */
+    rx          = m_forged_rx;
+    num_partial = num_partial_ams();
+    for (const psn_frame_t &frame : frames) {
+        forged_inject(frame);
+    }
+
+    EXPECT_EQ(rx, m_forged_rx) << "fragments sent again delivered AMs again";
+    EXPECT_EQ(num_partial, num_partial_ams())
+            << "a fragment sent again started a new AM";
+    EXPECT_EQ(0u, num_early_middle_frags())
+            << "a middle fragment sent again waits for a first fragment";
+
+    SCOPED_TRACE("a real AM sent after the forged fragments");
+    test_am_send_recv(64 * UCS_KBYTE, 8);
+}
+
+/* A psn AM whose first fragment arrived before a lane failure is sent again
+ * from the first fragment, or the middle fragment of a psn AM overtakes its
+ * first fragment on another lane, and a newer AM is delivered in between: the
+ * AM must be delivered once, and none of its fragments may stay queued. */
+UCS_TEST_P(test_ucp_am_psn, restart_after_partial, "ZCOPY_THRESH=0",
+           "RNDV_THRESH=inf", "PROTO_REQUEST_RESET=n")
+{
+    const size_t half_size = FORGED_AM_SIZE / 2;
+
+    flush_workers();
+    set_am_data_handler(receiver(), FORGED_AM_ID, forged_am_cb, this);
+
+    /* AM 2001 is sent again after the newer AM 2002 was delivered */
+    forged_inject(forged_first(2001, half_size));
+    forged_inject(forged_first(2002, FORGED_AM_SIZE));
+    forged_inject(forged_first(2001, half_size, UCP_AM_HDR_FLAG_RESEND));
+    forged_inject(forged_middle(2001, half_size));
+    EXPECT_EQ(1u, m_forged_rx[2002]) << "AM 2002 was not delivered";
+    EXPECT_EQ(1u, m_forged_rx[2001])
+            << "AM 2001, sent again after the newer AM 2002 was delivered, "
+            << "was dropped as a duplicate";
+    EXPECT_EQ(0u, num_partial_ams())
+            << "the first fragment of AM 2001 waits for dropped fragments";
+
+    /* The newer AM 2004 is delivered between the middle and the first
+     * fragment of AM 2003 */
+    forged_inject(forged_middle(2003, half_size));
+    forged_inject(forged_first(2004, FORGED_AM_SIZE));
+    forged_inject(forged_first(2003, half_size));
+    EXPECT_EQ(1u, m_forged_rx[2004]) << "AM 2004 was not delivered";
+    EXPECT_EQ(1u, m_forged_rx[2003])
+            << "the first fragment of AM 2003 arrived after the newer AM 2004 "
+            << "and was dropped as a duplicate";
+    EXPECT_EQ(0u, num_early_middle_frags())
+            << "the middle fragment of AM 2003 waits for a dropped first "
+            << "fragment";
 }
 
 UCP_INSTANTIATE_TEST_CASE(test_ucp_am_psn)
