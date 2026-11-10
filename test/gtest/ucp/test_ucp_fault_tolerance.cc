@@ -1308,3 +1308,156 @@ UCP_FT_TESTS(test_ucp_fault_tolerance_tf)
 
 UCP_INSTANTIATE_TEST_CASE(test_ucp_fault_tolerance)
 UCP_INSTANTIATE_TEST_CASE_TLS(test_ucp_fault_tolerance_tf, rcx, "rc_x")
+
+/* With token failover, the sender holds a failed lane and sends its TX token
+ * in a LANES_ADDR request. The reply completes the token exchange of the
+ * sender, and the ACK the one of the receiver. Then each of them purges the
+ * lane: it posts undelivered operations again, completes the other ones and
+ * destroys the held transport endpoint. That must not run from the wireup
+ * message handler, which UD can call from the async thread, so count the
+ * token purges which run while that handler is in progress on their thread. */
+class test_ucp_ft_tf_purge_progress : public test_ucp_fault_tolerance_tf {
+public:
+    static void get_test_variants(std::vector<ucp_test_variant> &variants)
+    {
+        add_variant_with_value(variants, UCP_FEATURE_AM, TEST_OP_AM, "am");
+    }
+
+    test_ucp_ft_tf_purge_progress()
+    {
+        memset(m_purges, 0, sizeof(m_purges));
+        memset(m_handler_purges, 0, sizeof(m_handler_purges));
+        /* Interfaces set the handler from this table when they are created,
+         * activated and deactivated */
+        m_wireup_mock.setup(&ucp_am_handlers[UCP_AM_ID_WIREUP]->cb,
+                            wireup_handler);
+    }
+
+    ~test_ucp_ft_tf_purge_progress()
+    {
+        m_purge_mock.cleanup();
+        m_wireup_mock.cleanup();
+    }
+
+protected:
+    /* A lane with token support which carries neither wireup messages nor
+     * the keepalive */
+    static ucp_lane_index_t token_lane(ucp_ep_h ep)
+    {
+        const ucp_ep_config_key_t &key = ucp_ep_config(ep)->key;
+        ucp_worker_iface_t *wiface;
+        ucp_lane_index_t lane;
+
+        for (lane = 0; lane < ucp_ep_num_lanes(ep); ++lane) {
+            wiface = ucp_worker_iface(ep->worker,
+                                      ucp_ep_get_rsc_index(ep, lane));
+            if ((lane != key.am_lane) && (lane != key.wireup_msg_lane) &&
+                (lane != key.keepalive_lane) && (wiface != NULL) &&
+                (wiface->attr_v2.cap.flags & UCT_IFACE_FLAG_V2_QUERY_TOKEN)) {
+                return lane;
+            }
+        }
+
+        return UCP_NULL_LANE;
+    }
+
+    static bool lane_recovered(ucp_ep_h ep, ucp_lane_index_t lane)
+    {
+        return (ucp_ep_get_failed_lanes(ep) == 0) &&
+               !ucp_wireup_ep_test(ucp_ep_get_lane(ep, lane));
+    }
+
+    static ucs_status_t
+    wireup_handler(void *arg, void *data, size_t length, unsigned flags)
+    {
+        ucs_status_t status;
+
+        ++m_wireup_depth;
+        status = m_wireup_mock.orig_func(
+                &ucp_am_handlers[UCP_AM_ID_WIREUP]->cb, arg, data, length,
+                flags);
+        --m_wireup_depth;
+        return status;
+    }
+
+    static ucs_status_t
+    outstanding_purge(uct_ep_h ep,
+                      const uct_ep_outstanding_purge_params_t *params)
+    {
+        uct_base_iface_t *iface = ucs_derived_of(ep->iface, uct_base_iface_t);
+        unsigned side           = (iface->worker == m_sender_worker) ? 0 : 1;
+
+        if (params->field_mask & UCT_EP_OUTSTANDING_FIELD_RX_TOKEN) {
+            ++m_purges[side];
+            if (m_wireup_depth > 0) {
+                ++m_handler_purges[side];
+            }
+        }
+
+        return m_purge_mock.orig_func(
+                &iface->internal_ops->ep_outstanding_purge, ep, params);
+    }
+
+    static ucs::mock m_wireup_mock;
+    static ucs::mock m_purge_mock;
+    /* Wireup message handlers in progress on this thread */
+    static thread_local unsigned m_wireup_depth;
+    static uct_priv_worker_t *m_sender_worker;
+    /* Token purges on the sender and on the receiver */
+    static unsigned m_purges[2];
+    /* The ones of them which ran from a wireup message handler */
+    static unsigned m_handler_purges[2];
+};
+
+ucs::mock test_ucp_ft_tf_purge_progress::m_wireup_mock;
+ucs::mock test_ucp_ft_tf_purge_progress::m_purge_mock;
+thread_local unsigned test_ucp_ft_tf_purge_progress::m_wireup_depth = 0;
+uct_priv_worker_t *test_ucp_ft_tf_purge_progress::m_sender_worker   = NULL;
+unsigned test_ucp_ft_tf_purge_progress::m_purges[2]                 = {};
+unsigned test_ucp_ft_tf_purge_progress::m_handler_purges[2]         = {};
+
+UCS_TEST_P(test_ucp_ft_tf_purge_progress, not_in_wireup_handler,
+           "MAX_EAGER_LANES=8", "RECOVERY_RETRIES=100")
+{
+    ucp_ep_h ep      = sender().ep(0, INJECTED_EP_INDEX);
+    ucp_ep_h peer_ep = receiver().ep(0, INJECTED_EP_INDEX);
+    ucp_lane_index_t lane;
+    uct_base_iface_t *iface;
+    uct_ep_h uct_ep;
+
+    flush_workers();
+    lane = token_lane(ep);
+    if (lane == UCP_NULL_LANE) {
+        UCS_TEST_SKIP_R("no lane with token support besides the AM, wireup "
+                        "and keepalive lanes");
+    }
+
+    uct_ep          = ucp_ep_get_lane(ep, lane);
+    iface           = ucs_derived_of(uct_ep->iface, uct_base_iface_t);
+    m_sender_worker = ucs_derived_of(sender().worker()->uct, uct_priv_worker_t);
+    /* The rc_mlx5 interfaces of both workers share this operations table */
+    m_purge_mock.setup(&iface->internal_ops->ep_outstanding_purge,
+                       outstanding_purge);
+    ASSERT_UCS_OK(uct_ep_invalidate(uct_ep, NULL));
+
+    /* Each side purges the lane when its token exchange completes, and then
+     * rebuilds it. Wait for the rebuild too, so that the endpoints are closed
+     * after the recovery. */
+    wait_for_cond([ep, peer_ep, lane]() {
+        return (m_purges[0] > 0) && (m_purges[1] > 0) &&
+               lane_recovered(ep, lane) && lane_recovered(peer_ep, lane);
+    }, [this]() { short_progress_loop(); });
+
+    EXPECT_GT(m_purges[0], 0u) << "the sender did not purge lane "
+                               << unsigned(lane);
+    EXPECT_GT(m_purges[1], 0u) << "the receiver did not purge lane "
+                               << unsigned(lane);
+    EXPECT_EQ(0u, m_handler_purges[0])
+            << "the sender purged lane " << unsigned(lane)
+            << " from the handler of the LANES_ADDR reply";
+    EXPECT_EQ(0u, m_handler_purges[1])
+            << "the receiver purged lane " << unsigned(lane)
+            << " from the handler of the LANES_ADDR ACK";
+}
+
+UCP_INSTANTIATE_TEST_CASE_TLS(test_ucp_ft_tf_purge_progress, rcx, "rc_x")
