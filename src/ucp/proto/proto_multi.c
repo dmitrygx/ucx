@@ -107,6 +107,11 @@ ucp_proto_multi_get_avail_bw(const ucp_proto_init_params_t *params,
     uint8_t path_index            = selection->dev_count[dev_index];
     double ratio;
 
+    if (ucp_proto_common_has_effective_bw(
+                &params->ep_config_key->lanes[lane].path_bandwidth)) {
+        return lane_perf->bandwidth;
+    }
+
     if (UCS_CONFIG_DBL_IS_AUTO(multi_path_ratio)) {
         ratio = ucs_min(1.0 - (lane_perf->path_ratio * path_index),
                         lane_perf->path_ratio);
@@ -825,6 +830,15 @@ ucp_proto_multi_init_priv(const ucp_proto_multi_init_params_t *params,
                                                     perf->bandwidth);
         ucs_assert(lpriv->weight > 0);
         ucs_assert(lpriv->weight <= UCP_PROTO_MULTI_WEIGHT_MAX);
+        if (ucp_proto_common_has_effective_bw(
+                    &params->super.super.ep_config_key->lanes[lane].
+                            path_bandwidth)) {
+            ucs_debug("ep configuration %u lane %u weight %u/%u "
+                     "bandwidth %.2f MiB/s",
+                     params->super.super.ep_cfg_index, lane, lpriv->weight,
+                     (unsigned)UCP_PROTO_MULTI_WEIGHT_MAX,
+                     lane_perf->bandwidth / UCS_MBYTE);
+        }
 
         /* Calculate minimal message length according to lane's relative weight:
            When the message length is scaled by this lane's weight, it must not

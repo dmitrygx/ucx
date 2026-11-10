@@ -348,16 +348,20 @@ ucp_proto_common_get_lane_perf(const ucp_proto_common_init_params_t *params,
                                ucp_lane_index_t lane,
                                ucp_proto_common_tl_perf_t *tl_perf)
 {
-    ucp_worker_h worker        = params->super.worker;
-    ucp_context_h context      = worker->context;
-    ucp_rsc_index_t rsc_index  = ucp_proto_common_get_rsc_index(&params->super,
-                                                                lane);
-    ucp_worker_iface_t *wiface = ucp_worker_iface(worker, rsc_index);
+    ucp_worker_h worker            = params->super.worker;
+    ucp_context_h context          = worker->context;
+    ucp_rsc_index_t rsc_index      =
+            ucp_proto_common_get_rsc_index(&params->super, lane);
+    ucp_worker_iface_t *wiface     = ucp_worker_iface(worker, rsc_index);
+    const ucp_ep_config_key_t *key = params->super.ep_config_key;
     ucp_proto_perf_node_t *lane_perf_node;
     const ucp_rkey_config_t *rkey_config;
     ucs_sys_dev_distance_t distance;
     size_t tl_min_frag, tl_max_frag;
     uct_perf_attr_t perf_attr;
+    uct_ppn_bandwidth_t ep_bandwidth;
+    double bandwidth;
+    int has_ep_bandwidth;
     ucs_sys_device_t sys_dev;
     ucs_status_t status;
     char bdf_name[32];
@@ -396,14 +400,31 @@ ucp_proto_common_get_lane_perf(const ucp_proto_common_init_params_t *params,
         goto err_deref_perf_node;
     }
 
+    ep_bandwidth     = key->lanes[lane].path_bandwidth;
+    has_ep_bandwidth = (ep_bandwidth.dedicated + ep_bandwidth.shared) > 0;
+    /* Keep operation-specific limits on shared endpoint estimates. */
+    if (has_ep_bandwidth &&
+        (ucp_proto_common_has_effective_bw(&ep_bandwidth) ||
+         (ucp_proto_common_iface_bandwidth(context, &ep_bandwidth) <
+          ucp_proto_common_iface_bandwidth(context,
+                                           &perf_attr.path_bandwidth)))) {
+        perf_attr.path_bandwidth = ep_bandwidth;
+    }
+
+    bandwidth                  = ucp_proto_common_iface_bandwidth(
+                                      context, &perf_attr.bandwidth);
     tl_perf->send_pre_overhead  = perf_attr.send_pre_overhead + params->overhead;
     tl_perf->send_post_overhead = perf_attr.send_post_overhead;
     tl_perf->recv_overhead      = perf_attr.recv_overhead + params->overhead;
     tl_perf->bandwidth          = ucp_proto_common_iface_bandwidth(
-                                      context, &perf_attr.bandwidth);
+                                      context,
+                                      ucp_proto_common_has_effective_bw(
+                                              &ep_bandwidth) ?
+                                      &perf_attr.path_bandwidth :
+                                      &perf_attr.bandwidth);
     tl_perf->path_ratio         = ucp_proto_common_iface_bandwidth(
                                       context, &perf_attr.path_bandwidth) /
-                                  tl_perf->bandwidth;
+                                  bandwidth;
     tl_perf->latency            = ucp_tl_iface_latency(context,
                                                        &perf_attr.latency) +
                                   params->latency;

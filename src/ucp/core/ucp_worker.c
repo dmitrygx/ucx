@@ -25,6 +25,7 @@
 #include <ucp/tag/eager.h>
 #include <ucp/tag/offload.h>
 #include <ucp/stream/stream.h>
+#include <uct/base/uct_worker.h>
 #include <ucs/config/parser.h>
 #include <ucs/debug/debug_int.h>
 #include <ucs/datastruct/mpool.inl>
@@ -41,9 +42,11 @@
 #include <sys/epoll.h>
 #include <sys/timerfd.h>
 #include <time.h>
+#include <math.h>
 
 
 #define UCP_WORKER_MAX_DEBUG_STRING_SIZE 200
+#define UCP_EP_PATH_BW_PRECISION_BITS    5
 
 #define UCP_WORKER_USAGE_TRACKER_PROMOTE_THRESHOLD    10
 #define UCP_WORKER_USAGE_TRACKER_REMOVE_THRESHOLD     0.2
@@ -282,6 +285,11 @@ static void ucp_worker_am_tracer(void *arg, uct_am_trace_type_t type,
     }
 }
 
+static void ucp_worker_uct_wakeup(void *arg)
+{
+    ucp_worker_signal_internal(arg);
+}
+
 static ucs_status_t ucp_worker_wakeup_init(ucp_worker_h worker,
                                            const ucp_worker_params_t *params)
 {
@@ -354,6 +362,7 @@ static ucs_status_t ucp_worker_wakeup_init(ucp_worker_h worker,
         worker->uct_events |= UCT_EVENT_SEND_COMP;
     }
 
+    uct_worker_set_wakeup_cb(worker->uct, ucp_worker_uct_wakeup, worker);
     return UCS_OK;
 
 err_cleanup_event_set:
@@ -366,6 +375,7 @@ out:
 
 static void ucp_worker_wakeup_cleanup(ucp_worker_h worker)
 {
+    uct_worker_set_wakeup_cb(worker->uct, NULL, NULL);
     if (worker->event_set != NULL) {
         ucs_assert(worker->event_fd != -1);
         ucs_event_set_cleanup(worker->event_set);
@@ -450,7 +460,7 @@ static ucs_status_t ucp_worker_wakeup_signal_fd(ucp_worker_h worker)
         } else {
             ucs_assert(ret == 0);
         }
-    } while (ret == 0);
+    } while ((ret == 0) || ((ret == -1) && (errno == EINTR)));
 
     return UCS_OK;
 }
@@ -952,6 +962,115 @@ static void ucp_worker_iface_async_cb_event(void *arg, unsigned flags)
     ucs_assert(wiface->attr.cap.event_flags & UCT_IFACE_FLAG_EVENT_ASYNC_CB);
 
     ucp_worker_iface_event_common(wiface);
+}
+
+/* Round down so repeated samples reuse immutable configs. */
+static double ucp_ep_path_bw_quantize(double bandwidth)
+{
+    int exponent;
+    double mantissa = frexp(bandwidth, &exponent);
+
+    return ldexp(floor(mantissa * UCS_BIT(UCP_EP_PATH_BW_PRECISION_BITS)),
+                 exponent - UCP_EP_PATH_BW_PRECISION_BITS);
+}
+
+static ucs_status_t
+ucp_worker_ep_refresh_path_bw(ucp_ep_h ep, ucp_lane_index_t trigger_lane)
+{
+    ucp_ep_config_key_t key         = ucp_ep_config(ep)->key;
+    ucp_lane_map_t      lanes       = UCS_BIT(trigger_lane);
+    int                 reconfigure = 0;
+    uct_ep_attr_t attr;
+    ucp_worker_iface_t *wiface;
+    ucp_lane_index_t i, lane;
+    uct_ep_h uct_ep;
+    ucs_status_t status;
+
+    if (ep->flags & (UCP_EP_FLAG_FAILED | UCP_EP_FLAG_CLOSED)) {
+        return UCS_ERR_CANCELED;
+    }
+
+    /* Collect cached candidate rates before publishing one configuration. */
+    for (i = 0; i < key.num_lanes; ++i) {
+        if (key.rma_bw_lanes[i] != UCP_NULL_LANE) {
+            lanes |= UCS_BIT(key.rma_bw_lanes[i]);
+        }
+        if (key.am_bw_lanes[i] != UCP_NULL_LANE) {
+            lanes |= UCS_BIT(key.am_bw_lanes[i]);
+        }
+    }
+
+    ucs_for_each_bit(lane, lanes) {
+        if ((key.lanes[lane].rsc_index == UCP_NULL_RESOURCE) ||
+            (key.lanes[lane].lane_types & UCS_BIT(UCP_LANE_TYPE_FAILED))) {
+            continue;
+        }
+
+        wiface = ucp_worker_iface(ep->worker, key.lanes[lane].rsc_index);
+        if (key.lanes[lane].port_speed != wiface->port_speed) {
+            /* Let normal reconfiguration invalidate pre-change samples. */
+            reconfigure = 1;
+            continue;
+        }
+
+        uct_ep = ucp_ep_get_lane(ep, lane);
+        if (uct_ep == NULL) {
+            continue;
+        }
+
+        attr.field_mask = UCT_EP_ATTR_FIELD_BANDWIDTH;
+        status         = uct_ep_query(uct_ep, &attr);
+        if (status != UCS_OK) {
+            ucs_debug("ep %p lane[%u] skip unavailable bandwidth: %s",
+                      ep, lane, ucs_status_string(status));
+            continue;
+        }
+
+        if (!isfinite(attr.bandwidth.dedicated) ||
+            !isfinite(attr.bandwidth.shared) ||
+            (attr.bandwidth.dedicated < 0) || (attr.bandwidth.shared < 0) ||
+            !isfinite(attr.bandwidth.dedicated + attr.bandwidth.shared)) {
+            return UCS_ERR_INVALID_PARAM;
+        }
+
+        key.lanes[lane].path_bandwidth.dedicated =
+                ucp_ep_path_bw_quantize(attr.bandwidth.dedicated);
+        key.lanes[lane].path_bandwidth.shared =
+                ucp_ep_path_bw_quantize(attr.bandwidth.shared);
+        reconfigure = 1;
+    }
+
+    return reconfigure ? ucp_ep_update_config(ep, &key) : UCS_OK;
+}
+
+static void ucp_worker_iface_ep_event_cb(void *arg, uct_ep_h uct_ep,
+                                         unsigned events)
+{
+    ucp_worker_iface_t *wiface = arg;
+    ucp_worker_h worker        = wiface->worker;
+    ucp_lane_index_t lane;
+    ucp_ep_h ep;
+    ucs_status_t status;
+
+    if (!(events & UCT_EP_EVENT_PATH_SPEED_CHANGE) || (uct_ep == NULL)) {
+        return;
+    }
+
+    /* Completion and UCP reconfiguration share normal worker serialization. */
+    ucs_assert(!ucs_async_is_from_async(&worker->async));
+    UCS_ASYNC_BLOCK(&worker->async);
+    ep = ucp_worker_find_lane(&worker->all_eps, uct_ep, &lane);
+    if (ep == NULL) {
+        ep = ucp_worker_find_lane(&worker->internal_eps, uct_ep, &lane);
+    }
+
+    if (ep != NULL) {
+        status = ucp_worker_ep_refresh_path_bw(ep, lane);
+        ucs_debug("ep %p lane[%u] path bandwidth event: %s",
+                  ep, lane, ucs_status_string(status));
+    }
+
+    UCS_ASYNC_UNBLOCK(&worker->async);
 }
 
 static void
@@ -1492,6 +1611,7 @@ ucp_worker_iface_query_attr_v2(ucp_worker_iface_t *wiface)
 ucs_status_t ucp_worker_iface_open(ucp_worker_h worker, ucp_rsc_index_t tl_id,
                                    ucp_worker_iface_t **wiface_p)
 {
+    uct_iface_set_ep_event_params_t ep_event_params;
     ucp_context_h context            = worker->context;
     ucp_tl_resource_desc_t *resource = &context->tl_rscs[tl_id];
     uct_md_h md                      = context->tl_mds[resource->md_index].md;
@@ -1562,10 +1682,10 @@ ucs_status_t ucp_worker_iface_open(ucp_worker_h worker, ucp_rsc_index_t tl_id,
                                      UCT_IFACE_PARAM_FIELD_HW_TM_EAGER_CB;
     }
 
-    iface_params.async_event_arg   = wiface;
-    iface_params.async_event_cb    = ucp_worker_iface_async_cb_event;
-    iface_params.field_mask       |= UCT_IFACE_PARAM_FIELD_ASYNC_EVENT_ARG |
-                                     UCT_IFACE_PARAM_FIELD_ASYNC_EVENT_CB;
+    iface_params.async_event_arg    = wiface;
+    iface_params.async_event_cb     = ucp_worker_iface_async_cb_event;
+    iface_params.field_mask        |= UCT_IFACE_PARAM_FIELD_ASYNC_EVENT_ARG |
+                                      UCT_IFACE_PARAM_FIELD_ASYNC_EVENT_CB;
 
     if (ucp_worker_keepalive_is_enabled(worker)) {
         iface_params.field_mask        |= UCT_IFACE_PARAM_FIELD_KEEPALIVE_INTERVAL;
@@ -1596,6 +1716,16 @@ ucs_status_t ucp_worker_iface_open(ucp_worker_h worker, ucp_rsc_index_t tl_id,
     }
 
     VALGRIND_MAKE_MEM_UNDEFINED(&wiface->attr, sizeof(wiface->attr));
+
+    ep_event_params.field_mask =
+            UCT_IFACE_SET_EP_EVENT_PARAM_FIELD_CB |
+            UCT_IFACE_SET_EP_EVENT_PARAM_FIELD_ARG;
+    ep_event_params.cb  = ucp_worker_iface_ep_event_cb;
+    ep_event_params.arg = wiface;
+    status = uct_iface_set_ep_event_handler(wiface->iface, &ep_event_params);
+    if ((status != UCS_OK) && (status != UCS_ERR_UNSUPPORTED)) {
+        goto err_close_iface;
+    }
 
     status = uct_iface_query(wiface->iface, &wiface->attr);
     if (status != UCS_OK) {
@@ -2292,6 +2422,20 @@ ucp_worker_config_array_release_old(ucp_worker_h worker, void *old_buffer,
  * A 'key' identifies an entry in the ep_config array. An entry holds the key and
  * additional configuration parameters and thresholds.
  */
+ucp_worker_cfg_index_t
+ucp_worker_find_ep_config(ucp_worker_h worker, const ucp_ep_config_key_t *key)
+{
+    ucp_ep_config_t *config;
+
+    ucs_array_for_each(config, &worker->ep_config) {
+        if (ucp_ep_config_is_equal(&config->key, key)) {
+            return config - worker->ep_config.buffer;
+        }
+    }
+
+    return UCP_WORKER_CFG_INDEX_NULL;
+}
+
 ucs_status_t ucp_worker_get_ep_config(ucp_worker_h worker,
                                       const ucp_ep_config_key_t *key,
                                       unsigned ep_init_flags,
@@ -2304,12 +2448,9 @@ ucs_status_t ucp_worker_get_ep_config(ucp_worker_h worker,
     ucs_assertv_always(key->num_lanes > 0,
                        "empty endpoint configurations are not allowed");
 
-    /* Search for the given key in the ep_config array */
-    ucs_array_for_each(ep_config, &worker->ep_config) {
-        if (ucp_ep_config_is_equal(&ep_config->key, key)) {
-            ep_cfg_index = ep_config - worker->ep_config.buffer;
-            goto out;
-        }
+    ep_cfg_index = ucp_worker_find_ep_config(worker, key);
+    if (ep_cfg_index != UCP_WORKER_CFG_INDEX_NULL) {
+        goto out;
     }
 
     /* Create new configuration */
@@ -3511,8 +3652,11 @@ ucs_status_t ucp_worker_wait(ucp_worker_h worker)
     }
 
     if (worker->flags & UCP_WORKER_FLAG_EXTERNAL_EVENT_FD) {
-        pfd = ucs_alloca(sizeof(*pfd) * worker->context->num_tls);
-        nfds = 0;
+        pfd           = ucs_alloca(sizeof(*pfd) *
+                                   (worker->context->num_tls + 1));
+        pfd[0].fd     = worker->eventfd;
+        pfd[0].events = POLLIN;
+        nfds          = 1;
         ucs_list_for_each(wiface, &worker->arm_ifaces, arm_list) {
             if (!ucp_worker_iface_use_event_fd(wiface)) {
                 /* if UCT iface supports asynchronous event callback, we
@@ -3542,7 +3686,7 @@ ucs_status_t ucp_worker_wait(ucp_worker_h worker)
         ret = poll(pfd, nfds, -1);
         ucs_trace_data("worker %p: poll returned %d", worker, ret);
         if (ret >= 0) {
-            ucs_assertv(ret == 1, "ret=%d", ret);
+            ucs_assertv(ret > 0, "ret=%d", ret);
             status = UCS_OK;
             goto out;
         } else {
