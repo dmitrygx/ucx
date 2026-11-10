@@ -1046,8 +1046,7 @@ ucp_worker_ep_refresh_path_bw(ucp_ep_h ep, ucp_lane_index_t trigger_lane)
 static void ucp_worker_iface_ep_event_cb(void *arg, uct_ep_h uct_ep,
                                          unsigned events)
 {
-    ucp_worker_iface_t *wiface = arg;
-    ucp_worker_h worker        = wiface->worker;
+    ucp_worker_h worker = arg;
     ucp_lane_index_t lane;
     ucp_ep_h ep;
     ucs_status_t status;
@@ -1682,10 +1681,10 @@ ucs_status_t ucp_worker_iface_open(ucp_worker_h worker, ucp_rsc_index_t tl_id,
                                      UCT_IFACE_PARAM_FIELD_HW_TM_EAGER_CB;
     }
 
-    iface_params.async_event_arg    = wiface;
-    iface_params.async_event_cb     = ucp_worker_iface_async_cb_event;
-    iface_params.field_mask        |= UCT_IFACE_PARAM_FIELD_ASYNC_EVENT_ARG |
-                                      UCT_IFACE_PARAM_FIELD_ASYNC_EVENT_CB;
+    iface_params.async_event_arg   = wiface;
+    iface_params.async_event_cb    = ucp_worker_iface_async_cb_event;
+    iface_params.field_mask       |= UCT_IFACE_PARAM_FIELD_ASYNC_EVENT_ARG |
+                                     UCT_IFACE_PARAM_FIELD_ASYNC_EVENT_CB;
 
     if (ucp_worker_keepalive_is_enabled(worker)) {
         iface_params.field_mask        |= UCT_IFACE_PARAM_FIELD_KEEPALIVE_INTERVAL;
@@ -1721,7 +1720,7 @@ ucs_status_t ucp_worker_iface_open(ucp_worker_h worker, ucp_rsc_index_t tl_id,
             UCT_IFACE_SET_EP_EVENT_PARAM_FIELD_CB |
             UCT_IFACE_SET_EP_EVENT_PARAM_FIELD_ARG;
     ep_event_params.cb  = ucp_worker_iface_ep_event_cb;
-    ep_event_params.arg = wiface;
+    ep_event_params.arg = worker;
     status = uct_iface_set_ep_event_handler(wiface->iface, &ep_event_params);
     if ((status != UCS_OK) && (status != UCS_ERR_UNSUPPORTED)) {
         goto err_close_iface;
@@ -2422,20 +2421,6 @@ ucp_worker_config_array_release_old(ucp_worker_h worker, void *old_buffer,
  * A 'key' identifies an entry in the ep_config array. An entry holds the key and
  * additional configuration parameters and thresholds.
  */
-ucp_worker_cfg_index_t
-ucp_worker_find_ep_config(ucp_worker_h worker, const ucp_ep_config_key_t *key)
-{
-    ucp_ep_config_t *config;
-
-    ucs_array_for_each(config, &worker->ep_config) {
-        if (ucp_ep_config_is_equal(&config->key, key)) {
-            return config - worker->ep_config.buffer;
-        }
-    }
-
-    return UCP_WORKER_CFG_INDEX_NULL;
-}
-
 ucs_status_t ucp_worker_get_ep_config(ucp_worker_h worker,
                                       const ucp_ep_config_key_t *key,
                                       unsigned ep_init_flags,
@@ -2448,9 +2433,12 @@ ucs_status_t ucp_worker_get_ep_config(ucp_worker_h worker,
     ucs_assertv_always(key->num_lanes > 0,
                        "empty endpoint configurations are not allowed");
 
-    ep_cfg_index = ucp_worker_find_ep_config(worker, key);
-    if (ep_cfg_index != UCP_WORKER_CFG_INDEX_NULL) {
-        goto out;
+    /* Search for the given key in the ep_config array */
+    ucs_array_for_each(ep_config, &worker->ep_config) {
+        if (ucp_ep_config_is_equal(&ep_config->key, key)) {
+            ep_cfg_index = ep_config - worker->ep_config.buffer;
+            goto out;
+        }
     }
 
     /* Create new configuration */

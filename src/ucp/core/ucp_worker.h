@@ -459,9 +459,6 @@ typedef struct ucp_worker {
 } ucp_worker_t;
 
 
-ucp_worker_cfg_index_t
-ucp_worker_find_ep_config(ucp_worker_h worker, const ucp_ep_config_key_t *key);
-
 ucs_status_t ucp_worker_get_ep_config(ucp_worker_h worker,
                                       const ucp_ep_config_key_t *key,
                                       unsigned ep_init_flags,

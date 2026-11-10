@@ -860,14 +860,12 @@ class test_ucp_proto_path_bw : public test_ucp_proto {
 protected:
     ucs_status_t update_bandwidth(double value)
     {
+        ucs::scoped_async_lock lock(worker()->async);
         auto ep = sender().ep();
-        UCS_ASYNC_BLOCK(&worker()->async);
         auto key = ucp_ep_config(ep)->key;
         key.lanes[0].path_bandwidth.dedicated = value;
         key.lanes[0].path_bandwidth.shared    = 0;
-        ucs_status_t status = ucp_ep_update_config(ep, &key);
-        UCS_ASYNC_UNBLOCK(&worker()->async);
-        return status;
+        return ucp_ep_update_config(ep, &key);
     }
 
     double bandwidth()
@@ -958,16 +956,13 @@ UCS_TEST_P(test_ucp_proto_path_bw, inflight_request_retains_config,
     mem_buffer recv_data(UCS_MBYTE, UCS_MEMORY_TYPE_HOST, 0);
     ucp_request_param_t param = {};
     param.op_attr_mask = UCP_OP_ATTR_FLAG_NO_IMM_CMPL;
-    void *recv_req = nullptr;
     void *send_req = ucp_tag_send_nbx(sender().ep(), send_data.ptr(),
                                       send_data.size(), 1, &param);
     ASSERT_TRUE(UCS_PTR_IS_PTR(send_req));
     auto cleanup = [&](void *request) {
-        if (recv_req == nullptr) {
-            recv_req = ucp_tag_recv_nbx(receiver().worker(), recv_data.ptr(),
-                                         recv_data.size(), 1, UINT64_MAX,
-                                         &param);
-        }
+        void *recv_req = ucp_tag_recv_nbx(receiver().worker(), recv_data.ptr(),
+                                          recv_data.size(), 1, UINT64_MAX,
+                                          &param);
         EXPECT_UCS_OK(request_wait(request));
         EXPECT_UCS_OK(request_wait(recv_req));
     };
@@ -1043,7 +1038,15 @@ UCS_TEST_P(test_ucp_proto_path_bw,
                 worker(), &key, UCP_EP_INIT_FLAG_INTERNAL, &unused));
         ASSERT_EQ(count + 1, ucs_array_length(&worker()->ep_config));
     }
-    EXPECT_EQ(UCS_ERR_EXCEEDS_LIMIT, update_bandwidth(value / 4));
+    const auto errors_before = m_errors.size();
+    {
+        scoped_log_handler log(wrap_errors_logger);
+        EXPECT_EQ(UCS_ERR_EXCEEDS_LIMIT, update_bandwidth(value / 4));
+    }
+    ASSERT_EQ(errors_before + 1, m_errors.size());
+    const auto limit = std::to_string(UCP_WORKER_MAX_EP_CONFIG);
+    EXPECT_EQ("too many ep configurations: " + limit + " (max: " + limit + ")",
+              m_errors.back());
     EXPECT_EQ(degraded, ep->cfg_index);
     EXPECT_DOUBLE_EQ(value / 2, bandwidth());
     ASSERT_UCS_OK(update_bandwidth(value));

@@ -1785,17 +1785,10 @@ ucp_ep_reconfig_key(ucp_ep_h ep, ucp_lane_map_t failed_lanes,
         goto out;
     }
 
-    if (ucs_array_length(&worker->ep_config) >= UCP_WORKER_MAX_EP_CONFIG) {
-        new_cfg_index = ucp_worker_find_ep_config(worker, &cfg_key);
-        if (new_cfg_index == UCP_WORKER_CFG_INDEX_NULL) {
-            return UCS_ERR_EXCEEDS_LIMIT;
-        }
-    } else {
-        status = ucp_worker_get_ep_config(worker, &cfg_key, ep_init_flags,
-                                          &new_cfg_index);
-        if (status != UCS_OK) {
-            return status;
-        }
+    status = ucp_worker_get_ep_config(worker, &cfg_key, ep_init_flags,
+                                      &new_cfg_index);
+    if (status != UCS_OK) {
+        return status;
     }
 
     ucp_ep_set_cfg_index(ep, new_cfg_index, 0);
