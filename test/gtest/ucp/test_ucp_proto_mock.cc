@@ -29,6 +29,8 @@ extern "C" {
 #endif
 }
 
+#include <cmath>
+#include <limits>
 #include <set>
 
 class mock_iface {
@@ -36,7 +38,7 @@ public:
     using iface_attr_func_t = std::function<void(uct_iface_attr&)>;
     using perf_attr_func_t  = std::function<void(uct_perf_attr_t&)>;
 
-    mock_iface() : m_tl(nullptr), m_real_md(nullptr)
+    mock_iface() : m_tl(nullptr), m_real_md(nullptr), m_mock_ep_events(false)
     {
         ucs_assert(m_self == nullptr);
         m_self = this;
@@ -130,6 +132,11 @@ public:
         }
 
         FAIL() << "Transport " << tl_name << " not found";
+    }
+
+    void mock_ep_events()
+    {
+        m_mock_ep_events = true;
     }
 
     static bool is_transport_registered(const std::string &tl_name)
@@ -319,6 +326,11 @@ private:
         m_self->m_iface_names[base] = params->mode.device.dev_name;
         m_self->m_mock.setup(&(*iface_p)->ops.iface_query, iface_query_mock);
         m_self->m_mock.setup(&base->internal_ops->iface_estimate_perf, perf_mock);
+        if (m_self->m_mock_ep_events) {
+            m_self->m_mock.setup(
+                    &base->internal_ops->iface_set_ep_event_handler,
+                    uct_base_iface_set_ep_event_handler);
+        }
         return UCS_OK;
     }
 
@@ -400,6 +412,7 @@ private:
     std::vector<ucs_sys_device_t>                       m_real_sys_devices;
     std::string                                         m_real_dev_name;
     uct_md_h                                            m_real_md;
+    bool                                                m_mock_ep_events;
 };
 
 mock_iface *mock_iface::m_self = nullptr;
@@ -4158,6 +4171,258 @@ UCS_TEST_P(test_ucp_proto_mock_keepalive_tiebreak,
 
 UCP_INSTANTIATE_TEST_CASE_TLS(test_ucp_proto_mock_keepalive_tiebreak, rcx,
                               "rc_x")
+
+
+class test_ucp_proto_mock_path_bw : public test_ucp_proto_mock {
+public:
+    ~test_ucp_proto_mock_path_bw()
+    {
+        m_self = nullptr;
+    }
+
+    void init() override
+    {
+        const auto &tls = GetParam().transports;
+        ucs_assert(m_self == nullptr);
+        m_self    = this;
+        m_tl_name = (std::find(tls.begin(), tls.end(), "cma") != tls.end()) ?
+                            "cma" : "rc_mlx5";
+        mock_transport(m_tl_name);
+        if (m_tl_name == "cma") {
+            mock_ep_events();
+        }
+
+        modify_config("IB_NUM_PATHS", "1", SETENV_IF_NOT_EXIST);
+        modify_config("MAX_RMA_RAILS", "2");
+        for (unsigned i = 0; i < 2; ++i) {
+            add_mock_iface("mock_" + std::to_string(i) + ":1",
+                    [](uct_iface_attr_t &attr) {
+                        attr.bandwidth = {0, 32.0 * UCS_GBYTE};
+                        attr.latency   = {500e-9, 0};
+                    });
+        }
+        test_ucp_proto_mock::init();
+        install_hooks(sender().ep());
+    }
+
+    void cleanup() override
+    {
+        m_hooks.cleanup();
+        test_ucp_proto_mock::cleanup();
+    }
+
+protected:
+    void install_hooks(ucp_ep_h ep)
+    {
+        for (ucp_lane_index_t lane = 0; lane < ucp_ep_num_lanes(ep); ++lane) {
+            const auto *rsc = ucp_ep_get_tl_rsc(ep, lane);
+            if (m_tl_name != rsc->tl_name) {
+                continue;
+            }
+
+            auto tl_ep = ucp_ep_get_lane(ep, lane);
+            auto iface = ucs_derived_of(tl_ep->iface, uct_base_iface_t);
+            m_lane_ids[tl_ep] = (std::string(rsc->dev_name) == "mock_1:1");
+            m_hooks.setup(&iface->internal_ops->ep_query, query_bandwidth);
+        }
+    }
+
+    uct_ep_h lane_ep(ucp_ep_h ep, unsigned lane_id) const
+    {
+        for (ucp_lane_index_t lane = 0; lane < ucp_ep_num_lanes(ep); ++lane) {
+            auto it = m_lane_ids.find(ucp_ep_get_lane(ep, lane));
+            if ((it != m_lane_ids.end()) && (it->second == lane_id)) {
+                return it->first;
+            }
+        }
+
+        return nullptr;
+    }
+
+    static void invoke_event(uct_ep_h tl_ep)
+    {
+        auto iface = ucs_derived_of(tl_ep->iface, uct_base_iface_t);
+
+        ASSERT_NE(nullptr, iface->ep_event_cb);
+        iface->ep_event_cb(iface->ep_event_arg, tl_ep,
+                           UCT_EP_EVENT_PATH_SPEED_CHANGE);
+    }
+
+    /* Provide a sample per lane and deliver the event from worker progress */
+    void set_samples(ucp_ep_h ep, double first, double second)
+    {
+        uct_ep_h tl_eps[] = {lane_ep(ep, 0), lane_ep(ep, 1)};
+
+        ASSERT_NE(nullptr, tl_eps[0]);
+        ASSERT_NE(nullptr, tl_eps[1]);
+        m_samples[tl_eps[0]] = first;
+        m_samples[tl_eps[1]] = second;
+        ucs_callbackq_add_oneshot(&ep->worker->uct->progress_q, this,
+                [](void *arg) -> unsigned {
+                    invoke_event(static_cast<uct_ep_h>(arg));
+                    return 1;
+                }, tl_eps[1]);
+        while (progress()) {
+        }
+    }
+
+    void fail_query(uct_ep_h tl_ep, ucs_status_t status)
+    {
+        m_query_status[tl_ep] = status;
+    }
+
+    static const ucp_ep_path_bw_t *path_bw(ucp_ep_h ep)
+    {
+        auto hash   = &ep->worker->ep_path_bw;
+        khiter_t it = kh_get(ucp_worker_ep_path_bw, hash, ep);
+
+        return (it == kh_end(hash)) ? nullptr : kh_value(hash, it);
+    }
+
+    /* Stored per-process sample of a lane, or NaN if there is none */
+    double sample(ucp_ep_h ep, unsigned lane_id) const
+    {
+        auto state            = path_bw(ep);
+        ucp_lane_index_t lane = ucp_ep_lookup_lane(ep, lane_ep(ep, lane_id));
+
+        if ((state == nullptr) || (lane == UCP_NULL_LANE) ||
+            !(state->valid & UCS_BIT(lane))) {
+            return std::numeric_limits<double>::quiet_NaN();
+        }
+
+        return state->bandwidth[lane];
+    }
+
+    std::map<uct_ep_h, unsigned> m_lane_ids;
+
+private:
+    static ucs_status_t query_bandwidth(uct_ep_h ep, uct_ep_attr_t *attr)
+    {
+        if (attr->field_mask & UCT_EP_ATTR_FIELD_BANDWIDTH) {
+            auto status = m_self->m_query_status.find(ep);
+            if (status != m_self->m_query_status.end()) {
+                return status->second;
+            }
+
+            /* Like the default path estimate, a shared NIC path rate */
+            auto it = m_self->m_samples.find(ep);
+            if (it != m_self->m_samples.end()) {
+                attr->bandwidth = {0, it->second};
+                return UCS_OK;
+            }
+        }
+
+        auto iface = ucs_derived_of(ep->iface, uct_base_iface_t);
+        return m_self->m_hooks.orig_func(&iface->internal_ops->ep_query,
+                                         ep, attr);
+    }
+
+    static test_ucp_proto_mock_path_bw *m_self;
+    ucs::mock m_hooks;
+    std::string m_tl_name;
+    std::map<uct_ep_h, double> m_samples;
+    std::map<uct_ep_h, ucs_status_t> m_query_status;
+};
+
+test_ucp_proto_mock_path_bw *test_ucp_proto_mock_path_bw::m_self = nullptr;
+
+UCS_TEST_P(test_ucp_proto_mock_path_bw, samples_follow_events)
+{
+    auto ep              = sender().ep();
+    auto worker          = sender().worker();
+    const auto ep_cfgs   = ucs_array_length(&worker->ep_config);
+    const auto rkey_cfgs = ucs_array_length(&worker->rkey_config);
+
+    EXPECT_EQ(nullptr, path_bw(ep));
+    for (unsigned i = 0; i < 512; ++i) {
+        const double first  = (16 + (i % 16)) * (UCS_GBYTE / 2.0);
+        const double second = (16 + (i / 32)) * (UCS_GBYTE / 2.0);
+        set_samples(ep, first, second);
+        ASSERT_EQ(first, sample(ep, 0)) << "update " << i;
+        ASSERT_EQ(second, sample(ep, 1)) << "update " << i;
+    }
+    EXPECT_EQ(ep_cfgs, ucs_array_length(&worker->ep_config));
+    EXPECT_EQ(rkey_cfgs, ucs_array_length(&worker->rkey_config));
+    EXPECT_TRUE(ep->flags & UCP_EP_FLAG_PATH_DEGRADED);
+    set_samples(ep, 32.0 * UCS_GBYTE, 32.0 * UCS_GBYTE);
+    EXPECT_FALSE(ep->flags & UCP_EP_FLAG_PATH_DEGRADED);
+}
+
+UCS_TEST_P(test_ucp_proto_mock_path_bw, samples_per_process, "NUM_PPN=8")
+{
+    /* Same per-process share as the static lane model */
+    set_samples(sender().ep(), 8.0 * UCS_GBYTE, 32.0 * UCS_GBYTE);
+    EXPECT_EQ(1.0 * UCS_GBYTE, sample(sender().ep(), 0));
+    EXPECT_EQ(4.0 * UCS_GBYTE, sample(sender().ep(), 1));
+}
+
+UCS_TEST_P(test_ucp_proto_mock_path_bw, unusable_samples)
+{
+    auto ep = sender().ep();
+
+    /* A rate below 1 B/s means stalled */
+    set_samples(ep, 8.0 * UCS_GBYTE, 0.5);
+    EXPECT_EQ(8.0 * UCS_GBYTE, sample(ep, 0));
+    EXPECT_EQ(0.0, sample(ep, 1));
+
+    /* Without a newer sample, the previous one is kept */
+    fail_query(lane_ep(ep, 0), UCS_ERR_TIMED_OUT);
+    set_samples(ep, 16.0 * UCS_GBYTE, 32.0 * UCS_GBYTE);
+    EXPECT_EQ(8.0 * UCS_GBYTE, sample(ep, 0));
+    EXPECT_EQ(32.0 * UCS_GBYTE, sample(ep, 1));
+    EXPECT_TRUE(ep->flags & UCP_EP_FLAG_PATH_DEGRADED);
+}
+
+UCS_TEST_P(test_ucp_proto_mock_path_bw, reconfig_resets_samples)
+{
+    auto ep     = sender().ep();
+    auto worker = sender().worker();
+
+    set_samples(ep, 8.0 * UCS_GBYTE, 32.0 * UCS_GBYTE);
+    /* The rkey configuration must exist before the port speed change, so the
+     * next PUT sees a new epoch and reconfigures the endpoint */
+    send_recv_rma(UCS_KBYTE, UCP_OP_ID_PUT);
+
+    /* A port speed change moves the endpoint to another configuration */
+    const auto cfg_index = ep->cfg_index;
+    auto lane            = ucp_ep_lookup_lane(ep, lane_ep(ep, 0));
+    ASSERT_NE(UCP_NULL_LANE, lane);
+    ++ucp_worker_iface(worker, ucp_ep_get_rsc_index(ep, lane))->port_speed;
+    ++worker->epoch;
+    fail_query(lane_ep(ep, 0), UCS_ERR_TIMED_OUT);
+    send_recv_rma(UCS_KBYTE, UCP_OP_ID_PUT);
+    ASSERT_NE(cfg_index, ep->cfg_index);
+
+    /* A sample of the previous configuration is not kept */
+    set_samples(ep, 8.0 * UCS_GBYTE, 16.0 * UCS_GBYTE);
+    EXPECT_TRUE(std::isnan(sample(ep, 0)));
+    EXPECT_EQ(16.0 * UCS_GBYTE, sample(ep, 1));
+    EXPECT_EQ(ep->cfg_index, path_bw(ep)->cfg_index);
+}
+
+UCS_TEST_P(test_ucp_proto_mock_path_bw, destroy_with_pending_update)
+{
+    auto worker = sender().worker();
+    auto ep     = sender().ep();
+
+    /* The update is deferred to progress; cleanup must cancel it */
+    invoke_event(lane_ep(ep, 0));
+    ASSERT_NE(nullptr, path_bw(ep));
+    {
+        ucs::scoped_async_lock lock(worker->async);
+        ucp_worker_ep_path_bw_cleanup(ep);
+    }
+    while (progress()) {
+    }
+    EXPECT_EQ(nullptr, path_bw(ep));
+
+    /* Leave an update pending for the endpoint destruction in cleanup */
+    invoke_event(lane_ep(ep, 0));
+    EXPECT_NE(nullptr, path_bw(ep));
+}
+
+UCP_INSTANTIATE_TEST_CASE_TLS(test_ucp_proto_mock_path_bw, rcx, "rc_x")
+UCP_INSTANTIATE_TEST_CASE_TLS(test_ucp_proto_mock_path_bw, mm_cma, "posix,cma")
 
 
 #if HAVE_DECL_IBV_EVENT_DEVICE_SPEED_CHANGE
