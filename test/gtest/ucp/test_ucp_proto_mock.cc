@@ -806,13 +806,18 @@ protected:
 
     ucp_worker_cfg_index_t
     send_recv_rma(size_t size, ucp_operation_id_t op_id,
-                  ucs_memory_type_t mem_type = UCS_MEMORY_TYPE_HOST)
+                  ucs_memory_type_t mem_type = UCS_MEMORY_TYPE_HOST,
+                  ucp_ep_h ep = nullptr)
     {
+        if (ep == nullptr) {
+            ep = sender().ep();
+        }
+
         mem_buffer recv_buf(size, mem_type);
         recv_buf.pattern_fill(1);
         auto memh        = mem_map(receiver(), recv_buf);
         auto rkey_packed = rkey_pack(receiver(), memh);
-        auto rkey        = rkey_unpack(sender().ep(), rkey_packed);
+        auto rkey        = rkey_unpack(ep, rkey_packed);
 
         mem_buffer send_buf(size, mem_type);
         send_buf.pattern_fill(2);
@@ -821,10 +826,10 @@ protected:
         req_param.op_attr_mask = 0;
         ucs_status_ptr_t sptr;
         if (op_id == UCP_OP_ID_PUT) {
-            sptr = ucp_put_nbx(sender().ep(), send_buf.ptr(), size,
+            sptr = ucp_put_nbx(ep, send_buf.ptr(), size,
                                (uint64_t)recv_buf.ptr(), rkey, &req_param);
         } else if (op_id == UCP_OP_ID_GET) {
-            sptr = ucp_get_nbx(sender().ep(), send_buf.ptr(), size,
+            sptr = ucp_get_nbx(ep, send_buf.ptr(), size,
                                (uint64_t)recv_buf.ptr(), rkey, &req_param);
         } else {
             sptr = nullptr;
@@ -3960,11 +3965,15 @@ public:
 
         modify_config("IB_NUM_PATHS", "1", SETENV_IF_NOT_EXIST);
         modify_config("MAX_RMA_RAILS", "2");
+        modify_config("ZCOPY_THRESH", "0");
+        modify_config("MIN_RMA_CHUNK_SIZE", "1k");
+        const size_t max_zcopy = this->max_zcopy();
         for (unsigned i = 0; i < 2; ++i) {
             add_mock_iface("mock_" + std::to_string(i) + ":1",
-                    [](uct_iface_attr_t &attr) {
+                    [max_zcopy](uct_iface_attr_t &attr) {
                         attr.bandwidth = {0, 32.0 * UCS_GBYTE};
                         attr.latency   = {500e-9, 0};
+                        attr.cap.put.max_zcopy = max_zcopy;
                     });
         }
         test_ucp_proto_mock::init();
@@ -3978,6 +3987,11 @@ public:
     }
 
 protected:
+    virtual size_t max_zcopy() const
+    {
+        return UCS_MBYTE;
+    }
+
     void install_hooks(ucp_ep_h ep)
     {
         for (ucp_lane_index_t lane = 0; lane < ucp_ep_num_lanes(ep); ++lane) {
@@ -3990,6 +4004,12 @@ protected:
             auto iface = ucs_derived_of(tl_ep->iface, uct_base_iface_t);
             m_lane_ids[tl_ep] = (std::string(rsc->dev_name) == "mock_1:1");
             m_hooks.setup(&iface->internal_ops->ep_query, query_bandwidth);
+            if (iface->internal_ops->ep_put_sgl_zcopy != nullptr) {
+                m_hooks.setup(&iface->internal_ops->ep_put_sgl_zcopy,
+                              count_put_sgl);
+            }
+
+            m_hooks.setup(&tl_ep->iface->ops.ep_put_zcopy, count_put_zcopy);
         }
     }
 
@@ -4059,9 +4079,131 @@ protected:
         return state->bandwidth[lane];
     }
 
+    void reset_counters()
+    {
+        m_bytes[0]     = m_bytes[1]     = 0;
+        m_fragments[0] = m_fragments[1] = 0;
+    }
+
+    void check_put(ucp_ep_h ep, double first, double second,
+                   size_t size = 40 * UCS_KBYTE, double tolerance = 2)
+    {
+        reset_counters();
+        send_recv_rma(size, UCP_OP_ID_PUT, UCS_MEMORY_TYPE_HOST, ep);
+        EXPECT_EQ(size, m_bytes[0] + m_bytes[1]);
+        EXPECT_NEAR(size * first / (first + second), m_bytes[0], tolerance);
+    }
+
+    void put_sgl(ucp_ep_h ep, size_t num_elems, size_t elem_size)
+    {
+        std::vector<std::unique_ptr<mem_buffer>> src, dst;
+        std::vector<ucs::handle<ucp_mem_h, ucp_context_h>> memhs;
+        std::vector<ucs::handle<ucp_rkey_h>> rkeys;
+        std::vector<ucp_rkey_h> rkey_array;
+        std::vector<void*> buffers;
+        std::vector<uint64_t> remote_addrs;
+        std::vector<size_t> lengths(num_elems, elem_size);
+
+        for (size_t i = 0; i < num_elems; ++i) {
+            src.emplace_back(new mem_buffer(elem_size, UCS_MEMORY_TYPE_HOST));
+            dst.emplace_back(new mem_buffer(elem_size, UCS_MEMORY_TYPE_HOST));
+            src.back()->pattern_fill(i + 2);
+            dst.back()->pattern_fill(1);
+            memhs.push_back(mem_map(receiver(), *dst.back()));
+            auto rkey_packed = rkey_pack(receiver(), memhs.back());
+            rkeys.push_back(rkey_unpack(ep, rkey_packed));
+            rkey_array.push_back(rkeys.back());
+            buffers.push_back(src.back()->ptr());
+            remote_addrs.push_back((uint64_t)dst.back()->ptr());
+        }
+
+        ucp_dt_local_sgl_t local   = {};
+        local.field_mask           = UCP_DT_LOCAL_SGL_FIELD_BUFFERS |
+                                     UCP_DT_LOCAL_SGL_FIELD_LENGTHS;
+        local.buffers              = buffers.data();
+        local.lengths              = lengths.data();
+        ucp_dt_remote_sgl_t remote = {};
+        remote.field_mask          = UCP_DT_REMOTE_SGL_FIELD_REMOTE_ADDRS |
+                                     UCP_DT_REMOTE_SGL_FIELD_LENGTHS |
+                                     UCP_DT_REMOTE_SGL_FIELD_RKEYS;
+        remote.remote_addrs        = remote_addrs.data();
+        remote.lengths             = lengths.data();
+        remote.rkeys               = rkey_array.data();
+        ucp_request_param_t param  = {};
+        param.op_attr_mask         = UCP_OP_ATTR_FIELD_DATATYPE |
+                                     UCP_OP_ATTR_FIELD_REMOTE_DATATYPE |
+                                     UCP_OP_ATTR_FIELD_REMOTE |
+                                     UCP_OP_ATTR_FIELD_REMOTE_COUNT;
+        param.datatype             = ucp_dt_make_sgl();
+        param.remote_datatype      = ucp_dt_make_sgl();
+        param.remote               = &remote;
+        param.remote_count         = num_elems;
+
+        reset_counters();
+        auto sptr = ucp_put_nbx(ep, &local, num_elems, UCP_REMOTE_ADDR_INVALID,
+                                UCP_RKEY_INVALID, &param);
+        EXPECT_EQ(UCS_OK, request_wait(sptr));
+        for (size_t i = 0; i < num_elems; ++i) {
+            dst[i]->pattern_check(i + 2);
+        }
+        EXPECT_EQ(num_elems * elem_size, m_bytes[0] + m_bytes[1]);
+    }
+
     std::map<uct_ep_h, unsigned> m_lane_ids;
+    size_t m_bytes[2];
+    unsigned m_fragments[2];
 
 private:
+    static void count_bytes(uct_ep_h ep, size_t bytes)
+    {
+        auto it = m_self->m_lane_ids.find(ep);
+        if (it != m_self->m_lane_ids.end()) {
+            m_self->m_bytes[it->second] += bytes;
+            ++m_self->m_fragments[it->second];
+        }
+    }
+
+    static ucs_status_t count_put_zcopy(uct_ep_h ep, const uct_iov_t *iov,
+                                        size_t count, uint64_t remote_addr,
+                                        uct_rkey_t rkey, uct_completion_t *comp)
+    {
+        auto status = m_self->m_hooks.orig_func(&ep->iface->ops.ep_put_zcopy,
+                                               ep, iov, count, remote_addr,
+                                               rkey, comp);
+        size_t length = 0;
+
+        if (!UCS_STATUS_IS_ERR(status)) {
+            for (size_t i = 0; i < count; ++i) {
+                length += iov[i].length * iov[i].count;
+            }
+            count_bytes(ep, length);
+        }
+
+        return status;
+    }
+
+    static ucs_status_t
+    count_put_sgl(uct_ep_h ep, void * const *buffers, const size_t *lengths,
+                  uct_mem_h const *memhs, const uint64_t *remote_addrs,
+                  uct_rkey_t const *rkeys, const size_t *counts,
+                  const size_t *strides, size_t count, uct_completion_t *comp)
+    {
+        auto iface  = ucs_derived_of(ep->iface, uct_base_iface_t);
+        auto status = m_self->m_hooks.orig_func(
+                &iface->internal_ops->ep_put_sgl_zcopy, ep, buffers, lengths,
+                memhs, remote_addrs, rkeys, counts, strides, count, comp);
+        size_t length = 0;
+
+        if (!UCS_STATUS_IS_ERR(status)) {
+            for (size_t i = 0; i < count; ++i) {
+                length += lengths[i] * ((counts == nullptr) ? 1 : counts[i]);
+            }
+            count_bytes(ep, length);
+        }
+
+        return status;
+    }
+
     static ucs_status_t query_bandwidth(uct_ep_h ep, uct_ep_attr_t *attr)
     {
         if (attr->field_mask & UCT_EP_ATTR_FIELD_BANDWIDTH) {
@@ -4187,8 +4329,138 @@ UCS_TEST_P(test_ucp_proto_mock_path_bw, destroy_with_pending_update)
     EXPECT_NE(nullptr, path_bw(ep));
 }
 
+UCS_TEST_P(test_ucp_proto_mock_path_bw, put_split_and_recovery)
+{
+    auto ep = sender().ep();
+
+    check_put(ep, 1, 1);
+    for (unsigned i = 0; i < 64; ++i) {
+        const double first  = (16 + ((i + 1) % 16)) * (1 + ((i / 16) % 2)) *
+                              (UCS_GBYTE / 4.0);
+        const double second = (16 + (i / 4)) * (UCS_GBYTE / 2.0);
+        set_samples(ep, first, second);
+        check_put(ep, first, second);
+    }
+
+    /* The last samples were asymmetric, so recovery must be applied */
+    set_samples(ep, 32.0 * UCS_GBYTE, 32.0 * UCS_GBYTE);
+    check_put(ep, 1, 1);
+}
+
+UCS_TEST_P(test_ucp_proto_mock_path_bw, put_endpoint_isolation)
+{
+    sender().connect(&receiver(), get_ep_params(), 1);
+    flush_workers();
+    auto ep      = sender().ep();
+    auto sibling = sender().ep(0, 1);
+    install_hooks(sibling);
+    set_samples(ep, 8.0 * UCS_GBYTE, 32.0 * UCS_GBYTE);
+    check_put(sibling, 1, 1);
+    set_samples(sibling, 32.0 * UCS_GBYTE, 8.0 * UCS_GBYTE);
+    check_put(ep, 1, 4);
+    check_put(sibling, 4, 1);
+}
+
+UCS_TEST_P(test_ucp_proto_mock_path_bw, large_put)
+{
+    /* The last round is partial, so allow one fragment of the slow lane */
+    set_samples(sender().ep(), 8.0 * UCS_GBYTE, 32.0 * UCS_GBYTE);
+    check_put(sender().ep(), 1, 4, 10 * UCS_MBYTE + 100 * UCS_KBYTE,
+              UCS_MBYTE / 4);
+    EXPECT_GT(m_fragments[0], 1u);
+    EXPECT_GT(m_fragments[1], 1u);
+}
+
+UCS_TEST_P(test_ucp_proto_mock_path_bw, put_zero_sample_skips_lane)
+{
+    set_samples(sender().ep(), 0, 32.0 * UCS_GBYTE);
+    check_put(sender().ep(), 0, 1, 40 * UCS_KBYTE, 0);
+    check_put(sender().ep(), 0, 1, 10 * UCS_MBYTE, 0);
+    EXPECT_EQ(0u, m_fragments[0]);
+}
+
+UCS_TEST_P(test_ucp_proto_mock_path_bw, put_slow_lane_many_rounds)
+{
+    /* The share is above the minimal fragment, but in each of the rounds the
+     * lane would send about one byte */
+    set_samples(sender().ep(), 40.0 * UCS_KBYTE, 32.0 * UCS_GBYTE);
+    check_put(sender().ep(), 0, 1, 64 * UCS_MBYTE, 0);
+}
+
+UCS_TEST_P(test_ucp_proto_mock_path_bw, put_shared_sample_per_process,
+           "NUM_PPN=8")
+{
+    /* Samples and the lane model are both per-process shares */
+    set_samples(sender().ep(), 8.0 * UCS_GBYTE, 32.0 * UCS_GBYTE);
+    check_put(sender().ep(), 1, 4);
+}
+
+UCS_TEST_P(test_ucp_proto_mock_path_bw, put_reconfig_refreshes_samples)
+{
+    auto ep     = sender().ep();
+    auto worker = sender().worker();
+
+    set_samples(ep, 8.0 * UCS_GBYTE, 32.0 * UCS_GBYTE);
+    check_put(ep, 1, 4);
+
+    /* A port speed change moves the endpoint to another configuration */
+    auto lane = ucp_ep_lookup_lane(ep, lane_ep(ep, 0));
+    ASSERT_NE(UCP_NULL_LANE, lane);
+    ++ucp_worker_iface(worker, ucp_ep_get_rsc_index(ep, lane))->port_speed;
+    ++worker->epoch;
+    check_put(ep, 1, 1);
+
+    /* The lanes kept their samples, which are read again without an event */
+    while (progress()) {
+    }
+    check_put(ep, 1, 4);
+}
+
+UCS_TEST_P(test_ucp_proto_mock_path_bw, put_sgl)
+{
+    auto ep = sender().ep();
+
+    set_samples(ep, 8.0 * UCS_GBYTE, 32.0 * UCS_GBYTE);
+    put_sgl(ep, 4, UCS_MBYTE);
+    /* Elements are split per lane payload, so only the share is bounded */
+    EXPECT_GT(m_bytes[0], 0u);
+    EXPECT_LE(m_bytes[0], UCS_MBYTE + (UCS_MBYTE / 4));
+
+    set_samples(ep, 0, 32.0 * UCS_GBYTE);
+    put_sgl(ep, 4, UCS_MBYTE);
+    EXPECT_EQ(0u, m_bytes[0]);
+}
+
 UCP_INSTANTIATE_TEST_CASE_TLS(test_ucp_proto_mock_path_bw, rcx, "rc_x")
 UCP_INSTANTIATE_TEST_CASE_TLS(test_ucp_proto_mock_path_bw, mm_cma, "posix,cma")
+
+
+class test_ucp_proto_mock_path_bw_large_frag :
+        public test_ucp_proto_mock_path_bw {
+protected:
+    size_t max_zcopy() const override
+    {
+        /* Like RC, where one fragment can carry a whole large message */
+        return UCS_GBYTE;
+    }
+};
+
+UCS_TEST_P(test_ucp_proto_mock_path_bw_large_frag, put_stalled_lane)
+{
+    /* A share below the minimal fragment would hold every request */
+    set_samples(sender().ep(), 25.0 * UCS_KBYTE, 32.0 * UCS_GBYTE);
+    check_put(sender().ep(), 0, 1, UCS_MBYTE, 0);
+    check_put(sender().ep(), 0, 1, 64 * UCS_MBYTE, 0);
+
+    /* A slow lane keeps a share which it can carry */
+    set_samples(sender().ep(), 32.0 * UCS_MBYTE, 32.0 * UCS_GBYTE);
+    check_put(sender().ep(), 1, 1024, 64 * UCS_MBYTE, UCS_KBYTE);
+}
+
+UCP_INSTANTIATE_TEST_CASE_TLS(test_ucp_proto_mock_path_bw_large_frag, rcx,
+                              "rc_x")
+UCP_INSTANTIATE_TEST_CASE_TLS(test_ucp_proto_mock_path_bw_large_frag, mm_cma,
+                              "posix,cma")
 
 
 #if HAVE_DECL_IBV_EVENT_DEVICE_SPEED_CHANGE
