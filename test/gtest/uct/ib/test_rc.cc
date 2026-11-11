@@ -2006,6 +2006,297 @@ UCS_TEST_SKIP_COND_P(test_rc_mlx5_token_query, put_sgl_zcopy,
 
 _UCT_INSTANTIATE_TEST_CASE(test_rc_mlx5_token_query, rc_mlx5)
 
+/*
+ * Token failover keeps the outstanding operations of a failed endpoint until
+ * uct_ep_outstanding_purge() or endpoint destroy, while the error completions
+ * return the CQ credits of their WQEs. The interface has one send op per TX CQ
+ * credit, so the kept operations must not leave a TX CQ credit without a free
+ * send op.
+ */
+class test_rc_mlx5_ft_send_ops : public test_rc {
+public:
+    void init() override
+    {
+        uct_test::init();
+
+        /* One endpoint can fill the TX CQ */
+        set_config("RC_TX_QUEUE_LEN=" + ucs::to_string(TX_LEN));
+        set_config("RC_TX_CQ_LEN=" + ucs::to_string(TX_LEN));
+        set_config("RC_FC_ENABLE?=n");
+
+        m_e1 = uct_test::create_entity(0, err_handler);
+        m_entities.push_back(m_e1);
+
+        check_skip_test();
+
+        if (!m_e1->check_caps(UCT_IFACE_FLAG_ERRHANDLE_PEER_FAILURE |
+                              UCT_IFACE_FLAG_PENDING) ||
+            !m_e1->check_caps_v2(UCT_IFACE_FLAG_V2_QUERY_TOKEN)) {
+            UCS_TEST_SKIP_R("token failover is not supported");
+        }
+
+        m_e2 = uct_test::create_entity(0, err_handler);
+        m_entities.push_back(m_e2);
+
+        m_e1->connect(FAILED_EP, *m_e2, FAILED_EP);
+        m_e1->connect(LIVE_EP, *m_e2, LIVE_EP);
+        flush();
+    }
+
+protected:
+    static constexpr unsigned TX_LEN       = 64;
+    static constexpr unsigned NUM_LIVE_OPS = TX_LEN;
+    static constexpr unsigned FAILED_EP    = 0;
+    static constexpr unsigned LIVE_EP      = 1;
+
+    /* How the failed endpoint releases its operations */
+    typedef enum {
+        RELEASE_PURGE,           /* Purge, nothing delivered */
+        RELEASE_PURGE_DELIVERED, /* Purge, the RX token covers every WQE */
+        RELEASE_DESTROY          /* Endpoint destroy without a purge */
+    } release_t;
+
+    struct pending_req {
+        uct_pending_req_t        uct;
+        test_rc_mlx5_ft_send_ops *self;
+        unsigned                 num_posted;
+    };
+
+    static ucs_status_t err_handler(void *arg, uct_ep_h ep, ucs_status_t)
+    {
+        test_rc_mlx5_ft_send_ops *self =
+                static_cast<test_rc_mlx5_ft_send_ops*>(arg);
+
+        EXPECT_EQ(self->m_e1->ep(FAILED_EP), ep);
+        ++self->m_err_count;
+        /* Keep the outstanding operations for the purge */
+        return UCS_INPROGRESS;
+    }
+
+    static void purge_cb(const uct_ep_op_info_t *info, void *arg)
+    {
+        uct_invoke_completion(info->comp, UCS_ERR_CANCELED);
+        ++(*static_cast<unsigned*>(arg));
+    }
+
+    ucs_status_t post_op(unsigned ep_index)
+    {
+        uct_ep_h ep = m_e1->ep(ep_index);
+        ucs_status_t status;
+
+        ++m_comp.count;
+        if (m_put) {
+            status = uct_ep_put_zcopy(ep, m_iov, m_iovcnt, m_remote_addr,
+                                      m_rkey, &m_comp);
+        } else {
+            status = uct_ep_get_zcopy(ep, m_iov, m_iovcnt, m_remote_addr,
+                                      m_rkey, &m_comp);
+        }
+
+        if (status != UCS_INPROGRESS) {
+            --m_comp.count;
+        }
+
+        return status;
+    }
+
+    /* Posts all operations like a UCP request: stays pending while partly
+     * posted */
+    static ucs_status_t pending_cb(uct_pending_req_t *uct_req)
+    {
+        pending_req *req    = ucs_container_of(uct_req, pending_req, uct);
+        unsigned num_posted = 0;
+        ucs_status_t status;
+
+        while (req->num_posted < NUM_LIVE_OPS) {
+            status = req->self->post_op(LIVE_EP);
+            if (status == UCS_ERR_NO_RESOURCE) {
+                return (num_posted > 0) ? UCS_INPROGRESS : UCS_ERR_NO_RESOURCE;
+            }
+
+            EXPECT_EQ(UCS_INPROGRESS, status) << ucs_status_string(status);
+            ++req->num_posted;
+            ++num_posted;
+        }
+
+        return UCS_OK;
+    }
+
+    int num_free_send_ops()
+    {
+        int count = 0;
+        uct_rc_iface_send_op_t *op;
+
+        for (op = rc_iface(m_e1)->tx.free_ops; op != NULL; op = op->next) {
+            ++count;
+        }
+
+        return count;
+    }
+
+    void fail_endpoint()
+    {
+        uct_rc_iface_t *iface = rc_iface(m_e1);
+        uct_rc_mlx5_base_ep_t *ep = ucs_derived_of(m_e1->ep(FAILED_EP),
+                                                   uct_rc_mlx5_base_ep_t);
+        uct_ep_invalidate_params_t params = {};
+        ucs_status_t status;
+
+        /* Fill the TX CQ with operations that fail */
+        ASSERT_UCS_OK(uct_ep_invalidate(m_e1->ep(FAILED_EP), &params));
+        while ((status = post_op(FAILED_EP)) == UCS_INPROGRESS) {
+            ++m_num_failed;
+        }
+
+        ASSERT_EQ(UCS_ERR_NO_RESOURCE, status);
+        ASSERT_EQ(0, iface->tx.cq_available);
+
+        /* Wait for the error completions of all the operations */
+        wait_for_flag(&m_err_count);
+        ASSERT_EQ(1u, m_err_count);
+        wait_for_value(&ep->tx.wq.hw_ci, ep->tx.wq.prev_sw_pi, true);
+        ASSERT_EQ(ep->tx.wq.prev_sw_pi, ep->tx.wq.hw_ci);
+
+        /* The operations stay outstanding for the purge */
+        EXPECT_EQ(static_cast<int>(m_num_failed), m_comp.count);
+        ASSERT_GE(num_free_send_ops(), iface->tx.cq_available)
+                << "TX CQ credits without a free send op";
+    }
+
+    void submit_pending(pending_req *req)
+    {
+        ucs_status_t status;
+
+        req->uct.func = pending_cb;
+        while ((status = uct_ep_pending_add(m_e1->ep(LIVE_EP), &req->uct,
+                                            0)) == UCS_ERR_BUSY) {
+            if (pending_cb(&req->uct) == UCS_OK) {
+                return;
+            }
+        }
+
+        ASSERT_UCS_OK(status);
+    }
+
+    void purge_failed_ep(bool delivered)
+    {
+        uct_rc_mlx5_base_ep_t *ep = ucs_derived_of(m_e1->ep(FAILED_EP),
+                                                   uct_rc_mlx5_base_ep_t);
+        uct_ep_outstanding_purge_params_t params = {};
+        uct_rc_mlx5_rx_token_t rx_token;
+        unsigned num_purged = 0;
+
+        params.field_mask = UCT_EP_OUTSTANDING_FIELD_CB |
+                            UCT_EP_OUTSTANDING_FIELD_ARG;
+        params.cb         = purge_cb;
+        params.arg        = &num_purged;
+        if (delivered) {
+            /* The peer received every packet of the failed endpoint */
+            rx_token = htobe32(uct_ib_mlx5_txwq_get_next_wqe_psn(&ep->tx.wq));
+            params.field_mask |= UCT_EP_OUTSTANDING_FIELD_RX_TOKEN;
+            params.rx_token    = &rx_token;
+        }
+
+        ASSERT_UCS_OK(uct_ep_outstanding_purge(m_e1->ep(FAILED_EP), &params));
+
+        /* The purge reports only the operations that were not delivered */
+        EXPECT_EQ(delivered ? 0u : m_num_failed, num_purged);
+    }
+
+    /* Releases the operations of the failed endpoint, then checks that all
+     * the send ops and TX CQ credits are back */
+    void test_release_send_ops(bool put, release_t release)
+    {
+        uct_rc_iface_t *iface         = rc_iface(m_e1);
+        const uct_iface_attr_t &attr  = m_e1->iface_attr();
+        const size_t min_zcopy        = put ? attr.cap.put.min_zcopy :
+                                              attr.cap.get.min_zcopy;
+        const size_t size             = ucs_max(min_zcopy, sizeof(uint64_t));
+        mapped_buffer sendbuf(size, 0x1ul, *m_e1);
+        mapped_buffer recvbuf(size, 0x2ul, *m_e2);
+        pending_req req = {{}, this, 0};
+
+        UCS_TEST_GET_BUFFER_IOV(iov, iovcnt, sendbuf.ptr(), sendbuf.length(),
+                                sendbuf.memh(), 1);
+        m_put         = put;
+        m_iov         = iov;
+        m_iovcnt      = iovcnt;
+        m_remote_addr = recvbuf.addr();
+        m_rkey        = recvbuf.rkey();
+
+        ASSERT_NO_FATAL_FAILURE(fail_endpoint());
+
+        /* The live endpoint posts more operations than TX CQ credits */
+        ASSERT_NO_FATAL_FAILURE(submit_pending(&req));
+
+        switch (release) {
+        case RELEASE_PURGE:
+        case RELEASE_PURGE_DELIVERED:
+            ASSERT_NO_FATAL_FAILURE(
+                    purge_failed_ep(release == RELEASE_PURGE_DELIVERED));
+            break;
+        case RELEASE_DESTROY: {
+            scoped_log_handler hide_warn(hide_warns_logger);
+            m_e1->destroy_ep(FAILED_EP);
+            break;
+        }
+        }
+
+        /* The live endpoint posts and completes all its operations */
+        wait_for_value(&req.num_posted, NUM_LIVE_OPS, true);
+        EXPECT_EQ(NUM_LIVE_OPS, req.num_posted);
+        wait_for_value(&m_comp.count, 0, true);
+        EXPECT_EQ(0, m_comp.count);
+        if (release == RELEASE_PURGE_DELIVERED) {
+            EXPECT_EQ(UCS_OK, m_comp.status);
+        }
+
+        EXPECT_EQ(static_cast<int>(iface->config.tx_cq_len),
+                  num_free_send_ops());
+        EXPECT_EQ(static_cast<int>(uct_rc_iface_tx_cq_capacity(
+                          iface->config.tx_cq_len)),
+                  iface->tx.cq_available);
+    }
+
+    static void completion_cb(uct_completion_t*)
+    {
+    }
+
+    unsigned         m_err_count  = 0;
+    unsigned         m_num_failed = 0;
+    uct_completion_t m_comp       = {completion_cb, 0, UCS_OK};
+    bool             m_put        = false;
+    const uct_iov_t  *m_iov       = NULL;
+    size_t           m_iovcnt     = 0;
+    uint64_t         m_remote_addr;
+    uct_rkey_t       m_rkey;
+};
+
+constexpr unsigned test_rc_mlx5_ft_send_ops::TX_LEN;
+constexpr unsigned test_rc_mlx5_ft_send_ops::NUM_LIVE_OPS;
+constexpr unsigned test_rc_mlx5_ft_send_ops::FAILED_EP;
+constexpr unsigned test_rc_mlx5_ft_send_ops::LIVE_EP;
+
+UCS_TEST_SKIP_COND_P(test_rc_mlx5_ft_send_ops, get_zcopy_purge,
+                     !check_caps(UCT_IFACE_FLAG_GET_ZCOPY))
+{
+    test_release_send_ops(false, RELEASE_PURGE);
+}
+
+UCS_TEST_SKIP_COND_P(test_rc_mlx5_ft_send_ops, get_zcopy_destroy,
+                     !check_caps(UCT_IFACE_FLAG_GET_ZCOPY))
+{
+    test_release_send_ops(false, RELEASE_DESTROY);
+}
+
+UCS_TEST_SKIP_COND_P(test_rc_mlx5_ft_send_ops, put_zcopy_purge_delivered,
+                     !check_caps(UCT_IFACE_FLAG_PUT_ZCOPY))
+{
+    test_release_send_ops(true, RELEASE_PURGE_DELIVERED);
+}
+
+_UCT_INSTANTIATE_TEST_CASE(test_rc_mlx5_ft_send_ops, rc_mlx5)
+
 class test_rc_srq : public test_rc {
 public:
     test_rc_srq() : m_buf8b(NULL), m_buf8k(NULL)
