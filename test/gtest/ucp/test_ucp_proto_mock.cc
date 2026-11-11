@@ -10,6 +10,7 @@ extern "C" {
 #include <ucp/core/ucp_ep.inl>
 #include <ucp/core/ucp_gpu_nic_assignment.h>
 #include <ucp/core/ucp_mm.h>
+#include <ucp/core/ucp_request.inl>
 #include <ucp/core/ucp_types.h>
 #include <ucp/core/ucp_worker.inl>
 #include <ucp/proto/proto.h>
@@ -3953,6 +3954,7 @@ public:
     void init() override
     {
         const auto &tls = GetParam().transports;
+
         ucs_assert(m_self == nullptr);
         m_self = this;
         m_tl_name = (std::find(tls.begin(), tls.end(), "cma") != tls.end()) ?
@@ -3963,18 +3965,30 @@ public:
         }
 
         modify_config("IB_NUM_PATHS", "1", SETENV_IF_NOT_EXIST);
-        modify_config("MAX_RMA_RAILS", "2");
+        modify_config("MAX_RMA_RAILS", std::to_string(m_num_ifaces));
         modify_config("ZCOPY_THRESH", "0");
         modify_config("MIN_RMA_CHUNK_SIZE", "1k");
         modify_config("MULTI_LANE_MAX_RATIO", "128");
-        for (unsigned i = 0; i < 2; ++i) {
-            add_mock_iface("mock_" + std::to_string(i) + ":1",
-                    [](uct_iface_attr_t &attr) {
-                        attr.bandwidth = {0, 32.0 * UCS_GBYTE};
-                        attr.latency   = {500e-9, 0};
-                        attr.cap.put.max_zcopy = UCS_MBYTE;
-                    });
+        for (unsigned i = 0; i < m_num_ifaces; ++i) {
+            const auto name = "mock_" + std::to_string(i) + ":1";
+            m_get_caps[name] = 32.0 * UCS_GBYTE;
+            add_mock_iface(name, [this](uct_iface_attr_t &attr) {
+                attr.bandwidth = {0, 32.0 * UCS_GBYTE};
+                attr.latency   = {500e-9, 0};
+                attr.cap.put.max_zcopy = UCS_MBYTE;
+                attr.cap.get.min_zcopy = std::max(attr.cap.get.min_zcopy,
+                                                  m_get_min_frag);
+                attr.cap.get.max_zcopy = UCS_MBYTE;
+            }, [this, name](uct_perf_attr_t &attr) {
+                if ((attr.field_mask & UCT_PERF_ATTR_FIELD_OPERATION) &&
+                    ((attr.operation == UCT_EP_OP_GET_BCOPY) ||
+                     (attr.operation == UCT_EP_OP_GET_ZCOPY))) {
+                    attr.bandwidth      = {0, m_get_caps.at(name)};
+                    attr.path_bandwidth = attr.bandwidth;
+                }
+            });
         }
+
         test_ucp_proto_mock::init();
         install_hooks(sender().ep());
     }
@@ -3996,48 +4010,99 @@ protected:
 
             auto tl_ep = ucp_ep_get_lane(ep, lane);
             auto iface = ucs_derived_of(tl_ep->iface, uct_base_iface_t);
-            m_lane_ids[tl_ep] = (std::string(rsc->dev_name) == "mock_1:1");
+            m_lane_ids[tl_ep] = std::stoul(rsc->dev_name + 5);
             m_hooks.setup(&iface->internal_ops->ep_query, query_bandwidth);
-            m_hooks.setup(&tl_ep->iface->ops.ep_put_zcopy, count_put_bytes);
+            if (m_op == UCP_OP_ID_PUT) {
+                m_hooks.setup(&tl_ep->iface->ops.ep_put_zcopy, count_bytes);
+            } else {
+                m_hooks.setup(&tl_ep->iface->ops.ep_get_zcopy, count_bytes);
+                m_hooks.setup(&tl_ep->iface->ops.ep_pending_add, pending_add);
+            }
         }
     }
 
     void set_samples(ucp_ep_h ep, double first, double second)
     {
-        uct_ep_h trigger = nullptr;
-        for (ucp_lane_index_t lane = 0; lane < ucp_ep_num_lanes(ep); ++lane) {
-            auto tl_ep = ucp_ep_get_lane(ep, lane);
-            auto it = m_lane_ids.find(tl_ep);
-            if (it != m_lane_ids.end()) {
-                m_samples[tl_ep] = (it->second == 0) ? first : second;
-                trigger = tl_ep;
-            }
-        }
-        ASSERT_NE(nullptr, trigger);
+        set_samples(ep, std::vector<double>{first, second});
+    }
+
+    void set_samples(ucp_ep_h ep, const std::vector<double> &rates)
+    {
+        struct sample_update {
+            test_ucp_proto_mock_path_bw *self;
+            ucp_ep_h ep;
+            const std::vector<double> &rates;
+        } arg = {this, ep, rates};
+
         ucs_callbackq_add_oneshot(&ep->worker->uct->progress_q, this,
                 [](void *arg) -> unsigned {
-                    auto ep = static_cast<uct_ep_h>(arg);
-                    uct_iface_invoke_ep_event(
-                            ucs_derived_of(ep->iface, uct_base_iface_t), ep,
-                            UCT_EP_EVENT_PATH_SPEED_CHANGE);
+                    auto update = static_cast<sample_update*>(arg);
+                    update->self->publish_samples(update->ep, update->rates);
                     return 1;
-                }, trigger);
+                }, &arg);
         while (progress()) {
         }
     }
 
-    void check_put(ucp_ep_h ep, double first, double second,
-                   size_t size = 40 * UCS_KBYTE)
+    void publish_samples(ucp_ep_h ep, const std::vector<double> &rates)
     {
-        m_bytes[0] = m_bytes[1] = 0;
-        m_fragments[0] = m_fragments[1] = 0;
-        send_recv_rma(size, UCP_OP_ID_PUT, UCS_MEMORY_TYPE_HOST, ep);
-        EXPECT_EQ(size, m_bytes[0] + m_bytes[1]);
-        EXPECT_NEAR(size * first / (first + second), m_bytes[0], 2);
+        uct_ep_h trigger = nullptr;
+
+        ASSERT_EQ(m_num_ifaces, rates.size());
+        for (ucp_lane_index_t lane = 0; lane < ucp_ep_num_lanes(ep); ++lane) {
+            auto tl_ep = ucp_ep_get_lane(ep, lane);
+            auto it = m_lane_ids.find(tl_ep);
+            if (it != m_lane_ids.end()) {
+                m_samples[tl_ep] = rates[it->second];
+                trigger = tl_ep;
+            }
+        }
+
+        ASSERT_NE(nullptr, trigger);
+        uct_iface_invoke_ep_event(
+                ucs_derived_of(trigger->iface, uct_base_iface_t), trigger,
+                UCT_EP_EVENT_PATH_SPEED_CHANGE);
     }
 
-    size_t m_bytes[2];
-    unsigned m_fragments[2];
+    void reset_counters()
+    {
+        m_bytes.assign(m_num_ifaces, 0);
+        m_fragments.assign(m_num_ifaces, 0);
+    }
+
+    void check_distribution(ucp_ep_h ep, double first, double second,
+                            size_t size = 40 * UCS_KBYTE)
+    {
+        double tolerance = 2;
+
+        if ((m_op == UCP_OP_ID_GET) && ((first == 0) || (second == 0))) {
+            for (ucp_lane_index_t lane = 0; lane < ucp_ep_num_lanes(ep);
+                 ++lane) {
+                if (m_tl_name == ucp_ep_get_tl_rsc(ep, lane)->tl_name) {
+                    auto wiface = ucp_worker_iface(
+                            ep->worker, ucp_ep_get_rsc_index(ep, lane));
+                    tolerance = std::max(tolerance,
+                                         wiface->attr.cap.get.min_zcopy + 1.0);
+                }
+            }
+        }
+
+        reset_counters();
+        send_recv_rma(size, m_op, UCS_MEMORY_TYPE_HOST, ep);
+        EXPECT_EQ(size, m_bytes[0] + m_bytes[1]);
+        EXPECT_NEAR(size * first / (first + second), m_bytes[0], tolerance);
+    }
+
+    ucp_operation_id_t m_op = UCP_OP_ID_PUT;
+    unsigned m_num_ifaces = 2;
+    size_t m_get_min_frag = 0;
+    std::map<std::string, double> m_get_caps;
+    std::set<uct_ep_operation_t> m_query_ops;
+    std::vector<size_t> m_bytes;
+    std::vector<unsigned> m_fragments;
+    ucp_ep_h m_transition_ep = nullptr;
+    uct_pending_req_t *m_pending = nullptr;
+    unsigned m_blocked_posts = 0;
 
 private:
     static ucs_status_t query_bandwidth(uct_ep_h ep, uct_ep_attr_t *attr)
@@ -4045,6 +4110,17 @@ private:
         auto it = m_self->m_samples.find(ep);
         if ((attr->field_mask & UCT_EP_ATTR_FIELD_BANDWIDTH) &&
             (it != m_self->m_samples.end())) {
+            if (attr->field_mask & UCT_EP_ATTR_FIELD_OPERATION) {
+                const auto op = (m_self->m_op == UCP_OP_ID_GET) ?
+                                        UCT_EP_OP_GET_ZCOPY :
+                                        UCT_EP_OP_PUT_ZCOPY;
+
+                m_self->m_query_ops.insert(attr->operation);
+                if (attr->operation != op) {
+                    return UCS_ERR_UNSUPPORTED;
+                }
+            }
+
             attr->bandwidth = {it->second, 0};
             return UCS_OK;
         }
@@ -4054,25 +4130,81 @@ private:
                                          ep, attr);
     }
 
-    static ucs_status_t count_put_bytes(uct_ep_h ep, const uct_iov_t *iov,
-                                        size_t count, uint64_t remote_addr,
-                                        uct_rkey_t rkey, uct_completion_t *comp)
+    static ucs_status_t count_bytes(uct_ep_h ep, const uct_iov_t *iov,
+                                    size_t count, uint64_t remote_addr,
+                                    uct_rkey_t rkey, uct_completion_t *comp)
     {
-        auto status = m_self->m_hooks.orig_func(&ep->iface->ops.ep_put_zcopy,
-                                               ep, iov, count, remote_addr,
+        if (m_self->m_block_get) {
+            ++m_self->m_blocked_posts;
+            return UCS_ERR_NO_RESOURCE;
+        }
+
+        auto op = (m_self->m_op == UCP_OP_ID_GET) ?
+                          &ep->iface->ops.ep_get_zcopy :
+                          &ep->iface->ops.ep_put_zcopy;
+        auto status = m_self->m_hooks.orig_func(op, ep, iov, count, remote_addr,
                                                rkey, comp);
         if ((status == UCS_OK) || (status == UCS_INPROGRESS)) {
             unsigned lane = m_self->m_lane_ids.at(ep);
+
             for (size_t i = 0; i < count; ++i) {
                 m_self->m_bytes[lane] += iov[i].length * iov[i].count;
             }
+
             ++m_self->m_fragments[lane];
+            if (m_self->m_transition_ep != nullptr) {
+                m_self->m_block_get = true;
+                ucs_callbackq_add_oneshot(
+                        &m_self->m_transition_ep->worker->uct->progress_q,
+                        m_self, transition, m_self);
+            }
         }
 
         return status;
     }
 
+    static unsigned transition(void *arg)
+    {
+        auto self = static_cast<test_ucp_proto_mock_path_bw*>(arg);
+        auto worker = self->m_transition_ep->worker;
+
+        self->publish_samples(self->m_transition_ep,
+                              {8.0 * UCS_GBYTE, 32.0 * UCS_GBYTE});
+        self->m_transition_ep = nullptr;
+
+        /* Refresh precedes resuming the partially posted request. */
+        ucs_callbackq_add_oneshot(&worker->uct->progress_q, self,
+                [](void *arg) -> unsigned {
+                    auto self = static_cast<test_ucp_proto_mock_path_bw*>(arg);
+                    auto req = self->m_pending;
+
+                    self->m_pending = nullptr;
+                    self->m_block_get = false;
+                    if (req != nullptr) {
+                        ucp_request_send(ucs_container_of(req, ucp_request_t,
+                                                          send.uct));
+                    }
+
+                    return 1;
+                }, self);
+        return 1;
+    }
+
+    static ucs_status_t pending_add(uct_ep_h ep, uct_pending_req_t *req,
+                                     unsigned flags)
+    {
+        if (m_self->m_block_get) {
+            ucs_assert(m_self->m_pending == nullptr);
+            m_self->m_pending = req;
+            return UCS_OK;
+        }
+
+        return m_self->m_hooks.orig_func(&ep->iface->ops.ep_pending_add,
+                                         ep, req, flags);
+    }
+
     static test_ucp_proto_mock_path_bw *m_self;
+    bool m_block_get = false;
     ucs::mock m_hooks;
     std::string m_tl_name;
     std::map<uct_ep_h, unsigned> m_lane_ids;
@@ -4085,7 +4217,7 @@ UCS_TEST_P(test_ucp_proto_mock_path_bw, put_recovery_and_bounded_cache)
 {
     auto ep = sender().ep();
     auto worker = sender().worker();
-    check_put(ep, 1, 1);
+    check_distribution(ep, 1, 1);
     const auto ep_configs = worker->ep_config.length;
     const auto rkey_configs = ucs_array_length(&worker->rkey_config);
     for (unsigned i = 0; i < 512; ++i) {
@@ -4093,12 +4225,12 @@ UCS_TEST_P(test_ucp_proto_mock_path_bw, put_recovery_and_bounded_cache)
                              (UCS_GBYTE / 4.0);
         const double second = (16 + (i / 32)) * (UCS_GBYTE / 2.0);
         set_samples(ep, first, second);
-        check_put(ep, first, second);
+        check_distribution(ep, first, second);
         ASSERT_EQ(ep_configs, worker->ep_config.length) << "sample " << i;
         ASSERT_EQ(rkey_configs, ucs_array_length(&worker->rkey_config));
     }
     set_samples(ep, 32.0 * UCS_GBYTE, 32.0 * UCS_GBYTE);
-    check_put(ep, 1, 1);
+    check_distribution(ep, 1, 1);
 }
 
 UCS_TEST_P(test_ucp_proto_mock_path_bw, put_endpoint_isolation)
@@ -4107,19 +4239,19 @@ UCS_TEST_P(test_ucp_proto_mock_path_bw, put_endpoint_isolation)
     flush_workers();
     auto sibling = sender().ep(0, 1);
     install_hooks(sibling);
-    check_put(sender().ep(), 1, 1);
-    check_put(sibling, 1, 1);
+    check_distribution(sender().ep(), 1, 1);
+    check_distribution(sibling, 1, 1);
     const auto config = sibling->cfg_index;
     set_samples(sender().ep(), 8.0 * UCS_GBYTE, 32.0 * UCS_GBYTE);
-    check_put(sender().ep(), 1, 4);
-    check_put(sibling, 1, 1);
+    check_distribution(sender().ep(), 1, 4);
+    check_distribution(sibling, 1, 1);
     EXPECT_EQ(config, sibling->cfg_index);
 }
 
 UCS_TEST_P(test_ucp_proto_mock_path_bw, large_put)
 {
     set_samples(sender().ep(), 8.0 * UCS_GBYTE, 32.0 * UCS_GBYTE);
-    check_put(sender().ep(), 1, 4, 10 * UCS_MBYTE);
+    check_distribution(sender().ep(), 1, 4, 10 * UCS_MBYTE);
     EXPECT_GT(m_fragments[0], 1u);
     EXPECT_GT(m_fragments[1], 1u);
 }
@@ -4127,14 +4259,131 @@ UCS_TEST_P(test_ucp_proto_mock_path_bw, large_put)
 UCS_TEST_P(test_ucp_proto_mock_path_bw, put_zero_and_invalid_samples)
 {
     set_samples(sender().ep(), 0, 32.0 * UCS_GBYTE);
-    check_put(sender().ep(), 0, 1);
+    check_distribution(sender().ep(), 0, 1);
     set_samples(sender().ep(), std::numeric_limits<double>::quiet_NaN(),
                  8.0 * UCS_GBYTE);
-    check_put(sender().ep(), 4, 1);
+    check_distribution(sender().ep(), 4, 1);
 }
 
 UCP_INSTANTIATE_TEST_CASE_TLS(test_ucp_proto_mock_path_bw, rcx, "rc_x")
 UCP_INSTANTIATE_TEST_CASE_TLS(test_ucp_proto_mock_path_bw, mm_cma, "posix,cma")
+
+
+class test_ucp_proto_mock_path_bw_get : public test_ucp_proto_mock_path_bw {
+public:
+    test_ucp_proto_mock_path_bw_get()
+    {
+        m_op = UCP_OP_ID_GET;
+    }
+};
+
+UCS_TEST_P(test_ucp_proto_mock_path_bw_get, get_recovery_and_bounded_cache)
+{
+    auto ep = sender().ep();
+    auto worker = sender().worker();
+    check_distribution(ep, 1, 1);
+    const auto ep_configs = worker->ep_config.length;
+    const auto rkey_configs = ucs_array_length(&worker->rkey_config);
+    for (unsigned i = 0; i < 512; ++i) {
+        const double first = (16 + (i % 16)) * (1 + ((i / 16) % 2)) *
+                             (UCS_GBYTE / 4.0);
+        const double second = (16 + (i / 32)) * (UCS_GBYTE / 2.0);
+        set_samples(ep, first, second);
+        check_distribution(ep, first, second);
+        ASSERT_EQ(ep_configs, worker->ep_config.length) << "sample " << i;
+        ASSERT_EQ(rkey_configs, ucs_array_length(&worker->rkey_config));
+    }
+    set_samples(ep, 32.0 * UCS_GBYTE, 32.0 * UCS_GBYTE);
+    check_distribution(ep, 1, 1);
+}
+
+UCS_TEST_P(test_ucp_proto_mock_path_bw_get, get_endpoint_isolation)
+{
+    sender().connect(&receiver(), get_ep_params(), 1);
+    flush_workers();
+    auto sibling = sender().ep(0, 1);
+    install_hooks(sibling);
+    check_distribution(sender().ep(), 1, 1);
+    check_distribution(sibling, 1, 1);
+    const auto config = sibling->cfg_index;
+    set_samples(sender().ep(), 8.0 * UCS_GBYTE, 32.0 * UCS_GBYTE);
+    check_distribution(sender().ep(), 1, 4);
+    check_distribution(sibling, 1, 1);
+    EXPECT_EQ(config, sibling->cfg_index);
+}
+
+UCS_TEST_P(test_ucp_proto_mock_path_bw_get, large_get)
+{
+    set_samples(sender().ep(), 8.0 * UCS_GBYTE, 32.0 * UCS_GBYTE);
+    check_distribution(sender().ep(), 1, 4, 10 * UCS_MBYTE);
+    EXPECT_GT(m_fragments[0], 1u);
+    EXPECT_GT(m_fragments[1], 1u);
+}
+
+UCS_TEST_P(test_ucp_proto_mock_path_bw_get, get_zero_and_invalid_samples)
+{
+    set_samples(sender().ep(), 0, 32.0 * UCS_GBYTE);
+    check_distribution(sender().ep(), 0, 1);
+    set_samples(sender().ep(), std::numeric_limits<double>::quiet_NaN(),
+                 8.0 * UCS_GBYTE);
+    check_distribution(sender().ep(), 4, 1);
+}
+
+UCS_TEST_P(test_ucp_proto_mock_path_bw_get, get_operation_cap)
+{
+    m_get_caps["mock_0:1"] = 8.0 * UCS_GBYTE;
+    check_distribution(sender().ep(), 8, 32);
+    set_samples(sender().ep(), 32.0 * UCS_GBYTE, 32.0 * UCS_GBYTE);
+    check_distribution(sender().ep(), 8, 32);
+    EXPECT_EQ(1u, m_query_ops.count(UCT_EP_OP_GET_ZCOPY));
+}
+
+UCS_TEST_P(test_ucp_proto_mock_path_bw_get, event_during_pending_get)
+{
+    const size_t size = 10 * UCS_MBYTE;
+    set_samples(sender().ep(), 32.0 * UCS_GBYTE, 32.0 * UCS_GBYTE);
+    m_transition_ep = sender().ep();
+    reset_counters();
+    send_recv_rma(size, UCP_OP_ID_GET);
+    EXPECT_GT(m_blocked_posts, 0u);
+    EXPECT_EQ(nullptr, m_pending);
+    EXPECT_EQ(nullptr, m_transition_ep);
+    EXPECT_EQ(size, m_bytes[0] + m_bytes[1]);
+    check_distribution(sender().ep(), 1, 4);
+}
+
+UCP_INSTANTIATE_TEST_CASE_TLS(test_ucp_proto_mock_path_bw_get, rcx, "rc_x")
+UCP_INSTANTIATE_TEST_CASE_TLS(test_ucp_proto_mock_path_bw_get, mm_cma,
+                              "posix,cma")
+
+
+class test_ucp_proto_mock_path_bw_get_min_frag :
+    public test_ucp_proto_mock_path_bw_get {
+public:
+    test_ucp_proto_mock_path_bw_get_min_frag()
+    {
+        m_num_ifaces   = 3;
+        m_get_min_frag = 65;
+    }
+};
+
+UCS_TEST_P(test_ucp_proto_mock_path_bw_get_min_frag, get_two_zero_lanes)
+{
+    const size_t size = UCS_MBYTE;
+    m_get_caps["mock_1:1"] = 24.0 * UCS_GBYTE;
+    m_get_caps["mock_2:1"] = 16.0 * UCS_GBYTE;
+    set_samples(sender().ep(), {0, 0, 32.0 * UCS_GBYTE});
+    reset_counters();
+    send_recv_rma(size, UCP_OP_ID_GET);
+    EXPECT_EQ(size, m_bytes[0] + m_bytes[1] + m_bytes[2]);
+    EXPECT_GE(m_bytes[0], m_get_min_frag);
+    EXPECT_GE(m_bytes[1], m_get_min_frag);
+}
+
+UCP_INSTANTIATE_TEST_CASE_TLS(test_ucp_proto_mock_path_bw_get_min_frag,
+                              rcx, "rc_x")
+UCP_INSTANTIATE_TEST_CASE_TLS(test_ucp_proto_mock_path_bw_get_min_frag,
+                              mm_cma, "posix,cma")
 
 
 #if HAVE_DECL_IBV_EVENT_DEVICE_SPEED_CHANGE
