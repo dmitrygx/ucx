@@ -238,6 +238,7 @@ void uct_rc_mlx5_iface_handle_failure(uct_ib_iface_t *ib_iface, void *arg,
                                      (ep->tx.wq.bb_max -
                                       uct_rc_txqp_available(&ep->super.txqp));
         ep->err_handler_inprogress = 1;
+        uct_rc_txqp_hold_send_ops(iface, &ep->super.txqp);
 
         ucs_debug("ep %p outstanding WQE range (%u, %u)", ep, ep->tx.wq.ft_ci,
                   ep->tx.wq.sw_pi);
