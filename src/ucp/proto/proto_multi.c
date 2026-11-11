@@ -22,6 +22,93 @@
 #include <ucs/sys/topo/base/topo.h>
 
 
+const ucp_proto_multi_lane_priv_t *ucp_proto_rma_adjust_lane(
+        ucp_request_t *req, const ucp_proto_multi_lane_priv_t *lpriv,
+        ucp_proto_multi_lane_priv_t *adjusted)
+{
+    ucp_ep_h ep                         = req->send.ep;
+    const ucp_proto_multi_priv_t *mpriv = req->send.proto_config->priv;
+    double total_bw                    = 0;
+    double max_frag_ratio              = 0;
+    double selected_bw                 = lpriv->bandwidth;
+    int degraded                       = 0;
+    const ucp_proto_multi_lane_priv_t *candidate;
+    const ucp_ep_path_bw_t *state;
+    khiter_t it;
+    ucp_lane_index_t i, lane;
+    double bandwidth;
+    size_t min_frag, length;
+
+    if (mpriv->num_lanes < 2) {
+        return lpriv;
+    }
+
+    it = kh_get(ucp_worker_ep_path_bw, ep->worker->ep_path_bw, ep);
+    if (it == kh_end(ep->worker->ep_path_bw)) {
+        return lpriv;
+    }
+
+    state = kh_value(ep->worker->ep_path_bw, it);
+    if ((state->cfg_index != ep->cfg_index) ||
+        (state->cfg_index != req->send.proto_config->ep_cfg_index) ||
+        (state->lane_generation != ep->ext->lane_generation)) {
+        return lpriv;
+    }
+
+    if (!(state->valid & mpriv->lane_map)) {
+        return lpriv;
+    }
+
+    for (i = 0; i < mpriv->num_lanes; ++i) {
+        candidate = &mpriv->lanes[i];
+        lane      = candidate->super.lane;
+        bandwidth = candidate->bandwidth;
+        if (state->valid & UCS_BIT(lane)) {
+            bandwidth = ucs_min(bandwidth,
+                                state->bandwidth[lane]);
+        }
+
+        degraded |= bandwidth < candidate->bandwidth;
+        /* Keep a minimum share for a valid zero without zero-size payloads. */
+        bandwidth      = ucs_max(bandwidth, 1.0);
+        total_bw      += bandwidth;
+        max_frag_ratio = ucs_max(max_frag_ratio,
+                                 bandwidth / candidate->max_frag);
+        if (lane == lpriv->super.lane) {
+            selected_bw = bandwidth;
+        }
+    }
+
+    if (!degraded) {
+        return lpriv;
+    }
+
+    /* RMA advances the iterator only after a successful post. A local copy can
+     * change the next fragment while posted descriptors stay intact. */
+    min_frag  = ucs_max(mpriv->min_frag, 1);
+    *adjusted = *lpriv;
+
+    adjusted->weight   = ucs_proto_multi_calc_weight(selected_bw, total_bw);
+    adjusted->max_frag = ucs_min(lpriv->max_frag,
+                                 ucs_max(min_frag,
+                                         ucs_double_to_sizet(
+                                             selected_bw / max_frag_ratio,
+                                             lpriv->max_frag)));
+    if (mpriv->min_frag > 0) {
+        /* A tiny weight must not bypass the transport's minimum fragment. */
+        length = (req->send.state.dt_iter.dt_class == UCP_DATATYPE_SGL) ?
+                 req->send.rma.sgl.length : req->send.state.dt_iter.length;
+        if (length > 0) {
+            adjusted->weight = ucs_max(adjusted->weight,
+                                      ucs_proto_multi_calc_weight(min_frag,
+                                                                  length));
+        }
+    }
+
+    return adjusted;
+}
+
+
 /* The assignment covers the bandwidth lanes, which wireup selects per NIC */
 static int ucp_proto_multi_lane_type_is_assignable(ucp_lane_type_t lane_type)
 {
@@ -106,11 +193,6 @@ ucp_proto_multi_get_avail_bw(const ucp_proto_init_params_t *params,
     ucp_rsc_index_t dev_index     = ucp_proto_common_get_dev_index(params, lane);
     uint8_t path_index            = selection->dev_count[dev_index];
     double ratio;
-
-    if (ucp_proto_common_has_effective_bw(
-                &params->ep_config_key->lanes[lane].path_bandwidth)) {
-        return lane_perf->bandwidth;
-    }
 
     if (UCS_CONFIG_DBL_IS_AUTO(multi_path_ratio)) {
         ratio = ucs_min(1.0 - (lane_perf->path_ratio * path_index),
@@ -805,6 +887,7 @@ ucp_proto_multi_init_priv(const ucp_proto_multi_init_params_t *params,
 
         ucp_proto_common_lane_priv_init(&params->super, mpriv->reg_md_map, lane,
                                         &lpriv->super);
+        lpriv->bandwidth = lane_perf->bandwidth;
 
         /* Calculate maximal fragment size according to lane relative bandwidth.
            Due to floating-point accuracy, max_frag may be too large. */

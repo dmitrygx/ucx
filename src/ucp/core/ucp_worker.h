@@ -129,9 +129,11 @@ enum {
                                                                is already busy, so need to keep
                                                                checking events for it in the
                                                                main progress loop. */
-    UCP_WORKER_IFACE_FLAG_UNUSED            = UCS_BIT(3)  /**< There is another UCP iface
+    UCP_WORKER_IFACE_FLAG_UNUSED            = UCS_BIT(3), /**< Another iface
                                                                with the same caps, but
                                                                with better performance */
+    /** Endpoint events are supported */
+    UCP_WORKER_IFACE_FLAG_EP_EVENTS         = UCS_BIT(4)
 };
 
 
@@ -222,6 +224,21 @@ typedef khash_t(ucp_worker_rkey_config) ucp_worker_rkey_config_hash_t;
 /* Hash map of UCT EPs that are being discarded on UCP Worker */
 KHASH_TYPE(ucp_worker_discard_uct_ep_hash, uct_ep_h, ucp_request_t*);
 typedef khash_t(ucp_worker_discard_uct_ep_hash) ucp_worker_discard_uct_ep_hash_t;
+
+
+/* Path estimates, allocated only for endpoints receiving events.
+ * The layout is invalidated by structural configuration or lane replacement. */
+typedef struct {
+    ucp_worker_cfg_index_t cfg_index;
+    uint32_t              lane_generation;
+    ucp_lane_index_t      num_lanes;
+    uint8_t               pending;
+    ucp_lane_map_t        valid;
+    double                bandwidth[];
+} ucp_ep_path_bw_t;
+
+
+KHASH_TYPE(ucp_worker_ep_path_bw, ucp_ep_h, ucp_ep_path_bw_t*);
 
 
 /**
@@ -406,6 +423,8 @@ typedef struct ucp_worker {
                                                              ptr mapping */
     kh_ucp_worker_remote_flush_t     remote_flush_hash;
 
+    khash_t(ucp_worker_ep_path_bw)   *ep_path_bw;
+
     ucp_ep_config_arr_t              ep_config; /* EP configurations storage */
 
     ucp_rkey_config_arr_t            rkey_config; /* Rkey configurations storage */
@@ -477,6 +496,8 @@ ucs_status_t ucp_worker_iface_init(ucp_worker_h worker, ucp_rsc_index_t tl_id,
                                    ucp_worker_iface_t *wiface);
 
 void ucp_worker_iface_cleanup(ucp_worker_iface_t *wiface);
+
+void ucp_worker_ep_path_bw_cleanup(ucp_ep_h ep);
 
 void ucp_worker_iface_progress_ep(ucp_worker_iface_t *wiface);
 

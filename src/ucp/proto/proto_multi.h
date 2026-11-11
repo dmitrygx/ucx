@@ -65,6 +65,9 @@ typedef struct {
     /* Maximal fragment size on this lane */
     size_t                       max_frag;
 
+    /* Operation- and topology-limited bandwidth used by the static model */
+    double                       bandwidth;
+
     /* Sum of 'max_frag' on all previous lanes, inclusive */
     size_t                       max_frag_sum;
 
@@ -206,6 +209,11 @@ ucs_status_t ucp_proto_multi_init(const ucp_proto_multi_init_params_t *params,
 
 
 size_t ucp_proto_multi_priv_size(const ucp_proto_multi_priv_t *mpriv);
+
+
+const ucp_proto_multi_lane_priv_t *ucp_proto_rma_adjust_lane(
+        ucp_request_t *req, const ucp_proto_multi_lane_priv_t *lpriv,
+        ucp_proto_multi_lane_priv_t *adjusted);
 
 
 void ucp_proto_multi_probe(const ucp_proto_multi_init_params_t *params);

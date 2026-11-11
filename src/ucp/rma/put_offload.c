@@ -154,12 +154,15 @@ ucp_proto_put_offload_bcopy_send_func(ucp_request_t *req,
 
     ucp_proto_multi_pack_ctx_t pack_ctx = {
         .req         = req,
-        .max_payload = ucp_proto_multi_max_payload(req, lpriv, 0),
+        .max_payload = 0,
         .next_iter   = next_iter
     };
+    ucp_proto_multi_lane_priv_t adjusted;
     ssize_t packed_size;
     ucs_status_t status;
 
+    lpriv = ucp_proto_rma_lane_priv(req, lpriv, &adjusted);
+    pack_ctx.max_payload = ucp_proto_multi_max_payload(req, lpriv, 0);
     packed_size = uct_ep_put_bcopy(uct_ep, ucp_proto_put_offload_bcopy_pack,
                                    &pack_ctx, address, tl_rkey);
     status      = ucp_proto_bcopy_send_func_status(packed_size);
@@ -270,9 +273,11 @@ ucp_proto_put_offload_zcopy_send_func(ucp_request_t *req,
                          req->send.state.dt_iter.offset;
     uct_rkey_t tl_rkey = ucp_rkey_get_tl_rkey(req->send.rma.rkey,
                                               lpriv->super.rkey_index);
+    ucp_proto_multi_lane_priv_t adjusted;
     uct_iov_t iov;
     ucs_status_t status;
 
+    lpriv = ucp_proto_rma_lane_priv(req, lpriv, &adjusted);
     ucp_datatype_iter_next_iov(&req->send.state.dt_iter,
                                ucp_proto_multi_max_payload(req, lpriv, 0),
                                lpriv->super.md_index, UCP_DT_MASK_CONTIG_IOV,
@@ -409,6 +414,9 @@ ucp_proto_put_sgl_offload_send_func(ucp_request_t *req,
                                     ucp_datatype_iter_t *next_iter,
                                     ucp_lane_index_t *lane_shift)
 {
+    ucp_proto_multi_lane_priv_t adjusted;
+
+    lpriv = ucp_proto_rma_lane_priv(req, lpriv, &adjusted);
     return ucp_proto_rma_sgl_offload_send_func(
             req, lpriv, next_iter, ucp_proto_put_sgl_offload_post);
 }
@@ -487,6 +495,9 @@ ucp_proto_put_sgl_offload_sw_send_func(ucp_request_t *req,
                                        ucp_datatype_iter_t *next_iter,
                                        ucp_lane_index_t *lane_shift)
 {
+    ucp_proto_multi_lane_priv_t adjusted;
+
+    lpriv = ucp_proto_rma_lane_priv(req, lpriv, &adjusted);
     return ucp_proto_rma_sgl_offload_send_frags(
             req, lpriv, 1, next_iter, ucp_proto_put_sgl_offload_sw_post);
 }

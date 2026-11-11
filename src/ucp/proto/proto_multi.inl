@@ -58,6 +58,18 @@ ucp_proto_multi_scaled_length(uint32_t weight, size_t length)
            UCP_PROTO_MULTI_WEIGHT_SHIFT;
 }
 
+static UCS_F_ALWAYS_INLINE const ucp_proto_multi_lane_priv_t *
+ucp_proto_rma_lane_priv(ucp_request_t *req,
+                        const ucp_proto_multi_lane_priv_t *lpriv,
+                        ucp_proto_multi_lane_priv_t *adjusted)
+{
+    if (ucs_unlikely(req->send.ep->worker->ep_path_bw != NULL)) {
+        return ucp_proto_rma_adjust_lane(req, lpriv, adjusted);
+    }
+
+    return lpriv;
+}
+
 static UCS_F_ALWAYS_INLINE size_t
 ucp_proto_multi_lane_payload(const ucp_proto_multi_lane_priv_t *lpriv,
                              size_t length, size_t remaining, size_t max_frag)

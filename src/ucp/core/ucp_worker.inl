@@ -21,6 +21,14 @@ KHASH_IMPL(ucp_worker_rkey_config, ucp_rkey_config_key_t,
            ucp_worker_cfg_index_t, 1, ucp_rkey_config_hash_func,
            ucp_rkey_config_is_equal);
 
+static UCS_F_ALWAYS_INLINE khint_t ucp_worker_ep_path_bw_hash(ucp_ep_h ep)
+{
+    return kh_int64_hash_func((uintptr_t)ep);
+}
+
+KHASH_IMPL(ucp_worker_ep_path_bw, ucp_ep_h, ucp_ep_path_bw_t*, 1,
+           ucp_worker_ep_path_bw_hash, kh_int_hash_equal);
+
 #define UCP_WORKER_PROGRESS_TIMER_SKIP_COUNT 32
 
 /**
