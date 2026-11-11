@@ -226,14 +226,14 @@ KHASH_TYPE(ucp_worker_discard_uct_ep_hash, uct_ep_h, ucp_request_t*);
 typedef khash_t(ucp_worker_discard_uct_ep_hash) ucp_worker_discard_uct_ep_hash_t;
 
 
-/* Path estimates, allocated only for endpoints receiving events.
+/* Operation-specific estimates, allocated only for endpoints receiving events.
  * The layout is invalidated by structural configuration or lane replacement. */
 typedef struct {
     ucp_worker_cfg_index_t cfg_index;
     uint32_t              lane_generation;
     ucp_lane_index_t      num_lanes;
     uint8_t               pending;
-    ucp_lane_map_t        valid;
+    ucp_lane_map_t        valid[2]; /* PUT, GET */
     double                bandwidth[];
 } ucp_ep_path_bw_t;
 

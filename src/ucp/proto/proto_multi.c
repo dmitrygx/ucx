@@ -36,6 +36,7 @@ const ucp_proto_multi_lane_priv_t *ucp_proto_rma_adjust_lane(
     const ucp_ep_path_bw_t *state;
     khiter_t it;
     ucp_lane_index_t i, lane;
+    unsigned op;
     double bandwidth;
     size_t min_frag, length;
 
@@ -55,7 +56,9 @@ const ucp_proto_multi_lane_priv_t *ucp_proto_rma_adjust_lane(
         return lpriv;
     }
 
-    if (!(state->valid & mpriv->lane_map)) {
+    op = ucp_proto_select_op_id(&req->send.proto_config->select_param) ==
+         UCP_OP_ID_GET;
+    if (!(state->valid[op] & mpriv->lane_map)) {
         return lpriv;
     }
 
@@ -63,9 +66,9 @@ const ucp_proto_multi_lane_priv_t *ucp_proto_rma_adjust_lane(
         candidate = &mpriv->lanes[i];
         lane      = candidate->super.lane;
         bandwidth = candidate->bandwidth;
-        if (state->valid & UCS_BIT(lane)) {
+        if (state->valid[op] & UCS_BIT(lane)) {
             bandwidth = ucs_min(bandwidth,
-                                state->bandwidth[lane]);
+                                state->bandwidth[op * state->num_lanes + lane]);
         }
 
         degraded |= bandwidth < candidate->bandwidth;

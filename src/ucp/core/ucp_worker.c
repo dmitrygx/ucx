@@ -1016,7 +1016,7 @@ static ucp_ep_path_bw_t *ucp_worker_ep_path_bw_get(ucp_ep_h ep)
     }
 
     state = ucs_calloc(1, sizeof(*state) +
-                      ucp_ep_num_lanes(ep) * sizeof(double), "ep_path_bw");
+                      2 * ucp_ep_num_lanes(ep) * sizeof(double), "ep_path_bw");
     if (state == NULL) {
         return NULL;
     }
@@ -1034,6 +1034,9 @@ static ucp_ep_path_bw_t *ucp_worker_ep_path_bw_get(ucp_ep_h ep)
 
 static unsigned ucp_worker_ep_path_bw_progress(void *arg)
 {
+    static const uct_ep_operation_t operations[] = {
+        UCT_EP_OP_PUT_ZCOPY, UCT_EP_OP_GET_ZCOPY
+    };
     ucp_ep_h ep          = arg;
     ucp_lane_map_t lanes = 0;
     unsigned count      = 0;
@@ -1042,6 +1045,7 @@ static unsigned ucp_worker_ep_path_bw_progress(void *arg)
     ucp_worker_iface_t *wiface;
     uct_ep_attr_t attr;
     ucp_lane_index_t i, lane;
+    unsigned op;
     ucs_status_t status;
     double bandwidth;
 
@@ -1059,7 +1063,8 @@ static unsigned ucp_worker_ep_path_bw_progress(void *arg)
 
     state->cfg_index       = ep->cfg_index;
     state->lane_generation = ep->ext->lane_generation;
-    state->valid           = 0;
+    state->valid[0]        = 0;
+    state->valid[1]        = 0;
     for (i = 0; i < key->num_lanes; ++i) {
         if (key->rma_bw_lanes[i] != UCP_NULL_LANE) {
             lanes |= UCS_BIT(key->rma_bw_lanes[i]);
@@ -1079,26 +1084,30 @@ static unsigned ucp_worker_ep_path_bw_progress(void *arg)
             continue;
         }
 
-        memset(&attr, 0, sizeof(attr));
-        attr.field_mask = UCT_EP_ATTR_FIELD_BANDWIDTH;
-        status = uct_ep_query(ucp_ep_get_lane(ep, lane), &attr);
-        if (status != UCS_OK) {
-            continue;
-        }
+        for (op = 0; op < ucs_static_array_size(operations); ++op) {
+            memset(&attr, 0, sizeof(attr));
+            attr.field_mask = UCT_EP_ATTR_FIELD_BANDWIDTH |
+                              UCT_EP_ATTR_FIELD_OPERATION;
+            attr.operation  = operations[op];
+            status = uct_ep_query(ucp_ep_get_lane(ep, lane), &attr);
+            if (status != UCS_OK) {
+                continue;
+            }
 
-        bandwidth = attr.bandwidth.dedicated + attr.bandwidth.shared /
-                    ucs_min(ep->worker->context->config.est_num_ppn, 8);
-        if (!isfinite(attr.bandwidth.dedicated) ||
-            !isfinite(attr.bandwidth.shared) ||
-            (attr.bandwidth.dedicated < 0) || (attr.bandwidth.shared < 0) ||
-            !isfinite(bandwidth)) {
-            continue;
-        }
+            bandwidth = attr.bandwidth.dedicated + attr.bandwidth.shared /
+                        ucs_min(ep->worker->context->config.est_num_ppn, 8);
+            if (!isfinite(attr.bandwidth.dedicated) ||
+                !isfinite(attr.bandwidth.shared) ||
+                (attr.bandwidth.dedicated < 0) || (attr.bandwidth.shared < 0) ||
+                !isfinite(bandwidth)) {
+                continue;
+            }
 
-        state->bandwidth[lane] = bandwidth;
-        state->valid |= UCS_BIT(lane);
-        ucs_debug("ep %p lane[%u] path bandwidth %.0f B/s", ep, lane,
-                  bandwidth);
+            state->bandwidth[op * state->num_lanes + lane] = bandwidth;
+            state->valid[op] |= UCS_BIT(lane);
+            ucs_debug("ep %p lane[%u] operation %u path bandwidth %.0f B/s",
+                      ep, lane, operations[op], bandwidth);
+        }
     }
 
     count = 1;
