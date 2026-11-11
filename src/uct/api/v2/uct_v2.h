@@ -340,7 +340,9 @@ enum uct_ep_attr_field {
     /** Enables @ref uct_ep_attr::tx_token */
     UCT_EP_ATTR_FIELD_TX_TOKEN        = UCS_BIT(2),
     /** Enables @ref uct_ep_attr::bandwidth */
-    UCT_EP_ATTR_FIELD_BANDWIDTH       = UCS_BIT(3)
+    UCT_EP_ATTR_FIELD_BANDWIDTH       = UCS_BIT(3),
+    /** Enables the input @ref uct_ep_attr::operation */
+    UCT_EP_ATTR_FIELD_OPERATION       = UCS_BIT(4)
 };
 
 
@@ -500,6 +502,15 @@ struct uct_ep_attr {
      * unsupported.
      */
     uct_ppn_bandwidth_t      bandwidth;
+
+    /**
+     * Operation whose bandwidth is requested. Valid when
+     * @ref UCT_EP_ATTR_FIELD_OPERATION is set in @ref field_mask. A provider
+     * must not return a measurement for a different operation or data direction.
+     * Without a suitable measurement, the transport may return its static
+     * operation-specific estimate.
+     */
+    uct_ep_operation_t       operation;
 };
 
 

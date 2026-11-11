@@ -48,7 +48,10 @@ enum {
      * continues without the provider when attachment fails. This policy does
      * not suppress ordinary RC errors or endpoint hook errors.
      */
-    UCT_RC_MLX5_EXT_FLAG_REQUIRE_IFACE_ATTACH = UCS_BIT(0)
+    UCT_RC_MLX5_EXT_FLAG_REQUIRE_IFACE_ATTACH = UCS_BIT(0),
+
+    /** The provider honors UCT_EP_ATTR_FIELD_OPERATION in ep_query. */
+    UCT_RC_MLX5_EXT_FLAG_EP_QUERY_OPERATION   = UCS_BIT(1)
 };
 
 
