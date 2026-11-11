@@ -4285,7 +4285,7 @@ UCS_TEST_P(test_ucp_proto_mock_path_bw_get, get_recovery_and_bounded_cache)
     const auto ep_configs = worker->ep_config.length;
     const auto rkey_configs = ucs_array_length(&worker->rkey_config);
     for (unsigned i = 0; i < 512; ++i) {
-        const double first = (16 + (i % 16)) * (1 + ((i / 16) % 2)) *
+        const double first = (16 + ((i + 1) % 16)) * (1 + ((i / 16) % 2)) *
                              (UCS_GBYTE / 4.0);
         const double second = (16 + (i / 32)) * (UCS_GBYTE / 2.0);
         set_samples(ep, first, second);
