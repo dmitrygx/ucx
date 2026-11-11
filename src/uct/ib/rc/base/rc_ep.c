@@ -533,6 +533,39 @@ ucs_status_t uct_rc_ep_fc_grant(uct_pending_req_t *self)
     return status;
 }
 
+void uct_rc_txqp_hold_send_ops(uct_rc_iface_t *iface, uct_rc_txqp_t *txqp)
+{
+    uct_rc_iface_send_op_t *ops_end = iface->tx.ops_buffer +
+                                      iface->config.tx_cq_len;
+    uct_rc_iface_send_op_t *op, *held_op;
+    ucs_queue_head_t held_ops;
+    int no_memory = 0;
+
+    ucs_queue_head_init(&held_ops);
+    ucs_queue_for_each_extract(op, &txqp->outstanding, queue, 1) {
+        if (!no_memory && (op >= iface->tx.ops_buffer) && (op < ops_end)) {
+            held_op = ucs_mpool_get(&iface->tx.send_op_mp);
+            if (held_op == NULL) {
+                /* The rest stay in the ops buffer until the purge */
+                ucs_error("txqp %p: failed to allocate held send ops", txqp);
+                no_memory = 1;
+            } else {
+                *held_op       = *op;
+                held_op->flags = (op->flags &
+                                  ~UCT_RC_IFACE_SEND_OP_FLAG_IFACE) |
+                                 UCT_RC_IFACE_SEND_OP_FLAG_HELD;
+                op->flags      = UCT_RC_IFACE_SEND_OP_FLAG_IFACE;
+                uct_rc_iface_put_send_op(op);
+                op = held_op;
+            }
+        }
+
+        ucs_queue_push(&held_ops, &op->queue);
+    }
+
+    ucs_queue_splice(&txqp->outstanding, &held_ops);
+}
+
 void uct_rc_txqp_purge_outstanding(uct_rc_iface_t *iface, uct_rc_txqp_t *txqp,
                                    ucs_status_t status, uint16_t sn, int warn)
 {
@@ -582,6 +615,11 @@ void uct_rc_txqp_purge_outstanding(uct_rc_iface_t *iface, uct_rc_txqp_t *txqp,
 
         op->flags &= ~(UCT_RC_IFACE_SEND_OP_FLAG_INUSE |
                        UCT_RC_IFACE_SEND_OP_FLAG_ZCOPY);
+
+        if (op->flags & UCT_RC_IFACE_SEND_OP_FLAG_HELD) {
+            ucs_mpool_put(op);
+            continue;
+        }
 
         if ((op->handler == uct_rc_ep_send_op_completion_handler) ||
             (op->handler == uct_rc_ep_am_zcopy_completion_handler) ||

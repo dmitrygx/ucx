@@ -1776,10 +1776,11 @@ uct_rc_mlx5_ep_outstanding_release_send_op(uct_rc_iface_t *iface,
     op->flags &= ~(UCT_RC_IFACE_SEND_OP_FLAG_INUSE |
                    UCT_RC_IFACE_SEND_OP_FLAG_ZCOPY);
 
-    if (uct_rc_mlx5_send_op_is_put_zcopy(op) ||
-        uct_rc_mlx5_send_op_is_get_zcopy(op) ||
-        uct_rc_mlx5_send_op_is_am_zcopy(op) ||
-        uct_rc_mlx5_send_op_is_ep_check(op)) {
+    if (!(op->flags & UCT_RC_IFACE_SEND_OP_FLAG_HELD) &&
+        (uct_rc_mlx5_send_op_is_put_zcopy(op) ||
+         uct_rc_mlx5_send_op_is_get_zcopy(op) ||
+         uct_rc_mlx5_send_op_is_am_zcopy(op) ||
+         uct_rc_mlx5_send_op_is_ep_check(op))) {
         uct_rc_iface_put_send_op(op);
     } else {
         ucs_mpool_put(op);
@@ -1812,7 +1813,17 @@ uct_rc_mlx5_ep_outstanding_complete_send_ops(uct_rc_iface_t *iface,
                                        !uct_rc_mlx5_send_op_is_get_zcopy(op),
                                "ep %p qp 0x%x delivered get op sn %u", ep,
                                ep->tx.wq.super.qp_num, op->sn);
-            uct_rc_txqp_completion_op(op, NULL);
+            if (op->flags & UCT_RC_IFACE_SEND_OP_FLAG_HELD) {
+                /* Complete like the handler, which would return the copy to
+                 * the interface ops buffer */
+                if (op->user_comp != NULL) {
+                    uct_invoke_completion(op->user_comp, UCS_OK);
+                }
+
+                uct_rc_mlx5_ep_outstanding_release_send_op(iface, op);
+            } else {
+                uct_rc_txqp_completion_op(op, NULL);
+            }
             continue;
         }
 
