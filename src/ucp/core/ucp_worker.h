@@ -129,9 +129,11 @@ enum {
                                                                is already busy, so need to keep
                                                                checking events for it in the
                                                                main progress loop. */
-    UCP_WORKER_IFACE_FLAG_UNUSED            = UCS_BIT(3)  /**< There is another UCP iface
+    UCP_WORKER_IFACE_FLAG_UNUSED            = UCS_BIT(3), /**< There is another UCP iface
                                                                with the same caps, but
                                                                with better performance */
+    UCP_WORKER_IFACE_FLAG_EP_EVENTS         = UCS_BIT(4)  /**< Endpoint events are
+                                                               supported */
 };
 
 
@@ -222,6 +224,20 @@ typedef khash_t(ucp_worker_rkey_config) ucp_worker_rkey_config_hash_t;
 /* Hash map of UCT EPs that are being discarded on UCP Worker */
 KHASH_TYPE(ucp_worker_discard_uct_ep_hash, uct_ep_h, ucp_request_t*);
 typedef khash_t(ucp_worker_discard_uct_ep_hash) ucp_worker_discard_uct_ep_hash_t;
+
+
+/* Path estimates of one configuration and set of lanes of an endpoint,
+ * allocated only for endpoints receiving events. */
+typedef struct {
+    uint8_t                pending;         /* An update is scheduled */
+    ucp_worker_cfg_index_t cfg_index;       /* Configuration of the samples */
+    uint32_t               lane_generation; /* Lanes of the samples */
+    ucp_lane_map_t         valid;           /* Lanes which have a sample */
+    double                 bandwidth[];     /* Lane bandwidths */
+} ucp_ep_path_bw_t;
+
+
+KHASH_TYPE(ucp_worker_ep_path_bw, ucp_ep_h, ucp_ep_path_bw_t*);
 
 
 /**
@@ -405,6 +421,7 @@ typedef struct ucp_worker {
     UCS_PTR_MAP_T(request)           request_map;         /* UCP requests key to
                                                              ptr mapping */
     kh_ucp_worker_remote_flush_t     remote_flush_hash;
+    kh_ucp_worker_ep_path_bw_t       ep_path_bw;          /* EP path bandwidth samples */
 
     ucp_ep_config_arr_t              ep_config; /* EP configurations storage */
 
@@ -477,6 +494,10 @@ ucs_status_t ucp_worker_iface_init(ucp_worker_h worker, ucp_rsc_index_t tl_id,
                                    ucp_worker_iface_t *wiface);
 
 void ucp_worker_iface_cleanup(ucp_worker_iface_t *wiface);
+
+void ucp_worker_ep_path_bw_cleanup(ucp_ep_h ep);
+
+void ucp_worker_ep_path_bw_refresh(ucp_ep_h ep, ucp_ep_path_bw_t *state);
 
 void ucp_worker_iface_progress_ep(ucp_worker_iface_t *wiface);
 
