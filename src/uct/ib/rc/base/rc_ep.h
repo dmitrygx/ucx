@@ -303,6 +303,14 @@ void uct_rc_fc_cleanup(uct_rc_fc_t *fc);
 
 ucs_status_t uct_rc_ep_fc_grant(uct_pending_req_t *self);
 
+/**
+ * Token failover keeps the outstanding operations of a failed endpoint until
+ * uct_ep_outstanding_purge(), while the error completions return the TX CQ
+ * credits of their WQEs. The interface ops buffer has one send op per TX CQ
+ * credit, so move the send ops from it to copies from the send op pool.
+ */
+void uct_rc_txqp_hold_send_ops(uct_rc_iface_t *iface, uct_rc_txqp_t *txqp);
+
 void uct_rc_txqp_purge_outstanding(uct_rc_iface_t *iface, uct_rc_txqp_t *txqp,
                                    ucs_status_t status, uint16_t sn, int warn);
 
