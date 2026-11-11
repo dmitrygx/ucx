@@ -1865,6 +1865,10 @@ uct_rc_mlx5_ep_outstanding_complete_send_ops(uct_rc_iface_t *iface,
                                                op->wqe_end_pi : op->sn,
                                        <=, pi)) {
         if (op->flags & UCT_RC_IFACE_SEND_OP_FLAG_CANCEL_ON_PURGE) {
+            if (op->handler == uct_rc_ep_get_sgl_zcopy_completion_handler) {
+                uct_rc_op_release_reads_get_zcopy(op);
+                uct_rc_iface_update_reads(iface);
+            }
             uct_invoke_completion(op->user_comp, UCS_ERR_CANCELED);
             op->flags &= ~(UCT_RC_IFACE_SEND_OP_FLAG_CANCEL_ON_PURGE |
                            UCT_RC_IFACE_SEND_OP_FLAG_INUSE |

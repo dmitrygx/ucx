@@ -342,10 +342,7 @@ struct uct_rc_iface_send_op {
     uct_rc_send_handler_t         handler;
     uint16_t                      sn;
     uint16_t                      flags;
-    union {
-        unsigned                  length;
-        uint16_t                  wqe_end_pi; /* cancel-on-purge WQE range */
-    };
+    unsigned                      length;
     union {
         void                      *buffer;     /* atomics / desc /
                                                   FC_PURE_GRANT request */
@@ -362,6 +359,7 @@ struct uct_rc_iface_send_op {
 #if ENABLE_DEBUG_DATA
     const char                    *name;       /* object ID, debug only */
 #endif
+    uint16_t                      wqe_end_pi; /* cancel-on-purge WQE range */
 };
 
 
