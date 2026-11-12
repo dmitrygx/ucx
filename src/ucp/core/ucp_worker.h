@@ -226,14 +226,24 @@ KHASH_TYPE(ucp_worker_discard_uct_ep_hash, uct_ep_h, ucp_request_t*);
 typedef khash_t(ucp_worker_discard_uct_ep_hash) ucp_worker_discard_uct_ep_hash_t;
 
 
+/* Operations whose path bandwidth is sampled */
+typedef enum {
+    UCP_EP_PATH_BW_OP_PUT,
+    UCP_EP_PATH_BW_OP_GET,
+    UCP_EP_PATH_BW_OP_LAST
+} ucp_ep_path_bw_op_t;
+
+
 /* Path estimates of one configuration and set of lanes of an endpoint,
  * allocated only for endpoints receiving events. */
 typedef struct {
     uint8_t                pending;         /* An update is scheduled */
     ucp_worker_cfg_index_t cfg_index;       /* Configuration of the samples */
     uint32_t               lane_generation; /* Lanes of the samples */
-    ucp_lane_map_t         valid;           /* Lanes which have a sample */
-    double                 bandwidth[];     /* Lane bandwidths */
+    /* Lanes which have a sample of each operation */
+    ucp_lane_map_t         valid[UCP_EP_PATH_BW_OP_LAST];
+    /* Lane bandwidths of each operation */
+    double                 bandwidth[][UCP_EP_PATH_BW_OP_LAST];
 } ucp_ep_path_bw_t;
 
 

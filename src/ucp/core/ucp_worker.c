@@ -1034,6 +1034,57 @@ static ucp_ep_path_bw_t *ucp_worker_ep_path_bw_get(ucp_ep_h ep)
     return state;
 }
 
+/* Sample the path bandwidth of an operation on a lane, and return whether the
+ * lane is slower than the static lane model assumes */
+static int ucp_worker_ep_path_bw_sample(ucp_ep_h ep, ucp_ep_path_bw_t *state,
+                                        ucp_worker_iface_t *wiface,
+                                        ucp_lane_index_t lane,
+                                        ucp_ep_path_bw_op_t op)
+{
+    static const char *op_names[] = {
+        [UCP_EP_PATH_BW_OP_PUT] = "put",
+        [UCP_EP_PATH_BW_OP_GET] = "get"
+    };
+    ucp_context_h context            = ep->worker->context;
+    const uct_ppn_bandwidth_t *model = &wiface->attr.bandwidth;
+    uct_ep_attr_t attr               = {
+        .field_mask = UCT_EP_ATTR_FIELD_BANDWIDTH
+    };
+    uct_perf_attr_t perf_attr;
+    ucs_status_t status;
+    double bandwidth;
+
+    /* Put is the default operation of the query. Get can be limited by the
+     * read path, so it is compared with the static path estimate of get. */
+    if (op == UCP_EP_PATH_BW_OP_GET) {
+        attr.field_mask     |= UCT_EP_ATTR_FIELD_OPERATION;
+        attr.operation       = UCT_EP_OP_GET_ZCOPY;
+        perf_attr.field_mask = UCT_PERF_ATTR_FIELD_OPERATION |
+                               UCT_PERF_ATTR_FIELD_PATH_BANDWIDTH;
+        perf_attr.operation  = UCT_EP_OP_GET_ZCOPY;
+        if (uct_iface_estimate_perf(wiface->iface, &perf_attr) == UCS_OK) {
+            model = &perf_attr.path_bandwidth;
+        }
+    }
+
+    status = uct_ep_query(ucp_ep_get_lane(ep, lane), &attr);
+    if (status == UCS_OK) {
+        bandwidth = ucp_proto_common_iface_bandwidth(context, &attr.bandwidth);
+        ucs_assertv(bandwidth >= 0, "ep %p lane[%u] bandwidth=%f", ep, lane,
+                    bandwidth);
+        /* Below 1 B/s, the path is considered stalled */
+        state->bandwidth[lane][op] = (bandwidth < 1.0) ? 0 : bandwidth;
+        state->valid[op]          |= UCS_BIT(lane);
+        ucs_debug("ep %p lane[%u] %s path bandwidth %.0f B/s", ep, lane,
+                  op_names[op], state->bandwidth[lane][op]);
+    }
+
+    /* Without a newer sample, the previous one is still the best */
+    return (state->valid[op] & UCS_BIT(lane)) &&
+           (state->bandwidth[lane][op] <
+            ucp_proto_common_iface_bandwidth(context, model));
+}
+
 static unsigned ucp_worker_ep_path_bw_progress(void *arg)
 {
     ucp_ep_h ep         = arg;
@@ -1042,10 +1093,8 @@ static unsigned ucp_worker_ep_path_bw_progress(void *arg)
     const ucp_ep_config_key_t *key;
     ucp_ep_path_bw_t *state;
     ucp_worker_iface_t *wiface;
-    uct_ep_attr_t attr;
+    ucp_ep_path_bw_op_t op;
     ucp_lane_index_t i, lane;
-    ucs_status_t status;
-    double bandwidth;
 
     UCS_ASYNC_BLOCK(&worker->async);
     state = ucp_worker_ep_path_bw_get(ep);
@@ -1076,27 +1125,10 @@ static unsigned ucp_worker_ep_path_bw_progress(void *arg)
             continue;
         }
 
-        memset(&attr, 0, sizeof(attr));
-        attr.field_mask = UCT_EP_ATTR_FIELD_BANDWIDTH;
-        status          = uct_ep_query(ucp_ep_get_lane(ep, lane), &attr);
-        if (status == UCS_OK) {
-            bandwidth = ucp_proto_common_iface_bandwidth(worker->context,
-                                                         &attr.bandwidth);
-            ucs_assertv(bandwidth >= 0, "ep %p lane[%u] bandwidth=%f", ep,
-                        lane, bandwidth);
-            /* Below 1 B/s, the path is considered stalled */
-            state->bandwidth[lane] = (bandwidth < 1.0) ? 0 : bandwidth;
-            state->valid          |= UCS_BIT(lane);
-            ucs_debug("ep %p lane[%u] path bandwidth %.0f B/s", ep, lane,
-                      state->bandwidth[lane]);
-        }
-
-        /* Without a newer sample, the previous one is still the best */
-        if ((state->valid & UCS_BIT(lane)) &&
-            (state->bandwidth[lane] <
-             ucp_proto_common_iface_bandwidth(worker->context,
-                                              &wiface->attr.bandwidth))) {
-            ucp_ep_update_flags(ep, UCP_EP_FLAG_PATH_DEGRADED, 0);
+        for (op = 0; op < UCP_EP_PATH_BW_OP_LAST; ++op) {
+            if (ucp_worker_ep_path_bw_sample(ep, state, wiface, lane, op)) {
+                ucp_ep_update_flags(ep, UCP_EP_FLAG_PATH_DEGRADED, 0);
+            }
         }
     }
 
