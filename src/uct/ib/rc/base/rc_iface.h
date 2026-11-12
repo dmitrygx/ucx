@@ -342,10 +342,10 @@ struct uct_rc_iface_send_op {
     uct_rc_send_handler_t         handler;
     uint16_t                      sn;
     uint16_t                      flags;
-    union {
-        unsigned                  length;
-        uint16_t                  wqe_end_pi; /* cancel-on-purge WQE range */
-    };
+    /* Cancel-on-purge WQE range. A get canceled on purge still needs its
+     * length to return its read credits. */
+    uint16_t                      wqe_end_pi;
+    unsigned                      length;
     union {
         void                      *buffer;     /* atomics / desc /
                                                   FC_PURE_GRANT request */
