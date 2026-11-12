@@ -2348,6 +2348,63 @@ UCS_TEST_SKIP_COND_P(test_rc_mlx5_cancel_on_purge, get_read_credits,
 
 _UCT_INSTANTIATE_TEST_CASE(test_rc_mlx5_cancel_on_purge, rc_mlx5)
 
+/* The flush memory key of a peer has a region which a probe can read */
+class test_rc_mlx5_flush_probe : public test_rc {
+protected:
+    static uct_rc_mlx5_base_ep_t *rc_ep(entity *e)
+    {
+        return ucs_derived_of(e->ep(0), uct_rc_mlx5_base_ep_t);
+    }
+};
+
+UCS_TEST_SKIP_COND_P(test_rc_mlx5_flush_probe, read_region,
+                     !check_caps(UCT_IFACE_FLAG_GET_ZCOPY))
+{
+    auto peer = ucs_derived_of(m_e2->iface(), uct_rc_iface_t);
+    mapped_buffer target(UCT_IB_MLX5_FLUSH_PROBE_SIZE, 1, *m_e1);
+    uct_completion_t comp;
+    uct_rkey_t rkey;
+
+    /* The peer passes the region with its flush memory key */
+    EXPECT_EQ(uct_rc_iface_flush_rkey_enabled(peer),
+              int(rc_ep(m_e1)->flush_probe));
+    if (!rc_ep(m_e1)->flush_probe) {
+        UCS_TEST_SKIP_R("the peer has no flush memory key");
+    }
+
+    comp.func   = [](uct_completion_t*) {};
+    comp.count  = 1;
+    comp.status = UCS_OK;
+    uct_ib_md_pack_rkey(rc_ep(m_e1)->super.flush_rkey, UCT_IB_INVALID_MKEY,
+                        &rkey);
+    UCS_TEST_GET_BUFFER_IOV(iov, iovcnt, target.ptr(), target.length(),
+                            target.memh(), 1);
+    ASSERT_EQ(UCS_INPROGRESS,
+              uct_ep_get_zcopy(m_e1->ep(0), iov, iovcnt, 0, rkey, &comp));
+    wait_for_value(&comp.count, 0, true);
+    EXPECT_EQ(UCS_OK, comp.status);
+}
+
+UCS_TEST_P(test_rc_mlx5_flush_probe, peer_without_flush_key)
+{
+    uct_iface_params_t params = {};
+
+    params.field_mask = UCT_IFACE_PARAM_FIELD_OPEN_MODE |
+                        UCT_IFACE_PARAM_FIELD_FEATURES;
+    params.open_mode  = UCT_IFACE_OPEN_MODE_DEVICE;
+    params.features   = UCT_IFACE_FEATURE_PUT | UCT_IFACE_FEATURE_GET;
+
+    entity *sender = uct_test::create_entity(params);
+    m_entities.push_back(sender);
+    entity *receiver = uct_test::create_entity(params);
+    m_entities.push_back(receiver);
+    sender->connect(0, *receiver, 0);
+    receiver->connect(0, *sender, 0);
+    EXPECT_FALSE(rc_ep(sender)->flush_probe);
+}
+
+_UCT_INSTANTIATE_TEST_CASE(test_rc_mlx5_flush_probe, rc_mlx5)
+
 class test_rc_srq : public test_rc {
 public:
     test_rc_srq() : m_buf8b(NULL), m_buf8k(NULL)
