@@ -19,6 +19,10 @@
 #include <ucs/type/status.h>
 #include <ucs/sys/ptr_arith.h>
 
+/* Length of the region of the flush memory key which a peer can read, for
+ * example to probe the data path from this device */
+#define UCT_IB_MLX5_FLUSH_PROBE_SIZE 65536
+
 struct uct_rc_mlx5_ext_ops;
 
 /* The common registry selects one RC provider for an interface lifetime. */

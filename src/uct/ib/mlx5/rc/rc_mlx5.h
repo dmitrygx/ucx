@@ -49,7 +49,9 @@ enum {
     /* EP address includes flush_rkey value */
     UCT_RC_MLX5_EP_ADDR_FLAG_FLUSH_RKEY       = UCS_BIT(0),
     /* atomic key has no offset */
-    UCT_RC_MLX5_EP_ADDR_FLAG_NO_ATOMIC_OFFSET = UCS_BIT(1)
+    UCT_RC_MLX5_EP_ADDR_FLAG_NO_ATOMIC_OFFSET = UCS_BIT(1),
+    /* flush memory key has a region of UCT_IB_MLX5_FLUSH_PROBE_SIZE to read */
+    UCT_RC_MLX5_EP_ADDR_FLAG_FLUSH_PROBE      = UCS_BIT(2)
 };
 
 
@@ -62,6 +64,8 @@ typedef struct uct_rc_mlx5_base_ep {
         uct_ib_mlx5_txwq_t   wq;
     } tx;
     uint8_t                  err_handler_inprogress;
+    /* The peer's flush memory key has the probe region */
+    uint8_t                  flush_probe;
     void                    *ext_ctx;
 } uct_rc_mlx5_base_ep_t;
 

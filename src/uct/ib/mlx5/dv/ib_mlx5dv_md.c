@@ -1966,20 +1966,22 @@ static void uct_ib_mlx5_devx_init_flush_mr(uct_ib_mlx5_md_t *md)
         return;
     }
 
-    ucs_assert(UCT_IB_MD_FLUSH_REMOTE_LENGTH <= ucs_get_page_size());
+    /* The remote flush reads the start of the probe region */
+    UCS_STATIC_ASSERT(UCT_IB_MD_FLUSH_REMOTE_LENGTH <=
+                      UCT_IB_MLX5_FLUSH_PROBE_SIZE);
 
     params.field_mask = UCT_MD_MEM_REG_FIELD_FLAGS;
     params.flags      = UCT_MD_MEM_FLAG_HIDE_ERRORS;
 
     status = uct_ib_reg_mr(&md->super, md->zero_buf,
-                           UCT_IB_MD_FLUSH_REMOTE_LENGTH, &params,
+                           UCT_IB_MLX5_FLUSH_PROBE_SIZE, &params,
                            UCT_IB_MEM_ACCESS_FLAGS, NULL, &md->flush_mr);
     if (status != UCS_OK) {
         goto err;
     }
 
     status = uct_ib_mlx5_devx_reg_ksm_data_addr(md, md->zero_buf,
-                                                UCT_IB_MD_FLUSH_REMOTE_LENGTH,
+                                                UCT_IB_MLX5_FLUSH_PROBE_SIZE,
                                                 0, 0, 0, "flush-mr",
                                                 md->flush_mr, 1,
                                                 &md->flush_dvmr,
@@ -2599,8 +2601,12 @@ ucs_status_t uct_ib_mlx5_devx_md_open_common(const char *name, size_t size,
         goto err_lock_destroy;
     }
 
-    status = uct_ib_mlx5_md_buf_alloc(md, ucs_get_page_size(), 0, &md->zero_buf,
-                                      &md->zero_mem, 0, "zero umem");
+    /* Also the probe region of the flush memory key */
+    status = uct_ib_mlx5_md_buf_alloc(md,
+                                      ucs_max(ucs_get_page_size(),
+                                              UCT_IB_MLX5_FLUSH_PROBE_SIZE),
+                                      0, &md->zero_buf, &md->zero_mem, 0,
+                                      "zero umem");
     if (status != UCS_OK) {
         goto err_dbrec_mpool_cleanup;
     }
