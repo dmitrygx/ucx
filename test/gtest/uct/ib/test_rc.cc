@@ -2283,6 +2283,71 @@ UCS_TEST_P(test_rc_mlx5_ep_bw_query_provider_no_op, operation)
 
 _UCT_INSTANTIATE_TEST_CASE(test_rc_mlx5_ep_bw_query_provider_no_op, rc_mlx5)
 
+/*
+ * An RC provider marks its own operations to be canceled on purge, and keeps
+ * them outstanding until the end of their WQE chain. A get marked so must still
+ * return the read credits it took.
+ */
+class test_rc_mlx5_cancel_on_purge : public test_rc {
+protected:
+    struct marked_completion {
+        uct_completion_t       super;
+        uct_rc_iface_send_op_t *op;
+    };
+
+    /* Like a provider, restore the flag before the operation returns to the
+     * pool */
+    static void complete(uct_completion_t *comp)
+    {
+        auto marked = ucs_container_of(comp, marked_completion, super);
+
+        marked->op->flags &= ~UCT_RC_IFACE_SEND_OP_FLAG_CANCEL_ON_PURGE;
+    }
+};
+
+UCS_TEST_SKIP_COND_P(test_rc_mlx5_cancel_on_purge, get_read_credits,
+                     !check_caps(UCT_IFACE_FLAG_GET_ZCOPY))
+{
+    const size_t length     = 32 * UCS_KBYTE;
+    auto iface              = ucs_derived_of(m_e1->iface(),
+                                             uct_rc_mlx5_iface_common_t);
+    auto ep                 = ucs_derived_of(m_e1->ep(0),
+                                             uct_rc_mlx5_base_ep_t);
+    const ssize_t available = iface->super.tx.reads_available;
+    mapped_buffer source(2 * length, 17, *m_e2);
+    mapped_buffer target(2 * length, 0, *m_e1);
+    void *buffers[]         = {target.ptr(),
+                               UCS_PTR_BYTE_OFFSET(target.ptr(), length)};
+    size_t lengths[]        = {length, length};
+    uct_mem_h memhs[]       = {target.memh(), target.memh()};
+    uint64_t remote_addrs[] = {source.addr(), source.addr() + length};
+    uct_rkey_t rkeys[]      = {source.rkey(), source.rkey()};
+    marked_completion comp  = {};
+
+    /* With a finite budget, a wrong amount does not overflow */
+    iface->super.tx.reads_available = UCS_MBYTE;
+    comp.super.func                 = complete;
+    comp.super.count                = 1;
+    comp.super.status               = UCS_OK;
+    ASSERT_EQ(UCS_INPROGRESS, uct_rc_mlx5_base_ep_get_sgl_zcopy(
+            m_e1->ep(0), buffers, lengths, memhs, remote_addrs, rkeys, NULL,
+            NULL, 2, &comp.super));
+
+    /* Mark the operation like a provider does: it ends at the last WQE */
+    comp.op             = ucs_queue_tail_elem_non_empty(
+            &ep->super.txqp.outstanding, uct_rc_iface_send_op_t, queue);
+    comp.op->wqe_end_pi = ep->tx.wq.sig_pi;
+    comp.op->flags     |= UCT_RC_IFACE_SEND_OP_FLAG_CANCEL_ON_PURGE;
+
+    wait_for_value(&comp.super.count, 0, true);
+    EXPECT_EQ(UCS_OK, comp.super.status);
+    EXPECT_EQ(ssize_t(UCS_MBYTE), iface->super.tx.reads_available);
+    iface->super.tx.reads_available = available;
+    target.pattern_check(17);
+}
+
+_UCT_INSTANTIATE_TEST_CASE(test_rc_mlx5_cancel_on_purge, rc_mlx5)
+
 class test_rc_srq : public test_rc {
 public:
     test_rc_srq() : m_buf8b(NULL), m_buf8k(NULL)
