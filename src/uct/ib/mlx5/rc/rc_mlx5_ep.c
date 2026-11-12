@@ -75,7 +75,7 @@ uct_rc_mlx5_ep_query_tx_token(uct_rc_mlx5_base_ep_t *ep, uct_ep_attr_t *ep_attr)
 ucs_status_t uct_rc_mlx5_base_ep_query(uct_ep_h tl_ep, uct_ep_attr_t *ep_attr)
 {
     UCT_RC_MLX5_BASE_EP_DECL(tl_ep, iface, ep);
-    uct_ep_attr_t   result    = *ep_attr;
+    uct_ep_attr_t   result    = {.field_mask = ep_attr->field_mask};
     uct_perf_attr_t perf_attr = {};
     uct_ib_mlx5_md_t *md;
     ucs_status_t status;
@@ -85,14 +85,31 @@ ucs_status_t uct_rc_mlx5_base_ep_query(uct_ep_h tl_ep, uct_ep_attr_t *ep_attr)
         return UCS_ERR_UNSUPPORTED;
     }
 
+    /* Copy only the set inputs, an older caller has a shorter uct_ep_attr_t */
+    if (ep_attr->field_mask & UCT_EP_ATTR_FIELD_TX_TOKEN) {
+        result.tx_token = ep_attr->tx_token;
+    }
+
+    if (ep_attr->field_mask & UCT_EP_ATTR_FIELD_OPERATION) {
+        result.operation = ep_attr->operation;
+    }
+
     if (ep_attr->field_mask & UCT_EP_ATTR_FIELD_BANDWIDTH) {
         status = UCS_ERR_UNSUPPORTED;
-        if ((iface->ext_ops != NULL) && (iface->ext_ops->ep_query != NULL)) {
+        if ((iface->ext_ops != NULL) && (iface->ext_ops->ep_query != NULL) &&
+            (!(ep_attr->field_mask & UCT_EP_ATTR_FIELD_OPERATION) ||
+             (iface->ext_ops->flags &
+              UCT_RC_MLX5_EXT_FLAG_EP_QUERY_OPERATION))) {
             status = iface->ext_ops->ep_query(ep->ext_ctx, &result);
         }
 
         if (status == UCS_ERR_UNSUPPORTED) {
             perf_attr.field_mask = UCT_PERF_ATTR_FIELD_PATH_BANDWIDTH;
+            if (ep_attr->field_mask & UCT_EP_ATTR_FIELD_OPERATION) {
+                perf_attr.field_mask |= UCT_PERF_ATTR_FIELD_OPERATION;
+                perf_attr.operation   = ep_attr->operation;
+            }
+
             status = uct_iface_estimate_perf(tl_ep->iface, &perf_attr);
             if (status == UCS_OK) {
                 result.bandwidth = perf_attr.path_bandwidth;
