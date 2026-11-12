@@ -3974,6 +3974,7 @@ public:
                         attr.bandwidth = {0, 32.0 * UCS_GBYTE};
                         attr.latency   = {500e-9, 0};
                         attr.cap.put.max_zcopy = max_zcopy;
+                        attr.cap.get.max_zcopy = max_zcopy;
                     });
         }
         test_ucp_proto_mock::init();
@@ -4010,6 +4011,7 @@ protected:
             }
 
             m_hooks.setup(&tl_ep->iface->ops.ep_put_zcopy, count_put_zcopy);
+            m_hooks.setup(&tl_ep->iface->ops.ep_get_zcopy, count_get_zcopy);
         }
     }
 
@@ -4035,14 +4037,15 @@ protected:
     }
 
     /* Provide a sample per lane and deliver the event from worker progress */
-    void set_samples(ucp_ep_h ep, double first, double second)
+    void set_samples(ucp_ep_h ep, double first, double second,
+                     ucp_ep_path_bw_op_t op = UCP_EP_PATH_BW_OP_PUT)
     {
         uct_ep_h tl_eps[] = {lane_ep(ep, 0), lane_ep(ep, 1)};
 
         ASSERT_NE(nullptr, tl_eps[0]);
         ASSERT_NE(nullptr, tl_eps[1]);
-        m_samples[tl_eps[0]] = first;
-        m_samples[tl_eps[1]] = second;
+        m_samples[op][tl_eps[0]] = first;
+        m_samples[op][tl_eps[1]] = second;
         ucs_callbackq_add_oneshot(&ep->worker->uct->progress_q, this,
                 [](void *arg) -> unsigned {
                     invoke_event(static_cast<uct_ep_h>(arg));
@@ -4066,17 +4069,18 @@ protected:
     }
 
     /* Stored per-process sample of a lane, or NaN if there is none */
-    double sample(ucp_ep_h ep, unsigned lane_id) const
+    double sample(ucp_ep_h ep, unsigned lane_id,
+                  ucp_ep_path_bw_op_t op = UCP_EP_PATH_BW_OP_PUT) const
     {
         auto state            = path_bw(ep);
         ucp_lane_index_t lane = ucp_ep_lookup_lane(ep, lane_ep(ep, lane_id));
 
         if ((state == nullptr) || (lane == UCP_NULL_LANE) ||
-            !(state->valid & UCS_BIT(lane))) {
+            !(state->valid[op] & UCS_BIT(lane))) {
             return std::numeric_limits<double>::quiet_NaN();
         }
 
-        return state->bandwidth[lane];
+        return state->bandwidth[lane][op];
     }
 
     void reset_counters()
@@ -4085,13 +4089,25 @@ protected:
         m_fragments[0] = m_fragments[1] = 0;
     }
 
+    void check_rma(ucp_operation_id_t op_id, ucp_ep_h ep, double first,
+                   double second, size_t size, double tolerance)
+    {
+        reset_counters();
+        send_recv_rma(size, op_id, UCS_MEMORY_TYPE_HOST, ep);
+        EXPECT_EQ(size, m_bytes[0] + m_bytes[1]);
+        EXPECT_NEAR(size * first / (first + second), m_bytes[0], tolerance);
+    }
+
     void check_put(ucp_ep_h ep, double first, double second,
                    size_t size = 40 * UCS_KBYTE, double tolerance = 2)
     {
-        reset_counters();
-        send_recv_rma(size, UCP_OP_ID_PUT, UCS_MEMORY_TYPE_HOST, ep);
-        EXPECT_EQ(size, m_bytes[0] + m_bytes[1]);
-        EXPECT_NEAR(size * first / (first + second), m_bytes[0], tolerance);
+        check_rma(UCP_OP_ID_PUT, ep, first, second, size, tolerance);
+    }
+
+    void check_get(ucp_ep_h ep, double first, double second,
+                   size_t size = 40 * UCS_KBYTE, double tolerance = 2)
+    {
+        check_rma(UCP_OP_ID_GET, ep, first, second, size, tolerance);
     }
 
     void put_sgl(ucp_ep_h ep, size_t num_elems, size_t elem_size)
@@ -4163,13 +4179,9 @@ private:
         }
     }
 
-    static ucs_status_t count_put_zcopy(uct_ep_h ep, const uct_iov_t *iov,
-                                        size_t count, uint64_t remote_addr,
-                                        uct_rkey_t rkey, uct_completion_t *comp)
+    static ucs_status_t count_zcopy(uct_ep_h ep, const uct_iov_t *iov,
+                                    size_t count, ucs_status_t status)
     {
-        auto status = m_self->m_hooks.orig_func(&ep->iface->ops.ep_put_zcopy,
-                                               ep, iov, count, remote_addr,
-                                               rkey, comp);
         size_t length = 0;
 
         if (!UCS_STATUS_IS_ERR(status)) {
@@ -4180,6 +4192,26 @@ private:
         }
 
         return status;
+    }
+
+    static ucs_status_t count_put_zcopy(uct_ep_h ep, const uct_iov_t *iov,
+                                        size_t count, uint64_t remote_addr,
+                                        uct_rkey_t rkey, uct_completion_t *comp)
+    {
+        return count_zcopy(ep, iov, count,
+                           m_self->m_hooks.orig_func(
+                                   &ep->iface->ops.ep_put_zcopy, ep, iov,
+                                   count, remote_addr, rkey, comp));
+    }
+
+    static ucs_status_t count_get_zcopy(uct_ep_h ep, const uct_iov_t *iov,
+                                        size_t count, uint64_t remote_addr,
+                                        uct_rkey_t rkey, uct_completion_t *comp)
+    {
+        return count_zcopy(ep, iov, count,
+                           m_self->m_hooks.orig_func(
+                                   &ep->iface->ops.ep_get_zcopy, ep, iov,
+                                   count, remote_addr, rkey, comp));
     }
 
     static ucs_status_t
@@ -4206,6 +4238,11 @@ private:
 
     static ucs_status_t query_bandwidth(uct_ep_h ep, uct_ep_attr_t *attr)
     {
+        /* Put is the default operation of the query */
+        auto op = ((attr->field_mask & UCT_EP_ATTR_FIELD_OPERATION) &&
+                   (attr->operation == UCT_EP_OP_GET_ZCOPY)) ?
+                          UCP_EP_PATH_BW_OP_GET : UCP_EP_PATH_BW_OP_PUT;
+
         if (attr->field_mask & UCT_EP_ATTR_FIELD_BANDWIDTH) {
             auto status = m_self->m_query_status.find(ep);
             if (status != m_self->m_query_status.end()) {
@@ -4213,8 +4250,8 @@ private:
             }
 
             /* Like the default path estimate, a shared NIC path rate */
-            auto it = m_self->m_samples.find(ep);
-            if (it != m_self->m_samples.end()) {
+            auto it = m_self->m_samples[op].find(ep);
+            if (it != m_self->m_samples[op].end()) {
                 attr->bandwidth = {0, it->second};
                 return UCS_OK;
             }
@@ -4228,7 +4265,7 @@ private:
     static test_ucp_proto_mock_path_bw *m_self;
     ucs::mock m_hooks;
     std::string m_tl_name;
-    std::map<uct_ep_h, double> m_samples;
+    std::map<uct_ep_h, double> m_samples[UCP_EP_PATH_BW_OP_LAST];
     std::map<uct_ep_h, ucs_status_t> m_query_status;
 };
 
@@ -4429,6 +4466,57 @@ UCS_TEST_P(test_ucp_proto_mock_path_bw, put_sgl)
     set_samples(ep, 0, 32.0 * UCS_GBYTE);
     put_sgl(ep, 4, UCS_MBYTE);
     EXPECT_EQ(0u, m_bytes[0]);
+}
+
+UCS_TEST_P(test_ucp_proto_mock_path_bw, get_samples)
+{
+    auto ep = sender().ep();
+
+    set_samples(ep, 32.0 * UCS_GBYTE, 32.0 * UCS_GBYTE);
+    set_samples(ep, 8.0 * UCS_GBYTE, 16.0 * UCS_GBYTE, UCP_EP_PATH_BW_OP_GET);
+    EXPECT_EQ(8.0 * UCS_GBYTE, sample(ep, 0, UCP_EP_PATH_BW_OP_GET));
+    EXPECT_EQ(16.0 * UCS_GBYTE, sample(ep, 1, UCP_EP_PATH_BW_OP_GET));
+    EXPECT_EQ(32.0 * UCS_GBYTE, sample(ep, 0));
+    EXPECT_EQ(32.0 * UCS_GBYTE, sample(ep, 1));
+    /* A degraded get path is enough to mark the endpoint */
+    EXPECT_TRUE(ep->flags & UCP_EP_FLAG_PATH_DEGRADED);
+
+    set_samples(ep, 32.0 * UCS_GBYTE, 32.0 * UCS_GBYTE, UCP_EP_PATH_BW_OP_GET);
+    EXPECT_FALSE(ep->flags & UCP_EP_FLAG_PATH_DEGRADED);
+}
+
+UCS_TEST_P(test_ucp_proto_mock_path_bw, get_split_and_recovery)
+{
+    auto ep = sender().ep();
+
+    check_get(ep, 1, 1);
+    set_samples(ep, 8.0 * UCS_GBYTE, 32.0 * UCS_GBYTE, UCP_EP_PATH_BW_OP_GET);
+    check_get(ep, 1, 4);
+    check_get(ep, 1, 4, 10 * UCS_MBYTE + 100 * UCS_KBYTE, UCS_MBYTE / 4);
+    set_samples(ep, 32.0 * UCS_GBYTE, 32.0 * UCS_GBYTE, UCP_EP_PATH_BW_OP_GET);
+    check_get(ep, 1, 1);
+}
+
+UCS_TEST_P(test_ucp_proto_mock_path_bw, get_put_independent)
+{
+    auto ep = sender().ep();
+
+    /* Each operation is split by its own samples */
+    set_samples(ep, 8.0 * UCS_GBYTE, 32.0 * UCS_GBYTE);
+    check_put(ep, 1, 4);
+    check_get(ep, 1, 1);
+
+    set_samples(ep, 32.0 * UCS_GBYTE, 8.0 * UCS_GBYTE, UCP_EP_PATH_BW_OP_GET);
+    check_put(ep, 1, 4);
+    check_get(ep, 4, 1);
+}
+
+UCS_TEST_P(test_ucp_proto_mock_path_bw, get_zero_sample_skips_lane)
+{
+    set_samples(sender().ep(), 0, 32.0 * UCS_GBYTE, UCP_EP_PATH_BW_OP_GET);
+    check_get(sender().ep(), 0, 1, 40 * UCS_KBYTE, 0);
+    check_get(sender().ep(), 0, 1, 10 * UCS_MBYTE, 0);
+    EXPECT_EQ(0u, m_fragments[0]);
 }
 
 UCP_INSTANTIATE_TEST_CASE_TLS(test_ucp_proto_mock_path_bw, rcx, "rc_x")
