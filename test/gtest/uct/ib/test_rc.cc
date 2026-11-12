@@ -2286,9 +2286,31 @@ _UCT_INSTANTIATE_TEST_CASE(test_rc_mlx5_ep_bw_query_provider_no_op, rc_mlx5)
 /*
  * An RC provider marks its own operations to be canceled on purge, and keeps
  * them outstanding until the end of their WQE chain. A get marked so must still
- * return the read credits it took.
+ * return the read credits it took, when it completes and when it is canceled.
  */
-class test_rc_mlx5_cancel_on_purge : public test_rc {
+class test_rc_mlx5_cancel_on_purge : public uct_test {
+public:
+    void init() override
+    {
+        uct_test::init();
+        m_e = uct_test::create_entity(0, error_handler);
+        m_entities.push_back(m_e);
+        m_e->connect(0, *m_e, 0);
+
+        /* With a finite budget, a wrong amount does not overflow */
+        m_iface     = ucs_derived_of(m_e->iface(), uct_rc_mlx5_iface_common_t);
+        m_available = m_iface->super.tx.reads_available;
+        m_iface->super.tx.reads_available = UCS_MBYTE;
+    }
+
+    void cleanup() override
+    {
+        if (m_iface != NULL) {
+            m_iface->super.tx.reads_available = m_available;
+        }
+        uct_test::cleanup();
+    }
+
 protected:
     struct marked_completion {
         uct_completion_t       super;
@@ -2303,47 +2325,88 @@ protected:
 
         marked->op->flags &= ~UCT_RC_IFACE_SEND_OP_FLAG_CANCEL_ON_PURGE;
     }
+
+    static ucs_status_t
+    error_handler(void *arg, uct_ep_h ep, ucs_status_t status)
+    {
+        ++static_cast<test_rc_mlx5_cancel_on_purge*>(arg)->m_errors;
+        return UCS_INPROGRESS;
+    }
+
+    /* Get the source buffer with two WQEs and mark the operation like a
+     * provider does: it ends at the last WQE */
+    void post_marked_get(const mapped_buffer &source,
+                         const mapped_buffer &target, marked_completion &comp)
+    {
+        const size_t length     = source.length() / 2;
+        auto ep                 = ucs_derived_of(m_e->ep(0),
+                                                 uct_rc_mlx5_base_ep_t);
+        void *buffers[]         = {target.ptr(),
+                                   UCS_PTR_BYTE_OFFSET(target.ptr(), length)};
+        size_t lengths[]        = {length, length};
+        uct_mem_h memhs[]       = {target.memh(), target.memh()};
+        uint64_t remote_addrs[] = {source.addr(), source.addr() + length};
+        uct_rkey_t rkeys[]      = {source.rkey(), source.rkey()};
+
+        comp.super.func   = complete;
+        comp.super.count  = 1;
+        comp.super.status = UCS_OK;
+        ASSERT_EQ(UCS_INPROGRESS, uct_rc_mlx5_base_ep_get_sgl_zcopy(
+                m_e->ep(0), buffers, lengths, memhs, remote_addrs, rkeys, NULL,
+                NULL, 2, &comp.super));
+
+        comp.op             = ucs_queue_tail_elem_non_empty(
+                &ep->super.txqp.outstanding, uct_rc_iface_send_op_t, queue);
+        comp.op->wqe_end_pi = ep->tx.wq.sig_pi;
+        comp.op->flags     |= UCT_RC_IFACE_SEND_OP_FLAG_CANCEL_ON_PURGE;
+    }
+
+    entity                     *m_e         = NULL;
+    uct_rc_mlx5_iface_common_t *m_iface     = NULL;
+    ssize_t                    m_available = 0;
+    unsigned                   m_errors    = 0;
 };
 
 UCS_TEST_SKIP_COND_P(test_rc_mlx5_cancel_on_purge, get_read_credits,
                      !check_caps(UCT_IFACE_FLAG_GET_ZCOPY))
 {
-    const size_t length     = 32 * UCS_KBYTE;
-    auto iface              = ucs_derived_of(m_e1->iface(),
-                                             uct_rc_mlx5_iface_common_t);
-    auto ep                 = ucs_derived_of(m_e1->ep(0),
-                                             uct_rc_mlx5_base_ep_t);
-    const ssize_t available = iface->super.tx.reads_available;
-    mapped_buffer source(2 * length, 17, *m_e2);
-    mapped_buffer target(2 * length, 0, *m_e1);
-    void *buffers[]         = {target.ptr(),
-                               UCS_PTR_BYTE_OFFSET(target.ptr(), length)};
-    size_t lengths[]        = {length, length};
-    uct_mem_h memhs[]       = {target.memh(), target.memh()};
-    uint64_t remote_addrs[] = {source.addr(), source.addr() + length};
-    uct_rkey_t rkeys[]      = {source.rkey(), source.rkey()};
-    marked_completion comp  = {};
+    mapped_buffer source(64 * UCS_KBYTE, 17, *m_e);
+    mapped_buffer target(64 * UCS_KBYTE, 0, *m_e);
+    marked_completion comp = {};
 
-    /* With a finite budget, a wrong amount does not overflow */
-    iface->super.tx.reads_available = UCS_MBYTE;
-    comp.super.func                 = complete;
-    comp.super.count                = 1;
-    comp.super.status               = UCS_OK;
-    ASSERT_EQ(UCS_INPROGRESS, uct_rc_mlx5_base_ep_get_sgl_zcopy(
-            m_e1->ep(0), buffers, lengths, memhs, remote_addrs, rkeys, NULL,
-            NULL, 2, &comp.super));
-
-    /* Mark the operation like a provider does: it ends at the last WQE */
-    comp.op             = ucs_queue_tail_elem_non_empty(
-            &ep->super.txqp.outstanding, uct_rc_iface_send_op_t, queue);
-    comp.op->wqe_end_pi = ep->tx.wq.sig_pi;
-    comp.op->flags     |= UCT_RC_IFACE_SEND_OP_FLAG_CANCEL_ON_PURGE;
-
+    post_marked_get(source, target, comp);
     wait_for_value(&comp.super.count, 0, true);
     EXPECT_EQ(UCS_OK, comp.super.status);
-    EXPECT_EQ(ssize_t(UCS_MBYTE), iface->super.tx.reads_available);
-    iface->super.tx.reads_available = available;
+    EXPECT_EQ(ssize_t(UCS_MBYTE), m_iface->super.tx.reads_available);
     target.pattern_check(17);
+}
+
+UCS_TEST_SKIP_COND_P(test_rc_mlx5_cancel_on_purge, purged_get_read_credits,
+                     !check_caps(UCT_IFACE_FLAG_GET_ZCOPY))
+{
+    mapped_buffer source(64 * UCS_KBYTE, 17, *m_e);
+    mapped_buffer target(64 * UCS_KBYTE, 0, *m_e);
+    marked_completion comp                   = {};
+    uct_ep_invalidate_params_t invalidate    = {};
+    uct_ep_outstanding_purge_params_t params = {};
+
+    /* The QP fails before the get, so the purge cancels it */
+    ASSERT_UCS_OK(uct_ep_invalidate(m_e->ep(0), &invalidate));
+    post_marked_get(source, target, comp);
+    {
+        scoped_log_handler hide_warn(hide_warns_logger);
+        wait_for_flag(&m_errors);
+    }
+    ASSERT_EQ(1u, m_errors);
+
+    params.field_mask = UCT_EP_OUTSTANDING_FIELD_CB;
+    params.cb         = [](const uct_ep_op_info_t*, void*) {
+        ADD_FAILURE() << "the operation of the provider was reported";
+    };
+    ASSERT_UCS_OK(uct_ep_outstanding_purge(m_e->ep(0), &params));
+    EXPECT_EQ(0, comp.super.count);
+    EXPECT_EQ(UCS_ERR_CANCELED, comp.super.status);
+    EXPECT_EQ(ssize_t(UCS_MBYTE), m_iface->super.tx.reads_available);
 }
 
 _UCT_INSTANTIATE_TEST_CASE(test_rc_mlx5_cancel_on_purge, rc_mlx5)
