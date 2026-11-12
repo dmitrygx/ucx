@@ -2110,6 +2110,179 @@ UCS_TEST_SKIP_COND_P(test_rc_mlx5_token_query, put_sgl_zcopy,
 
 _UCT_INSTANTIATE_TEST_CASE(test_rc_mlx5_token_query, rc_mlx5)
 
+class test_rc_mlx5_ep_bw_query : public test_rc {
+protected:
+    uct_rc_mlx5_iface_common_t *rc_mlx5_iface()
+    {
+        return ucs_derived_of(m_e1->iface(), uct_rc_mlx5_iface_common_t);
+    }
+
+    /* UCT_EP_OP_LAST queries the bandwidth without an operation */
+    uct_ppn_bandwidth_t query_bandwidth(uct_ep_operation_t op = UCT_EP_OP_LAST)
+    {
+        uct_ep_attr_t attr = {};
+
+        attr.field_mask = UCT_EP_ATTR_FIELD_BANDWIDTH;
+        if (op != UCT_EP_OP_LAST) {
+            attr.field_mask |= UCT_EP_ATTR_FIELD_OPERATION;
+            attr.operation   = op;
+        }
+
+        EXPECT_UCS_OK(uct_ep_query(m_e1->ep(0), &attr));
+        return attr.bandwidth;
+    }
+
+    uct_ppn_bandwidth_t estimate_bandwidth(uct_ep_operation_t op)
+    {
+        uct_perf_attr_t perf_attr = {};
+
+        perf_attr.field_mask = UCT_PERF_ATTR_FIELD_OPERATION |
+                               UCT_PERF_ATTR_FIELD_PATH_BANDWIDTH;
+        perf_attr.operation  = op;
+        EXPECT_UCS_OK(uct_iface_estimate_perf(m_e1->iface(), &perf_attr));
+        return perf_attr.path_bandwidth;
+    }
+
+    static void expect_bandwidth(const uct_ppn_bandwidth_t &expected,
+                                 const uct_ppn_bandwidth_t &actual)
+    {
+        EXPECT_DOUBLE_EQ(expected.dedicated, actual.dedicated);
+        EXPECT_DOUBLE_EQ(expected.shared, actual.shared);
+    }
+};
+
+UCS_TEST_P(test_rc_mlx5_ep_bw_query, static_estimate)
+{
+    if (rc_mlx5_iface()->ext_ops != NULL) {
+        UCS_TEST_SKIP_R("an rc provider is attached");
+    }
+
+    /* Without an operation, the estimate is for put */
+    expect_bandwidth(estimate_bandwidth(UCT_EP_OP_PUT_ZCOPY),
+                     query_bandwidth());
+    for (auto op : {UCT_EP_OP_PUT_ZCOPY, UCT_EP_OP_GET_ZCOPY}) {
+        expect_bandwidth(estimate_bandwidth(op), query_bandwidth(op));
+    }
+}
+
+_UCT_INSTANTIATE_TEST_CASE(test_rc_mlx5_ep_bw_query, rc_mlx5)
+
+class test_rc_mlx5_ep_bw_query_provider : public test_rc_mlx5_ep_bw_query {
+public:
+    test_rc_mlx5_ep_bw_query_provider() : m_registered(false)
+    {
+    }
+
+    ~test_rc_mlx5_ep_bw_query_provider()
+    {
+        /* A skip from init() does not call cleanup() */
+        unregister_provider();
+    }
+
+    void init() override
+    {
+        uct_ib_mlx5_ext_ops_t ops = {};
+
+        ucs_strncpy_zero(ops.name, PROVIDER_NAME, sizeof(ops.name));
+        ops.rc_ops = rc_ops();
+        ASSERT_UCS_OK(uct_ib_mlx5_ext_register(&ops));
+        m_registered = true;
+
+        test_rc_mlx5_ep_bw_query::init();
+        if (rc_mlx5_iface()->ext_ops != rc_ops()) {
+            UCS_TEST_SKIP_R("another rc provider is attached");
+        }
+    }
+
+    void cleanup() override
+    {
+        test_rc_mlx5_ep_bw_query::cleanup();
+        unregister_provider();
+    }
+
+protected:
+    static constexpr const char *PROVIDER_NAME = "gtest_ep_bw";
+    static constexpr double PUT_BANDWIDTH      = 1234.5e6;
+    static constexpr double GET_BANDWIDTH      = 567.8e6;
+
+    /* Static, since an interface uses it until the interface is closed */
+    virtual const uct_rc_mlx5_ext_ops_t *rc_ops() const
+    {
+        static const uct_rc_mlx5_ext_ops_t ops =
+                make_rc_ops(UCT_RC_MLX5_EXT_FLAG_EP_QUERY_OPERATION);
+
+        return &ops;
+    }
+
+    static uct_rc_mlx5_ext_ops_t make_rc_ops(uint64_t flags)
+    {
+        uct_rc_mlx5_ext_ops_t ops = {};
+
+        ops.flags    = flags;
+        ops.ep_query = ep_query;
+        return ops;
+    }
+
+private:
+    static ucs_status_t ep_query(void *ep_ctx, uct_ep_attr_t *ep_attr)
+    {
+        bool is_get = (ep_attr->field_mask & UCT_EP_ATTR_FIELD_OPERATION) &&
+                      uct_ep_op_is_get(ep_attr->operation);
+
+        ep_attr->bandwidth.dedicated = is_get ? GET_BANDWIDTH : PUT_BANDWIDTH;
+        ep_attr->bandwidth.shared    = 0;
+        return UCS_OK;
+    }
+
+    void unregister_provider()
+    {
+        if (m_registered) {
+            uct_ib_mlx5_ext_unregister(PROVIDER_NAME);
+            m_registered = false;
+        }
+    }
+
+    bool m_registered;
+};
+
+constexpr double test_rc_mlx5_ep_bw_query_provider::PUT_BANDWIDTH;
+constexpr double test_rc_mlx5_ep_bw_query_provider::GET_BANDWIDTH;
+
+UCS_TEST_P(test_rc_mlx5_ep_bw_query_provider, operation)
+{
+    /* Without an operation, the provider reports put */
+    EXPECT_DOUBLE_EQ(PUT_BANDWIDTH, query_bandwidth().dedicated);
+    EXPECT_DOUBLE_EQ(PUT_BANDWIDTH,
+                     query_bandwidth(UCT_EP_OP_PUT_ZCOPY).dedicated);
+    EXPECT_DOUBLE_EQ(GET_BANDWIDTH,
+                     query_bandwidth(UCT_EP_OP_GET_ZCOPY).dedicated);
+}
+
+_UCT_INSTANTIATE_TEST_CASE(test_rc_mlx5_ep_bw_query_provider, rc_mlx5)
+
+/* A provider without UCT_RC_MLX5_EXT_FLAG_EP_QUERY_OPERATION may report the
+ * bandwidth of another operation, so it is not asked for an operation */
+class test_rc_mlx5_ep_bw_query_provider_no_op :
+        public test_rc_mlx5_ep_bw_query_provider {
+protected:
+    const uct_rc_mlx5_ext_ops_t *rc_ops() const override
+    {
+        static const uct_rc_mlx5_ext_ops_t ops = make_rc_ops(0);
+
+        return &ops;
+    }
+};
+
+UCS_TEST_P(test_rc_mlx5_ep_bw_query_provider_no_op, operation)
+{
+    EXPECT_DOUBLE_EQ(PUT_BANDWIDTH, query_bandwidth().dedicated);
+    for (auto op : {UCT_EP_OP_PUT_ZCOPY, UCT_EP_OP_GET_ZCOPY}) {
+        expect_bandwidth(estimate_bandwidth(op), query_bandwidth(op));
+    }
+}
+
+_UCT_INSTANTIATE_TEST_CASE(test_rc_mlx5_ep_bw_query_provider_no_op, rc_mlx5)
+
 class test_rc_srq : public test_rc {
 public:
     test_rc_srq() : m_buf8b(NULL), m_buf8k(NULL)
