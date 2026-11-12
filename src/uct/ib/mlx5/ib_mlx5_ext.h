@@ -48,7 +48,15 @@ enum {
      * continues without the provider when attachment fails. This policy does
      * not suppress ordinary RC errors or endpoint hook errors.
      */
-    UCT_RC_MLX5_EXT_FLAG_REQUIRE_IFACE_ATTACH = UCS_BIT(0)
+    UCT_RC_MLX5_EXT_FLAG_REQUIRE_IFACE_ATTACH = UCS_BIT(0),
+
+    /**
+     * The ep_query hook reports the bandwidth of the operation requested by
+     * @ref UCT_EP_ATTR_FIELD_OPERATION. If unset, the hook is not called for
+     * such queries, and the transport returns its static estimate of the
+     * operation.
+     */
+    UCT_RC_MLX5_EXT_FLAG_EP_QUERY_OPERATION   = UCS_BIT(1)
 };
 
 
@@ -57,8 +65,8 @@ enum {
  */
 typedef struct uct_rc_mlx5_ext_ops {
     /**
-     * Interface attachment policy flags; see
-     * @ref UCT_RC_MLX5_EXT_FLAG_REQUIRE_IFACE_ATTACH.
+     * Provider flags; see @ref UCT_RC_MLX5_EXT_FLAG_REQUIRE_IFACE_ATTACH and
+     * @ref UCT_RC_MLX5_EXT_FLAG_EP_QUERY_OPERATION.
      */
     uint64_t        flags;
 
@@ -100,6 +108,9 @@ typedef struct uct_rc_mlx5_ext_ops {
      *
      * This optional hook requires the endpoint bandwidth-query attribute
      * extension. It may be omitted when that extension is unavailable.
+     * With @ref UCT_RC_MLX5_EXT_FLAG_EP_QUERY_OPERATION, it reports the
+     * bandwidth of the operation given by @ref UCT_EP_ATTR_FIELD_OPERATION,
+     * or returns UCS_ERR_UNSUPPORTED if it does not measure that operation.
      *
      * @param [in]     ep_ctx  Provider context from ep_init.
      * @param [in,out] ep_attr Requested attributes and provider-owned outputs.

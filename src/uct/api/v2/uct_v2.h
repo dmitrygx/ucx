@@ -60,7 +60,8 @@ typedef enum uct_ep_operation {
  */
 enum uct_ep_event_types {
     /** Endpoint path speed changed. The updated bandwidth estimate is available
-     *  through @ref uct_ep_query. */
+     *  through @ref uct_ep_query. The event does not tell which operation is
+     *  affected, so the user should query each operation it uses. */
     UCT_EP_EVENT_PATH_SPEED_CHANGE = UCS_BIT(0)
 };
 
@@ -340,7 +341,9 @@ enum uct_ep_attr_field {
     /** Enables @ref uct_ep_attr::tx_token */
     UCT_EP_ATTR_FIELD_TX_TOKEN        = UCS_BIT(2),
     /** Enables @ref uct_ep_attr::bandwidth */
-    UCT_EP_ATTR_FIELD_BANDWIDTH       = UCS_BIT(3)
+    UCT_EP_ATTR_FIELD_BANDWIDTH       = UCS_BIT(3),
+    /** Enables @ref uct_ep_attr::operation */
+    UCT_EP_ATTR_FIELD_OPERATION       = UCS_BIT(4)
 };
 
 
@@ -498,8 +501,20 @@ struct uct_ep_attr {
      * Defaults to @ref uct_perf_attr_t::path_bandwidth value provided
      * by @ref uct_iface_estimate_perf when
      * unsupported.
+     *
+     * If @ref UCT_EP_ATTR_FIELD_OPERATION is set, the estimate is for
+     * @ref operation. Otherwise, it is for sending data to the remote peer, as
+     * by @ref UCT_EP_OP_PUT_ZCOPY.
      */
     uct_ppn_bandwidth_t      bandwidth;
+
+    /**
+     * Operation to report @ref bandwidth for, set by the caller.
+     * Valid when @ref UCT_EP_ATTR_FIELD_OPERATION is set in @ref field_mask.
+     * Get operations move data from the remote peer, so their bandwidth can
+     * differ from the bandwidth of put operations on the same endpoint.
+     */
+    uct_ep_operation_t      operation;
 };
 
 
