@@ -4083,6 +4083,51 @@ protected:
         return state->bandwidth[lane][op];
     }
 
+    /* The endpoint of the receiver which is connected to the one of the
+     * sender, with the hooks of its lanes */
+    ucp_ep_h peer_ep()
+    {
+        auto ep = sender().ep();
+        ucp_ep_ext_t *ep_ext;
+
+        /* Transports without connected endpoints create it on request */
+        EXPECT_UCS_OK(ucp_ep_resolve_remote_id(ep, ucp_ep_get_am_lane(ep)));
+        flush_workers();
+        ucs_list_for_each(ep_ext, &receiver().worker()->all_eps, ep_list) {
+            if ((ep_ext->ep->flags & UCP_EP_FLAG_REMOTE_ID) &&
+                (ep_ext->remote_ep_id == ucp_ep_local_id(ep))) {
+                install_hooks(ep_ext->ep);
+                return ep_ext->ep;
+            }
+        }
+
+        return nullptr;
+    }
+
+    /* Provide the put samples of the peer by the lanes of the sender which
+     * are connected to its lanes */
+    void set_peer_samples(ucp_ep_h peer, double first, double second)
+    {
+        auto ep           = sender().ep();
+        auto lane         = ucp_ep_lookup_lane(ep, lane_ep(ep, 0));
+        auto peer_lane    = ucp_ep_lookup_lane(peer, lane_ep(peer, 0));
+        auto peer_sys_dev = ucp_ep_get_tl_rsc(peer, peer_lane)->sys_device;
+
+        ASSERT_NE(UCP_NULL_LANE, lane);
+        ASSERT_NE(UCP_NULL_LANE, peer_lane);
+        if (ucp_ep_config(ep)->key.lanes[lane].dst_sys_dev == peer_sys_dev) {
+            set_samples(peer, first, second);
+        } else {
+            set_samples(peer, second, first);
+        }
+
+        /* The samples reach the sender in a message of the peer, which can
+         * still be on the wire */
+        flush_workers();
+        while (progress()) {
+        }
+    }
+
     void reset_counters()
     {
         m_bytes[0]     = m_bytes[1]     = 0;
@@ -4516,6 +4561,52 @@ UCS_TEST_P(test_ucp_proto_mock_path_bw, get_zero_sample_skips_lane)
     set_samples(sender().ep(), 0, 32.0 * UCS_GBYTE, UCP_EP_PATH_BW_OP_GET);
     check_get(sender().ep(), 0, 1, 40 * UCS_KBYTE, 0);
     check_get(sender().ep(), 0, 1, 10 * UCS_MBYTE, 0);
+    EXPECT_EQ(0u, m_fragments[0]);
+}
+
+UCS_TEST_P(test_ucp_proto_mock_path_bw, get_peer_put_split_and_recovery)
+{
+    auto ep   = sender().ep();
+    auto peer = peer_ep();
+
+    ASSERT_NE(nullptr, peer);
+    check_get(ep, 1, 1);
+
+    /* The data of get crosses the paths on which the peer puts */
+    set_peer_samples(peer, 8.0 * UCS_GBYTE, 32.0 * UCS_GBYTE);
+    check_get(ep, 1, 4);
+    check_get(ep, 1, 4, 10 * UCS_MBYTE + 100 * UCS_KBYTE, UCS_MBYTE / 4);
+    /* Put of this side uses the opposite direction of the paths */
+    check_put(ep, 1, 1);
+
+    set_peer_samples(peer, 32.0 * UCS_GBYTE, 32.0 * UCS_GBYTE);
+    check_get(ep, 1, 1);
+}
+
+UCS_TEST_P(test_ucp_proto_mock_path_bw, get_peer_put_and_own_get)
+{
+    auto ep   = sender().ep();
+    auto peer = peer_ep();
+
+    ASSERT_NE(nullptr, peer);
+
+    /* The slower of the own get samples and the put samples of the peer */
+    set_samples(ep, 16.0 * UCS_GBYTE, 32.0 * UCS_GBYTE, UCP_EP_PATH_BW_OP_GET);
+    set_peer_samples(peer, 32.0 * UCS_GBYTE, 8.0 * UCS_GBYTE);
+    check_get(ep, 2, 1);
+
+    set_samples(ep, 32.0 * UCS_GBYTE, 32.0 * UCS_GBYTE, UCP_EP_PATH_BW_OP_GET);
+    check_get(ep, 4, 1);
+}
+
+UCS_TEST_P(test_ucp_proto_mock_path_bw, get_peer_put_zero_skips_lane)
+{
+    auto ep   = sender().ep();
+    auto peer = peer_ep();
+
+    ASSERT_NE(nullptr, peer);
+    set_peer_samples(peer, 0, 32.0 * UCS_GBYTE);
+    check_get(ep, 0, 1, 40 * UCS_KBYTE, 0);
     EXPECT_EQ(0u, m_fragments[0]);
 }
 
