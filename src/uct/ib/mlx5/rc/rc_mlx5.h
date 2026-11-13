@@ -66,6 +66,8 @@ typedef struct uct_rc_mlx5_base_ep {
     uint8_t                  err_handler_inprogress;
     /* The peer's flush memory key has the probe region */
     uint8_t                  flush_probe;
+    /* The peer is on the same device, so the path does not leave it */
+    uint8_t                  same_device;
     void                    *ext_ctx;
 } uct_rc_mlx5_base_ep_t;
 

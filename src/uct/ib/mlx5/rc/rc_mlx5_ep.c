@@ -2263,6 +2263,9 @@ uct_rc_mlx5_ep_connect_to_ep_v2(uct_ep_h tl_ep,
     ep->super.super.atomic_mr_offset = uct_ib_md_atomic_offset(
             rc_addr->atomic_mr_id);
     ep->super.super.flags           |= UCT_RC_EP_FLAG_CONNECTED;
+    ep->super.same_device            = uct_ib_iface_is_same_device(
+            ib_addr, uct_ib_iface_port_attr(&iface->super.super)->lid,
+            &iface->super.super.gid_info.gid);
 
     addr_length = UCS_PARAM_VALUE(UCT_EP_CONNECT_TO_EP_PARAM_FIELD, params,
                                   ep_addr_length, EP_ADDR_LENGTH,
@@ -2487,6 +2490,7 @@ UCS_CLASS_INIT_FUNC(uct_rc_mlx5_base_ep_t, const uct_ep_params_t *params)
                               self->tx.wq.super.qp_num, params);
     self->err_handler_inprogress = 0;
     self->flush_probe            = 0;
+    self->same_device            = 0;
     self->ext_ctx                = NULL;
 
     if (self->tx.wq.super.type == UCT_IB_MLX5_OBJ_TYPE_VERBS) {
