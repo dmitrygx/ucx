@@ -2468,6 +2468,18 @@ UCS_TEST_P(test_rc_mlx5_flush_probe, peer_without_flush_key)
 
 _UCT_INSTANTIATE_TEST_CASE(test_rc_mlx5_flush_probe, rc_mlx5)
 
+class test_rc_mlx5_same_device : public test_rc {
+};
+
+UCS_TEST_P(test_rc_mlx5_same_device, loopback)
+{
+    /* The entities of the test are on the same device */
+    EXPECT_TRUE(ucs_derived_of(m_e1->ep(0), uct_rc_mlx5_base_ep_t)->same_device);
+    EXPECT_TRUE(ucs_derived_of(m_e2->ep(0), uct_rc_mlx5_base_ep_t)->same_device);
+}
+
+_UCT_INSTANTIATE_TEST_CASE(test_rc_mlx5_same_device, rc_mlx5)
+
 class test_rc_srq : public test_rc {
 public:
     test_rc_srq() : m_buf8b(NULL), m_buf8k(NULL)
