@@ -60,17 +60,35 @@ ucp_proto_multi_lane_weight(double bandwidth, double total_bandwidth)
     return weight;
 }
 
+/* Lanes with samples which limit an operation. The data of get crosses the
+ * paths on which the peer puts. */
+static UCS_F_ALWAYS_INLINE ucp_lane_map_t
+ucp_proto_rma_sampled_lanes(const ucp_ep_path_bw_t *state,
+                            ucp_ep_path_bw_op_t op)
+{
+    return state->valid[op] |
+           ((op == UCP_EP_PATH_BW_OP_GET) ?
+                    state->valid[UCP_EP_PATH_BW_OP_PEER_PUT] : 0);
+}
+
 static UCS_F_ALWAYS_INLINE double
 ucp_proto_rma_lane_bw(const ucp_ep_path_bw_t *state, ucp_ep_path_bw_op_t op,
                       const ucp_proto_multi_lane_priv_t *lpriv)
 {
     ucp_lane_index_t lane = lpriv->super.lane;
+    double bandwidth      = lpriv->bandwidth;
 
-    if (!(state->valid[op] & UCS_BIT(lane))) {
-        return lpriv->bandwidth;
+    if (state->valid[op] & UCS_BIT(lane)) {
+        bandwidth = ucs_min(bandwidth, state->bandwidth[lane][op]);
     }
 
-    return ucs_min(lpriv->bandwidth, state->bandwidth[lane][op]);
+    if ((op == UCP_EP_PATH_BW_OP_GET) &&
+        (state->valid[UCP_EP_PATH_BW_OP_PEER_PUT] & UCS_BIT(lane))) {
+        bandwidth = ucs_min(bandwidth,
+                            state->bandwidth[lane][UCP_EP_PATH_BW_OP_PEER_PUT]);
+    }
+
+    return bandwidth;
 }
 
 const ucp_proto_multi_lane_priv_t *ucp_proto_rma_adjust_lane(
@@ -115,7 +133,8 @@ const ucp_proto_multi_lane_priv_t *ucp_proto_rma_adjust_lane(
     length = (req->send.state.dt_iter.dt_class == UCP_DATATYPE_SGL) ?
              req->send.rma.sgl.length : req->send.state.dt_iter.length;
     if ((state->cfg_index != req->send.proto_config->ep_cfg_index) ||
-        !(state->valid[op] & mpriv->lane_map) || (length == 0)) {
+        !(ucp_proto_rma_sampled_lanes(state, op) & mpriv->lane_map) ||
+        (length == 0)) {
         return lpriv;
     }
 
