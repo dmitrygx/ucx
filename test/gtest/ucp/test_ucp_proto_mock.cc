@@ -4302,17 +4302,18 @@ protected:
     }
 
     /* Stored per-process sample of a lane, or NaN if there is none */
-    double sample(ucp_ep_h ep, unsigned lane_id) const
+    double sample(ucp_ep_h ep, unsigned lane_id,
+                  ucp_ep_path_bw_op_t op = UCP_EP_PATH_BW_OP_PUT) const
     {
         auto state            = path_bw(ep);
         ucp_lane_index_t lane = ucp_ep_lookup_lane(ep, lane_ep(ep, lane_id));
 
         if ((state == nullptr) || (lane == UCP_NULL_LANE) ||
-            !(state->valid & UCS_BIT(lane))) {
+            !(state->valid[op] & UCS_BIT(lane))) {
             return std::numeric_limits<double>::quiet_NaN();
         }
 
-        return state->bandwidth[lane];
+        return state->bandwidth[lane][op];
     }
 
     /* The endpoint of the receiver which is connected to the one of the

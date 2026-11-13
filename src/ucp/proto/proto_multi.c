@@ -61,16 +61,16 @@ ucp_proto_multi_lane_weight(double bandwidth, double total_bandwidth)
 }
 
 static UCS_F_ALWAYS_INLINE double
-ucp_proto_rma_lane_bw(const ucp_ep_path_bw_t *state,
+ucp_proto_rma_lane_bw(const ucp_ep_path_bw_t *state, ucp_ep_path_bw_op_t op,
                       const ucp_proto_multi_lane_priv_t *lpriv)
 {
     ucp_lane_index_t lane = lpriv->super.lane;
 
-    if (!(state->valid & UCS_BIT(lane))) {
+    if (!(state->valid[op] & UCS_BIT(lane))) {
         return lpriv->bandwidth;
     }
 
-    return ucs_min(lpriv->bandwidth, state->bandwidth[lane]);
+    return ucs_min(lpriv->bandwidth, state->bandwidth[lane][op]);
 }
 
 const ucp_proto_multi_lane_priv_t *ucp_proto_rma_adjust_lane(
@@ -82,6 +82,11 @@ const ucp_proto_multi_lane_priv_t *ucp_proto_rma_adjust_lane(
     const ucp_proto_multi_priv_t *mpriv  = req->send.proto_config->priv;
     size_t min_frag                      = ucs_max(mpriv->min_frag,
                                                    UCP_MIN_BCOPY);
+    /* The data of get crosses the paths on which the peer puts */
+    ucp_ep_path_bw_op_t op               =
+            (ucp_proto_select_op_id(&req->send.proto_config->select_param) ==
+             UCP_OP_ID_GET) ? UCP_EP_PATH_BW_OP_PEER_PUT :
+                              UCP_EP_PATH_BW_OP_PUT;
     double total_bw                      = 0;
     double kept_bw                       = 0;
     double max_frag_ratio                = 0;
@@ -112,13 +117,13 @@ const ucp_proto_multi_lane_priv_t *ucp_proto_rma_adjust_lane(
     length = (req->send.state.dt_iter.dt_class == UCP_DATATYPE_SGL) ?
              req->send.rma.sgl.length : req->send.state.dt_iter.length;
     if ((state->cfg_index != req->send.proto_config->ep_cfg_index) ||
-        !(state->valid & mpriv->lane_map) || (length == 0)) {
+        !(state->valid[op] & mpriv->lane_map) || (length == 0)) {
         return lpriv;
     }
 
     for (i = 0; i < mpriv->num_lanes; ++i) {
         candidate      = &mpriv->lanes[i];
-        bandwidth      = ucp_proto_rma_lane_bw(state, candidate);
+        bandwidth      = ucp_proto_rma_lane_bw(state, op, candidate);
         degraded      |= bandwidth < candidate->bandwidth;
         total_bw      += bandwidth;
         max_frag_ratio = ucp_proto_multi_max_frag_ratio(max_frag_ratio,
@@ -136,7 +141,7 @@ const ucp_proto_multi_lane_priv_t *ucp_proto_rma_adjust_lane(
     min_bw = ucs_max((total_bw * min_frag) / length,
                      min_frag * max_frag_ratio);
     for (i = 0; i < mpriv->num_lanes; ++i) {
-        bandwidth = ucp_proto_rma_lane_bw(state, &mpriv->lanes[i]);
+        bandwidth = ucp_proto_rma_lane_bw(state, op, &mpriv->lanes[i]);
         if (bandwidth >= min_bw) {
             kept_bw += bandwidth;
         }
@@ -147,7 +152,7 @@ const ucp_proto_multi_lane_priv_t *ucp_proto_rma_adjust_lane(
         return lpriv;
     }
 
-    selected_bw = ucp_proto_rma_lane_bw(state, lpriv);
+    selected_bw = ucp_proto_rma_lane_bw(state, op, lpriv);
     if (selected_bw < min_bw) {
         return NULL;
     }

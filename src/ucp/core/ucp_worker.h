@@ -226,14 +226,29 @@ KHASH_TYPE(ucp_worker_discard_uct_ep_hash, uct_ep_h, ucp_request_t*);
 typedef khash_t(ucp_worker_discard_uct_ep_hash) ucp_worker_discard_uct_ep_hash_t;
 
 
+/* Sources of path bandwidth samples */
+typedef enum {
+    /* Put of this side, which splits put */
+    UCP_EP_PATH_BW_OP_PUT,
+    /* Put of the peer, as sampled and sent by the peer. The data of get
+     * crosses the same paths, so it splits get of this side. */
+    UCP_EP_PATH_BW_OP_PEER_PUT,
+    UCP_EP_PATH_BW_OP_LAST
+} ucp_ep_path_bw_op_t;
+
+
 /* Path estimates of one configuration and set of lanes of an endpoint,
- * allocated only for endpoints receiving events. */
+ * allocated only for endpoints receiving events or samples of the peer. */
 typedef struct {
     uint8_t                pending;         /* An update is scheduled */
+    uint8_t                sync_peer;       /* The peer may hold other put
+                                               samples than this side */
     ucp_worker_cfg_index_t cfg_index;       /* Configuration of the samples */
     uint32_t               lane_generation; /* Lanes of the samples */
-    ucp_lane_map_t         valid;           /* Lanes which have a sample */
-    double                 bandwidth[];     /* Lane bandwidths */
+    /* Lanes which have a sample of each source */
+    ucp_lane_map_t         valid[UCP_EP_PATH_BW_OP_LAST];
+    /* Lane bandwidths of each source */
+    double                 bandwidth[][UCP_EP_PATH_BW_OP_LAST];
 } ucp_ep_path_bw_t;
 
 
