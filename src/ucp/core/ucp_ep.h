@@ -215,6 +215,9 @@ typedef struct ucp_ep_config_key_lane {
     ucp_rsc_index_t      rsc_index; /* Resource index */
     ucp_md_index_t       dst_md_index; /* Destination memory domain index */
     ucs_sys_device_t     dst_sys_dev; /* Destination system device */
+    ucs_sys_device_t     dst_local_sys_dev; /* Local system device of the
+                                               destination network device,
+                                               on a same-host endpoint */
     uint8_t              path_index; /* Device path index */
     ucp_lane_type_mask_t lane_types; /* Which types of operations this lane
                                         was selected for */

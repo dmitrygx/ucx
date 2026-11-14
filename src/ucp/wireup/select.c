@@ -18,6 +18,7 @@
 #include <ucs/datastruct/array.h>
 #include <ucs/datastruct/queue.h>
 #include <ucs/sys/sock.h>
+#include <ucs/sys/topo/base/topo.h>
 #include <ucp/core/ucp_ep.inl>
 #include <string.h>
 #include <inttypes.h>
@@ -28,6 +29,20 @@
 #define UCP_WIREUP_PATH_INDEX_UNDEFINED    UINT_MAX
 #define UCP_WIREUP_KA_SCORE_TOLERANCE      0.02
 #define UCP_WIREUP_NO_SCORE_TIEBREAK       (-1.0)
+
+/* Factor applied to the RMA_BW score of a same-device loopback lane when its
+ * device's peer-to-peer traffic goes through the root complex. It is small
+ * enough to outweigh any bandwidth difference from device distances (e.g. to
+ * the GPU of the process), so the RMA_BW selection pairs different devices
+ * first. ucp_wireup_add_rma_bw_same_device_lanes() then adds the loopback
+ * lanes for host memory. Scaling the score rather than the bandwidth keeps
+ * the gaps between the transports of a device above the tolerance of
+ * ucs_fp_compare(), so a tie does not select the first one. */
+#define UCP_WIREUP_P2P_REDIRECT_SCORE_RATIO     1e-3
+
+/* Host device identities are below this value, so a pair of them is exact in
+ * a double */
+#define UCP_WIREUP_P2P_REDIRECT_TIEBREAK_SCALE  ((double)UCS_BIT(24))
 
 /* 6 for the string format constant length */
 #define UCP_WIREUP_TLS_INFO_SIZE       (UCP_WIREUP_UCT_INFO_SIZE + \
@@ -81,6 +96,16 @@ typedef struct {
     uint8_t local_skip[UCP_MAX_RESOURCES];
     uint8_t remote_skip[UCP_MAX_RESOURCES];
 } ucp_wireup_dev_usage_count;
+
+
+/* Tiebreak of same-host lanes between devices with redirected P2P traffic */
+typedef struct {
+    /* Whether the local worker UUID is lower than the peer's */
+    int      is_first;
+    /* Host identity of the device of each remote device index, if it is a
+     * local device with redirected peer-to-peer traffic, or UINT32_MAX */
+    uint32_t remote_dev_ids[UCP_MAX_RESOURCES];
+} ucp_wireup_p2p_redirect_tiebreak_t;
 
 
 /**
@@ -1476,6 +1501,81 @@ ucp_wireup_is_connect_all_to_all(const ucp_worker_h worker,
             UCP_MIN_DST_VERSION_WIREUP_CONNECT_ALL_TO_ALL);
 }
 
+/* Check whether the remote address is of the same transport on the same
+ * device as the local iface */
+static int ucp_wireup_is_same_device(const ucp_worker_iface_t *wiface,
+                                     const ucp_address_entry_t *ae)
+{
+    ucp_context_h context                  = wiface->worker->context;
+    uct_iface_is_reachable_params_t params = {
+        .field_mask         = UCT_IFACE_IS_REACHABLE_FIELD_DEVICE_ADDR |
+                              UCT_IFACE_IS_REACHABLE_FIELD_IFACE_ADDR |
+                              UCT_IFACE_IS_REACHABLE_FIELD_SCOPE |
+                              UCT_IFACE_IS_REACHABLE_FIELD_DEVICE_ADDR_LENGTH |
+                              UCT_IFACE_IS_REACHABLE_FIELD_IFACE_ADDR_LENGTH,
+        .device_addr        = ae->dev_addr,
+        .iface_addr         = ae->iface_addr,
+        .device_addr_length = ae->dev_addr_len,
+        .iface_addr_length  = ae->iface_addr_len,
+        .scope              = UCT_IFACE_REACHABILITY_SCOPE_DEVICE
+    };
+
+    return (context->tl_rscs[wiface->rsc_index].tl_name_csum ==
+            ae->tl_name_csum) &&
+           (wiface->attr.device_addr_len != 0) &&
+           uct_iface_is_reachable_v2(wiface->iface, &params);
+}
+
+/* Find a local resource on the device of a remote address on the same host */
+static ucp_rsc_index_t
+ucp_wireup_find_same_device_rsc(ucp_worker_h worker,
+                                const ucp_address_entry_t *ae)
+{
+    ucp_context_h context = worker->context;
+    ucp_rsc_index_t rsc_index;
+
+    UCP_TL_BITMAP_FOR_EACH_BIT(rsc_index, &context->tl_bitmap) {
+        if (ucp_wireup_is_same_device(ucp_worker_iface(worker, rsc_index),
+                                      ae)) {
+            return rsc_index;
+        }
+    }
+
+    return UCP_NULL_RESOURCE;
+}
+
+/*
+ * When the peer-to-peer traffic between a network device and another PCI
+ * device (e.g. GPU) under its root port goes through the root complex, a lane
+ * looping back through the network device between host memory and the memory
+ * of that device moves the data over the root port link twice. Lowering the
+ * score of such lanes pairs different devices on same-host endpoints. Both
+ * ends of a loopback lane are the same device, so both peers lower the score
+ * of the same lanes.
+ */
+static double
+ucp_wireup_p2p_redirect_ratio(const ucp_worker_iface_t *wiface,
+                              const ucp_unpacked_address_t *unpacked_addr,
+                              const ucp_address_entry_t *remote_addr)
+{
+    ucp_context_h context    = wiface->worker->context;
+    ucs_sys_device_t sys_dev =
+            context->tl_rscs[wiface->rsc_index].tl_rsc.sys_device;
+
+    if ((unpacked_addr->dst_version <
+         UCP_MIN_DST_VERSION_WIREUP_P2P_REDIRECT) ||
+        !ucs_topo_sys_device_is_p2p_redirected(sys_dev) ||
+        !ucp_wireup_is_same_device(wiface, remote_addr)) {
+        return 1.0;
+    }
+
+    ucs_trace(UCT_TL_RESOURCE_DESC_FMT " : loopback with redirected "
+              "peer-to-peer traffic, lowering score",
+              UCT_TL_RESOURCE_DESC_ARG(
+                      &context->tl_rscs[wiface->rsc_index].tl_rsc));
+    return UCP_WIREUP_P2P_REDIRECT_SCORE_RATIO;
+}
+
 static double
 ucp_wireup_iface_avail_bandwidth(const ucp_worker_iface_t *wiface,
                                  const ucp_unpacked_address_t *unpacked_addr,
@@ -1557,6 +1657,107 @@ ucp_wireup_mem_reg_cost(ucp_context_t *context,
     return ucs_linear_func_make(180e-9, 0);
 }
 
+/* Identity of a PCI device which is the same in all processes of a host. The
+ * domain is cut to 8 bits to keep a pair of identities exact in a double, so
+ * devices whose domains differ only in higher bits get the same identity. */
+static uint32_t ucp_wireup_host_dev_id(ucs_sys_device_t sys_dev)
+{
+    ucs_sys_bus_id_t bus_id;
+
+    if (ucs_topo_get_device_bus_id(sys_dev, &bus_id) != UCS_OK) {
+        return UINT32_MAX;
+    }
+
+    return ((uint32_t)(bus_id.domain & UCS_MASK(8)) << 16) |
+           ((uint32_t)bus_id.bus << 8) | ((uint32_t)bus_id.slot << 3) |
+           bus_id.function;
+}
+
+/*
+ * Same-host RMA_BW lanes between different devices with redirected peer-to-peer
+ * traffic match only if both peers select mirrored lanes. Among lanes with the
+ * same score, select first the lane with the lowest pair of host device
+ * identities, the device of the peer with the lower worker UUID first. Both
+ * peers then select mirrored lanes, also from the address of a wireup message,
+ * which has only the resources of the peer lanes. Return nonzero if the remote
+ * address has a device of this host with redirected peer-to-peer traffic.
+ */
+static int ucp_wireup_p2p_redirect_tiebreak_init(
+        const ucp_wireup_select_params_t *select_params,
+        ucp_wireup_p2p_redirect_tiebreak_t *tiebreak)
+{
+    ucp_worker_h worker      = select_params->ep->worker;
+    ucp_context_h context    = worker->context;
+    uint64_t checked_dev_map = 0;
+    int found                = 0;
+    const ucp_address_entry_t *ae;
+    ucp_rsc_index_t rsc_index;
+    ucs_sys_device_t sys_dev;
+    unsigned i;
+
+    if ((select_params->address->dst_version <
+         UCP_MIN_DST_VERSION_WIREUP_P2P_REDIRECT) ||
+        (select_params->address->uuid == worker->uuid)) {
+        return 0;
+    }
+
+    for (i = 0; i < UCP_MAX_RESOURCES; ++i) {
+        tiebreak->remote_dev_ids[i] = UINT32_MAX;
+    }
+
+    ucp_unpacked_address_for_each(ae, select_params->address) {
+        if (checked_dev_map & UCS_BIT(ae->dev_index)) {
+            continue;
+        }
+
+        checked_dev_map |= UCS_BIT(ae->dev_index);
+        rsc_index        = ucp_wireup_find_same_device_rsc(worker, ae);
+        if (rsc_index == UCP_NULL_RESOURCE) {
+            continue;
+        }
+
+        sys_dev = context->tl_rscs[rsc_index].tl_rsc.sys_device;
+        if (ucs_topo_sys_device_is_p2p_redirected(sys_dev)) {
+            tiebreak->remote_dev_ids[ae->dev_index] =
+                    ucp_wireup_host_dev_id(sys_dev);
+            found = 1;
+        }
+    }
+
+    tiebreak->is_first = worker->uuid < select_params->address->uuid;
+    return found;
+}
+
+static double ucp_wireup_p2p_redirect_tiebreak_func(
+        const ucp_worker_iface_t *wiface, const uct_md_attr_v2_t *md_attr,
+        const ucp_unpacked_address_t *unpacked_addr,
+        const ucp_address_entry_t *remote_addr, int is_prioritized_ep,
+        void *arg)
+{
+    const ucp_wireup_p2p_redirect_tiebreak_t *tiebreak = arg;
+    ucp_context_h context    = wiface->worker->context;
+    ucs_sys_device_t sys_dev =
+            context->tl_rscs[wiface->rsc_index].tl_rsc.sys_device;
+    uint32_t remote_id       = tiebreak->remote_dev_ids[remote_addr->dev_index];
+    uint32_t local_id        = ucs_topo_sys_device_is_p2p_redirected(sys_dev) ?
+                               ucp_wireup_host_dev_id(sys_dev) : UINT32_MAX;
+    uint32_t first_id, second_id;
+
+    if ((remote_id == UINT32_MAX) || (local_id == UINT32_MAX)) {
+        /* Below all pairs of device identities */
+        return -UCP_WIREUP_P2P_REDIRECT_TIEBREAK_SCALE *
+               UCP_WIREUP_P2P_REDIRECT_TIEBREAK_SCALE;
+    }
+
+    first_id  = tiebreak->is_first ? local_id : remote_id;
+    second_id = tiebreak->is_first ? remote_id : local_id;
+    /* Negative, so the lowest pair wins. This also makes ucs_fp_compare()
+     * exact: its tolerance is relative to the sum of the values and would
+     * make positive pairs of this size equal */
+    return -(((double)first_id * UCP_WIREUP_P2P_REDIRECT_TIEBREAK_SCALE) +
+             second_id);
+}
+
 static double
 ucp_wireup_rma_bw_score_func(const ucp_worker_iface_t *wiface,
                              const uct_md_attr_v2_t *md_attr,
@@ -1573,15 +1774,16 @@ ucp_wireup_rma_bw_score_func(const ucp_worker_iface_t *wiface,
     /* highest bandwidth with lowest overhead - test a message size of 256KB,
      * a size which is likely to be used for high-bw memory access protocol, for
      * how long it would take to transfer it with a certain transport. */
-    return 1 / ((UCP_WIREUP_RMA_BW_TEST_MSG_SIZE /
-                 ucp_wireup_iface_avail_bandwidth(wiface, unpacked_addr,
-                                                  remote_addr, dev_count)) +
-                ucp_wireup_tl_iface_latency(wiface, unpacked_addr,
-                                            &remote_addr->iface_attr,
-                                            is_prioritized_ep) +
-                wiface->attr.overhead +
-                ucs_linear_func_apply(mem_reg_cost,
-                                      UCP_WIREUP_RMA_BW_TEST_MSG_SIZE));
+    return ucp_wireup_p2p_redirect_ratio(wiface, unpacked_addr, remote_addr) /
+           ((UCP_WIREUP_RMA_BW_TEST_MSG_SIZE /
+             ucp_wireup_iface_avail_bandwidth(wiface, unpacked_addr,
+                                              remote_addr, dev_count)) +
+            ucp_wireup_tl_iface_latency(wiface, unpacked_addr,
+                                        &remote_addr->iface_attr,
+                                        is_prioritized_ep) +
+            wiface->attr.overhead +
+            ucs_linear_func_apply(mem_reg_cost,
+                                  UCP_WIREUP_RMA_BW_TEST_MSG_SIZE));
 }
 
 static inline int
@@ -2262,6 +2464,109 @@ ucp_wireup_is_rma_bw_needed(ucp_context_h context, unsigned ep_init_flags)
     return 0;
 }
 
+/*
+ * Find the remote device of an RMA_BW lane which is the same device as the
+ * local device of another RMA_BW lane, on a same-host endpoint. Return the
+ * remote device index, or UCP_NULL_RESOURCE if there is no such lane, or if
+ * the lanes already loop back through the device.
+ */
+static ucp_rsc_index_t ucp_wireup_rma_bw_same_device_remote(
+        const ucp_wireup_select_params_t *select_params,
+        const ucp_wireup_select_context_t *select_ctx,
+        ucp_lane_index_t num_lanes, ucp_rsc_index_t rsc_index)
+{
+    ucp_worker_h worker                  = select_params->ep->worker;
+    ucp_context_h context                = worker->context;
+    const ucp_tl_resource_desc_t *rsc    = &context->tl_rscs[rsc_index];
+    const ucp_worker_iface_t *wiface     = ucp_worker_iface(worker, rsc_index);
+    const ucp_address_entry_t *addr_list = select_params->address->address_list;
+    ucp_rsc_index_t remote_dev_index     = UCP_NULL_RESOURCE;
+    const ucp_wireup_lane_desc_t *lane_desc;
+    const ucp_address_entry_t *ae;
+
+    ucs_carray_for_each(lane_desc, select_ctx->lane_descs, num_lanes) {
+        if (!(lane_desc->lane_types & UCS_BIT(UCP_LANE_TYPE_RMA_BW))) {
+            continue;
+        }
+
+        ae = &addr_list[lane_desc->addr_index];
+        if (!ucp_wireup_is_same_device(wiface, ae)) {
+            continue;
+        }
+
+        if (context->tl_rscs[lane_desc->rsc_index].dev_index ==
+            rsc->dev_index) {
+            /* Already loops back, e.g. when there is no other device */
+            return UCP_NULL_RESOURCE;
+        }
+
+        remote_dev_index = ae->dev_index;
+    }
+
+    return remote_dev_index;
+}
+
+/*
+ * The score of ucp_wireup_p2p_redirect_ratio() leaves out the same-device lanes
+ * of network devices with redirected peer-to-peer traffic, because they move
+ * the data twice over the root port link when the memory on one side is under
+ * that root port. Host memory is not, and then a same-device lane does not go
+ * through the network, so add these lanes as well: the protocols select them or
+ * the lanes between different devices according to the memory of a request.
+ * A device is added when an RMA_BW lane starts from it and another one ends at
+ * it, so both peers add the same devices.
+ */
+static void ucp_wireup_add_rma_bw_same_device_lanes(
+        const ucp_wireup_select_params_t *select_params,
+        const ucp_wireup_select_bw_info_t *bw_info, ucp_lane_index_t am_lane,
+        unsigned allow_extra_path, ucp_wireup_select_context_t *select_ctx)
+{
+    ucp_context_h context                   = select_params->ep->worker->context;
+    ucp_lane_index_t num_lanes              = select_ctx->num_lanes;
+    ucp_wireup_select_bw_info_t dev_bw_info = *bw_info;
+    uint64_t dev_bitmap                     = 0;
+    ucp_rsc_index_t rsc_index, dev_index, remote_dev_index;
+    ucp_tl_bitmap_t tl_bitmap;
+    ucp_lane_index_t lane;
+
+    if (select_params->address->dst_version <
+        UCP_MIN_DST_VERSION_WIREUP_P2P_REDIRECT) {
+        return;
+    }
+
+    ucp_wireup_memaccess_bitmap(context, UCS_BIT(UCS_MEMORY_TYPE_HOST),
+                                &tl_bitmap);
+
+    for (lane = 0; lane < num_lanes; ++lane) {
+        rsc_index = select_ctx->lane_descs[lane].rsc_index;
+        if (!(select_ctx->lane_descs[lane].lane_types &
+              UCS_BIT(UCP_LANE_TYPE_RMA_BW))) {
+            continue;
+        }
+
+        dev_index = context->tl_rscs[rsc_index].dev_index;
+        if ((dev_bitmap & UCS_BIT(dev_index)) ||
+            !UCS_STATIC_BITMAP_GET(tl_bitmap, rsc_index) ||
+            !ucs_topo_sys_device_is_p2p_redirected(
+                    context->tl_rscs[rsc_index].tl_rsc.sys_device)) {
+            continue;
+        }
+
+        dev_bitmap      |= UCS_BIT(dev_index);
+        remote_dev_index = ucp_wireup_rma_bw_same_device_remote(
+                select_params, select_ctx, num_lanes, rsc_index);
+        if (remote_dev_index == UCP_NULL_RESOURCE) {
+            continue;
+        }
+
+        dev_bw_info.local_dev_bitmap  = UCS_BIT(dev_index);
+        dev_bw_info.remote_dev_bitmap = UCS_BIT(remote_dev_index);
+        ucp_wireup_add_bw_lanes_pairwise(select_params, &dev_bw_info,
+                                         tl_bitmap, am_lane, select_ctx,
+                                         allow_extra_path);
+    }
+}
+
 static ucs_status_t
 ucp_wireup_add_rma_bw_lanes(const ucp_wireup_select_params_t *select_params,
                             ucp_wireup_select_context_t *select_ctx)
@@ -2279,6 +2584,7 @@ ucp_wireup_add_rma_bw_lanes(const ucp_wireup_select_params_t *select_params,
         UCP_RNDV_MODE_PUT_ZCOPY
     };
     ucp_wireup_select_bw_info_t rkey_ptr_info;
+    ucp_wireup_p2p_redirect_tiebreak_t p2p_tiebreak;
     ucs_memory_type_t mem_type;
     int found_lane;
     ucp_tl_bitmap_t tl_bitmap, mem_type_tl_bitmap;
@@ -2338,6 +2644,11 @@ ucp_wireup_add_rma_bw_lanes(const ucp_wireup_select_params_t *select_params,
     bw_info.criteria.title            = "high-bw remote memory access";
     bw_info.criteria.lane_type        = UCP_LANE_TYPE_RMA_BW;
     bw_info.criteria.local_cmpt_flags = 0;
+
+    if (ucp_wireup_p2p_redirect_tiebreak_init(select_params, &p2p_tiebreak)) {
+        bw_info.criteria.calc_tiebreak = ucp_wireup_p2p_redirect_tiebreak_func;
+        bw_info.criteria.tiebreak_arg  = &p2p_tiebreak;
+    }
 
     if (context->config.ext.proto_enable &&
         (select_params->address->dst_version > UCP_VERSION_LEGACY)) {
@@ -2432,6 +2743,12 @@ ucp_wireup_add_rma_bw_lanes(const ucp_wireup_select_params_t *select_params,
             (context->config.ext.rndv_mode != UCP_RNDV_MODE_AUTO)) {
             break;
         }
+    }
+
+    if (found_lane) {
+        ucp_wireup_add_rma_bw_same_device_lanes(select_params, &bw_info,
+                                                am_lane, allow_extra_path,
+                                                select_ctx);
     }
 
     return UCS_OK;
@@ -2842,12 +3159,10 @@ static ucs_status_t ucp_wireup_select_set_locality_flags(
         unsigned *addr_indices, ucp_ep_config_key_t *key)
 {
     ucp_worker_h worker = select_params->ep->worker;
-    ucp_worker_iface_t *wiface;
     ucp_rsc_index_t rsc_index;
     ucp_address_entry_t *ae;
     ucp_lane_index_t lane;
     unsigned addr_index;
-    uct_iface_is_reachable_params_t params;
 
     if (select_params->address->uuid == worker->uuid) {
         key->flags |= UCP_EP_CONFIG_KEY_FLAG_SELF;
@@ -2881,29 +3196,47 @@ static ucs_status_t ucp_wireup_select_set_locality_flags(
         addr_index = addr_indices[lane];
         ae         = &select_params->address->address_list[addr_index];
 
-        wiface = ucp_worker_iface(worker, rsc_index);
-        if (wiface->attr.device_addr_len == 0) {
-            continue;
-        }
-
-        params.field_mask         = UCT_IFACE_IS_REACHABLE_FIELD_DEVICE_ADDR |
-                                    UCT_IFACE_IS_REACHABLE_FIELD_IFACE_ADDR |
-                                    UCT_IFACE_IS_REACHABLE_FIELD_SCOPE |
-                                    UCT_IFACE_IS_REACHABLE_FIELD_DEVICE_ADDR_LENGTH |
-                                    UCT_IFACE_IS_REACHABLE_FIELD_IFACE_ADDR_LENGTH;
-        params.device_addr        = ae->dev_addr;
-        params.iface_addr         = ae->iface_addr;
-        params.device_addr_length = ae->dev_addr_len;
-        params.iface_addr_length  = ae->iface_addr_len;
-        params.scope              = UCT_IFACE_REACHABILITY_SCOPE_DEVICE;
-
-        if (uct_iface_is_reachable_v2(wiface->iface, &params)) {
+        if (ucp_wireup_is_same_device(ucp_worker_iface(worker, rsc_index),
+                                      ae)) {
             key->flags |= UCP_EP_CONFIG_KEY_FLAG_INTRA_NODE;
             return UCS_OK;
         }
     }
 
     return UCS_OK;
+}
+
+/* On a same-host endpoint, find the local system devices of the remote network
+ * devices of the lanes, so the protocols can tell their PCIe topology */
+static void ucp_wireup_set_dst_local_sys_devs(
+        const ucp_wireup_select_params_t *select_params,
+        const unsigned *addr_indices, ucp_ep_config_key_t *key)
+{
+    ucp_worker_h worker   = select_params->ep->worker;
+    ucp_context_h context = worker->context;
+    const ucp_address_entry_t *ae;
+    ucp_rsc_index_t rsc_index;
+    ucp_lane_index_t lane;
+
+    if (!(key->flags & UCP_EP_CONFIG_KEY_FLAG_INTRA_NODE)) {
+        return;
+    }
+
+    for (lane = 0; lane < key->num_lanes; ++lane) {
+        rsc_index = key->lanes[lane].rsc_index;
+        if ((rsc_index == UCP_NULL_RESOURCE) || (key->cm_lane == lane) ||
+            (context->tl_rscs[rsc_index].tl_rsc.dev_type !=
+             UCT_DEVICE_TYPE_NET)) {
+            continue;
+        }
+
+        ae        = &select_params->address->address_list[addr_indices[lane]];
+        rsc_index = ucp_wireup_find_same_device_rsc(worker, ae);
+        if (rsc_index != UCP_NULL_RESOURCE) {
+            key->lanes[lane].dst_local_sys_dev =
+                    context->tl_rscs[rsc_index].tl_rsc.sys_device;
+        }
+    }
 }
 
 static UCS_F_NOINLINE ucs_status_t
@@ -2920,6 +3253,7 @@ ucp_wireup_construct_lanes(const ucp_wireup_select_params_t *select_params,
     ucp_lane_index_t i;
     ucp_wireup_lane_desc_t *lane_desc;
     ucp_worker_iface_t *wiface;
+    ucs_status_t status;
 
     key->num_lanes   = select_ctx->num_lanes;
     first_am_bw_lane = context->config.ext.proto_enable ? 0 : 1;
@@ -3080,8 +3414,14 @@ ucp_wireup_construct_lanes(const ucp_wireup_select_params_t *select_params,
         key->am_bw_lanes[0] = key->am_lane;
     }
 
-    return ucp_wireup_select_set_locality_flags(select_params, addr_indices,
-                                                key);
+    status = ucp_wireup_select_set_locality_flags(select_params, addr_indices,
+                                                  key);
+    if (status != UCS_OK) {
+        return status;
+    }
+
+    ucp_wireup_set_dst_local_sys_devs(select_params, addr_indices, key);
+    return UCS_OK;
 }
 
 static void ucp_wireup_filter_token_tls(ucp_worker_h worker,

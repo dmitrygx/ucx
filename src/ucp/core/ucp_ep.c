@@ -203,13 +203,14 @@ void ucp_ep_config_key_reset(ucp_ep_config_key_t *key)
     memset(key, 0, sizeof(*key));
     key->num_lanes        = 0;
     for (i = 0; i < UCP_MAX_LANES; ++i) {
-        key->lanes[i].rsc_index    = UCP_NULL_RESOURCE;
-        key->lanes[i].dst_md_index = UCP_NULL_RESOURCE;
-        key->lanes[i].dst_sys_dev  = UCS_SYS_DEVICE_ID_UNKNOWN;
-        key->lanes[i].path_index   = 0;
-        key->lanes[i].lane_types   = 0;
-        key->lanes[i].port_speed   = 0;
-        key->lanes[i].seg_size     = 0;
+        key->lanes[i].rsc_index         = UCP_NULL_RESOURCE;
+        key->lanes[i].dst_md_index      = UCP_NULL_RESOURCE;
+        key->lanes[i].dst_sys_dev       = UCS_SYS_DEVICE_ID_UNKNOWN;
+        key->lanes[i].dst_local_sys_dev = UCS_SYS_DEVICE_ID_UNKNOWN;
+        key->lanes[i].path_index        = 0;
+        key->lanes[i].lane_types        = 0;
+        key->lanes[i].port_speed        = 0;
+        key->lanes[i].seg_size          = 0;
     }
     key->am_lane          = UCP_NULL_LANE;
     key->wireup_msg_lane  = UCP_NULL_LANE;
@@ -3880,6 +3881,8 @@ int ucp_ep_config_lane_is_equal(const ucp_ep_config_key_t *key1,
            (config_lane1->path_index == config_lane2->path_index) &&
            (config_lane1->dst_md_index == config_lane2->dst_md_index) &&
            (config_lane1->dst_sys_dev == config_lane2->dst_sys_dev) &&
+           (config_lane1->dst_local_sys_dev ==
+            config_lane2->dst_local_sys_dev) &&
            (config_lane1->lane_types == config_lane2->lane_types) &&
            (config_lane1->port_speed == config_lane2->port_speed) &&
            (config_lane1->seg_size == config_lane2->seg_size);
@@ -4990,6 +4993,11 @@ void ucp_ep_config_lane_info_str(ucp_worker_h worker,
          context->tl_cmpts[cmpt_index].attr.name, key->lanes[lane].dst_sys_dev,
          key->lanes[lane].seg_size);
 
+    if (key->lanes[lane].dst_local_sys_dev != UCS_SYS_DEVICE_ID_UNKNOWN) {
+        ucs_string_buffer_appendf(strbuf, " local-sysdev[%d]",
+                                  key->lanes[lane].dst_local_sys_dev);
+    }
+
     prio = ucp_ep_config_get_multi_lane_prio(key->rma_bw_lanes, lane);
     if (prio != -1) {
         ucs_string_buffer_appendf(strbuf, " rma_bw#%d", prio);
@@ -5045,7 +5053,7 @@ static void ucp_ep_config_print(FILE *stream, ucp_worker_h worker,
     ucp_rsc_index_t cm_idx;
 
     for (lane = 0; lane < config->key.num_lanes; ++lane) {
-        UCS_STRING_BUFFER_ONSTACK(strb, 128);
+        UCS_STRING_BUFFER_ONSTACK(strb, 256);
         if (lane == config->key.cm_lane) {
             cm_idx = ep->ext->cm_idx;
             ucp_ep_config_cm_lane_info_str(worker, &config->key, lane, cm_idx,

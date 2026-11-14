@@ -67,6 +67,14 @@ ucs_topo_bus_value_key_hash(ucs_topo_bus_value_key_t key)
 KHASH_INIT(bus_to_sys_dev, ucs_topo_bus_value_key_t, ucs_sys_device_t, 1,
            ucs_topo_bus_value_key_hash, ucs_topo_bus_value_key_equal);
 
+/* Context of the search for a peer of a device under its root port */
+typedef struct {
+    const char *dev_path;
+    size_t     parent_length; /* Length of the parent path of dev_path */
+    long       iommu_group;   /* IOMMU group of the device, or -1 */
+    char       *path;         /* Directory being read, then a device in it */
+} ucs_topo_p2p_peer_search_t;
+
 typedef struct ucs_topo_global_ctx {
     ucs_spinlock_t             lock;
     khash_t(bus_to_sys_dev)    bus_to_sys_dev_hash;
@@ -453,13 +461,15 @@ ucs_topo_get_sysfs_pci_id(const char *dev_name, const char *sysfs_path)
 static void ucs_topo_read_device_sysfs_info(const ucs_sys_bus_id_t *bus_id,
                                             const char *dev_name,
                                             ucs_numa_node_t *numa_node_p,
-                                            ucs_sys_pci_id_t *pci_id_p)
+                                            ucs_sys_pci_id_t *pci_id_p,
+                                            ucs_bus_id_bit_rep_t *root_port_p)
 {
     char *path;
     ucs_status_t status;
 
     *numa_node_p = UCS_NUMA_NODE_UNDEFINED;
     *pci_id_p    = UCS_SYS_PCI_ID_UNDEFINED;
+    *root_port_p = -1;
 
     status = ucs_string_alloc_path_buffer(&path, "sysfs_path");
     if (status != UCS_OK) {
@@ -473,6 +483,7 @@ static void ucs_topo_read_device_sysfs_info(const ucs_sys_bus_id_t *bus_id,
 
     *numa_node_p = ucs_numa_node_of_device(path);
     *pci_id_p    = ucs_topo_get_sysfs_pci_id(dev_name, path);
+    *root_port_p = ucs_topo_sysfs_root_port(path);
 
     ucs_trace("read sysfs info for %s: numa_node %d, vendor %04x, device %04x",
               dev_name, *numa_node_p, pci_id_p->vendor, pci_id_p->device);
@@ -527,6 +538,7 @@ ucs_topo_find_device_by_bus_id_value(const ucs_sys_bus_id_t *bus_id,
     ucs_topo_bus_value_key_t key;
     ucs_sys_pci_id_t pci_id;
     ucs_numa_node_t numa_node;
+    ucs_bus_id_bit_rep_t root_port;
     int kh_put_status;
     khiter_t hash_it;
     ucs_status_t status;
@@ -558,7 +570,8 @@ ucs_topo_find_device_by_bus_id_value(const ucs_sys_bus_id_t *bus_id,
 
         ucs_topo_bus_id_str(bus_id, 1, name, UCS_SYS_BDF_NAME_MAX);
 
-        ucs_topo_read_device_sysfs_info(bus_id, name, &numa_node, &pci_id);
+        ucs_topo_read_device_sysfs_info(bus_id, name, &numa_node, &pci_id,
+                                        &root_port);
 
         *sys_dev_p = ucs_topo_global_ctx.num_devices++;
         device     = &ucs_topo_global_ctx.devices[*sys_dev_p];
@@ -574,6 +587,8 @@ ucs_topo_find_device_by_bus_id_value(const ucs_sys_bus_id_t *bus_id,
         device->class_ordinal = UCS_SYS_DEVICE_ORDINAL_INVALID;
         device->sibling_role  = UCS_TOPO_SIBLING_ROLE_NONE;
         device->sys_dev_aux   = UCS_SYS_DEVICE_ID_UNKNOWN;
+        device->p2p_redirect  = UCS_AUTO;
+        device->root_port     = root_port;
         UCS_STATIC_BITMAP_RESET_ALL(&device->siblings);
 
         if (user_value == UCS_SYS_DEVICE_USER_VALUE_EMPTY) {
@@ -1493,6 +1508,277 @@ int ucs_topo_device_has_sibling(ucs_sys_device_t sys_dev)
     ucs_spin_lock(&ucs_topo_global_ctx.lock);
     device = ucs_topo_get_sys_device_nolock(sys_dev);
     result = (device != NULL) && !UCS_STATIC_BITMAP_IS_ZERO(device->siblings);
+    ucs_spin_unlock(&ucs_topo_global_ctx.lock);
+
+    return result;
+}
+
+/*
+ * Return the length of the root port prefix of a device sysfs path, for
+ * example /sys/devices/pci0000:97/0000:97:01.0 for a device path
+ * /sys/devices/pci0000:97/0000:97:01.0/0000:98:00.0/0000:99:00.0/0000:9a:00.0,
+ * or 0 if the device is not behind a root port.
+ */
+static size_t ucs_topo_sysfs_root_port_length(const char *path)
+{
+    const char *host_bridge, *root_port_end;
+    int length;
+
+    for (host_bridge = strstr(path, "/pci"); host_bridge != NULL;
+         host_bridge = strstr(host_bridge + 1, "/pci")) {
+        length = -1;
+        sscanf(host_bridge, "/pci%*x:%*x%n", &length);
+        if ((length > 0) && (host_bridge[length] == '/')) {
+            root_port_end = strchr(host_bridge + length + 1, '/');
+            return (root_port_end == NULL) ? 0 : (root_port_end - path);
+        }
+    }
+
+    return 0;
+}
+
+/* Return the IOMMU group of a device, or -1 if the device has none */
+static long ucs_topo_sysfs_iommu_group(const char *dev_path)
+{
+    long iommu_group = -1;
+    char *link_path, *group_path;
+    ucs_status_t status;
+    ssize_t length;
+
+    status = ucs_string_alloc_formatted_path(&link_path, "iommu_group_link",
+                                             "%s/iommu_group", dev_path);
+    if (status != UCS_OK) {
+        goto out;
+    }
+
+    status = ucs_string_alloc_path_buffer(&group_path, "iommu_group_path");
+    if (status != UCS_OK) {
+        goto out_free_link_path;
+    }
+
+    length = readlink(link_path, group_path, PATH_MAX - 1);
+    if (length > 0) {
+        group_path[length] = '\0';
+        iommu_group        = strtol(ucs_basename(group_path), NULL, 10);
+    }
+
+    ucs_free(group_path);
+out_free_link_path:
+    ucs_free(link_path);
+out:
+    return iommu_group;
+}
+
+/*
+ * Peer-to-peer traffic between two devices under one PCIe switch stays in the
+ * switch only if ACS does not isolate them, i.e. they share an IOMMU group,
+ * and DMA addresses are not translated: a translated address never falls into
+ * the window of the peer, so the switch forwards it to the root complex.
+ */
+static int ucs_topo_sysfs_is_p2p_via_root_complex(const char *dev_path,
+                                                  long iommu_group,
+                                                  const char *peer_path)
+{
+    long peer_iommu_group = ucs_topo_sysfs_iommu_group(peer_path);
+    char domain_type[16];
+
+    if ((iommu_group < 0) && (peer_iommu_group < 0)) {
+        /* IOMMU is disabled */
+        return 0;
+    }
+
+    if (iommu_group != peer_iommu_group) {
+        return 1;
+    }
+
+    return (ucs_read_file_str(domain_type, sizeof(domain_type), 1,
+                              "%s/iommu_group/type", dev_path) <= 0) ||
+           (strcmp(ucs_strtrim(domain_type), "identity") != 0);
+}
+
+/* Return the length of the parent directory of an absolute path */
+static size_t ucs_topo_sysfs_parent_length(const char *path)
+{
+    return strrchr(path, '/') - path;
+}
+
+static ucs_status_t
+ucs_topo_sysfs_p2p_peer_search_cb(const struct dirent *entry, void *arg)
+{
+    ucs_topo_p2p_peer_search_t *search = arg;
+    size_t dir_length                  = strlen(search->path);
+    int name_length                    = -1;
+    int is_bridge, is_own_function;
+    ucs_status_t status;
+
+    /* The devices behind a bridge are its subdirectories named by bus ID */
+    sscanf(entry->d_name, "%*x:%*x:%*x.%*x%n", &name_length);
+    if ((name_length <= 0) || (entry->d_name[name_length] != '\0') ||
+        ((dir_length + name_length + sizeof("//pci_bus")) > PATH_MAX)) {
+        return UCS_OK;
+    }
+
+    /* Bridges have a secondary bus and are not peers */
+    ucs_snprintf_safe(search->path + dir_length, PATH_MAX - dir_length,
+                      "/%s/pci_bus", entry->d_name);
+    is_bridge = (access(search->path, F_OK) == 0);
+    search->path[dir_length + 1 + name_length] = '\0';
+
+    /* The functions of the device itself have the same parent */
+    is_own_function = (dir_length == search->parent_length) &&
+                      !strncmp(search->path, search->dev_path, dir_length);
+
+    if (is_bridge) {
+        status = ucs_sys_readdir(search->path,
+                                 ucs_topo_sysfs_p2p_peer_search_cb, search);
+    } else if (!is_own_function &&
+               ucs_topo_sysfs_is_p2p_via_root_complex(search->dev_path,
+                                                      search->iommu_group,
+                                                      search->path)) {
+        ucs_debug("%s: peer-to-peer traffic with %s goes through the root "
+                  "complex", search->dev_path, search->path);
+        status = UCS_ERR_CANCELED; /* Found, stop the search */
+    } else {
+        status = UCS_OK;
+    }
+
+    search->path[dir_length] = '\0';
+
+    /* A bridge which cannot be read does not stop the search */
+    return (status == UCS_ERR_CANCELED) ? status : UCS_OK;
+}
+
+int ucs_topo_sysfs_is_p2p_redirected(const char *dev_path)
+{
+    size_t root_port_length = ucs_topo_sysfs_root_port_length(dev_path);
+    ucs_topo_p2p_peer_search_t search;
+    ucs_status_t status;
+
+    if (root_port_length == 0) {
+        return 0;
+    }
+
+    status = ucs_string_alloc_path_buffer(&search.path, "peer_search_path");
+    if (status != UCS_OK) {
+        return 0;
+    }
+
+    search.dev_path      = dev_path;
+    search.parent_length = ucs_topo_sysfs_parent_length(dev_path);
+    search.iommu_group   = ucs_topo_sysfs_iommu_group(dev_path);
+
+    /* Walk the devices under the root port */
+    ucs_strncpy_safe(search.path, dev_path, root_port_length + 1);
+    status = ucs_sys_readdir(search.path, ucs_topo_sysfs_p2p_peer_search_cb,
+                             &search);
+    ucs_free(search.path);
+
+    return status == UCS_ERR_CANCELED;
+}
+
+/*
+ * Find the root port as the peer search of ucs_topo_sysfs_is_p2p_redirected()
+ * does, unlike ucs_topo_is_pci_bridge_nolock() which expects host bridges
+ * directly under /sys/devices.
+ */
+ucs_bus_id_bit_rep_t ucs_topo_sysfs_root_port(const char *path)
+{
+    size_t length = ucs_topo_sysfs_root_port_length(path);
+    ucs_sys_bus_id_t bus_id;
+    const char *name;
+
+    if (length == 0) {
+        return -1;
+    }
+
+    /* The bus ID of the root port is the last component of its path */
+    name = path + length;
+    while (name[-1] != '/') {
+        --name;
+    }
+
+    if (sscanf(name, "%hx:%hhx:%hhx.%hhx", &bus_id.domain, &bus_id.bus,
+               &bus_id.slot, &bus_id.function) != 4) {
+        return -1;
+    }
+
+    return ucs_topo_get_bus_id_bit_repr(&bus_id);
+}
+
+int ucs_topo_sys_device_is_p2p_redirected(ucs_sys_device_t sys_dev)
+{
+    ucs_ternary_auto_value_t p2p_redirect;
+    ucs_sys_bus_id_t bus_id;
+    ucs_status_t status;
+    int is_redirected;
+    char *path;
+
+    if (sys_dev == UCS_SYS_DEVICE_ID_UNKNOWN) {
+        return 0;
+    }
+
+    if (ucs_global_opts.topo_p2p_redirect != UCS_CONFIG_AUTO) {
+        return ucs_global_opts.topo_p2p_redirect == UCS_CONFIG_ON;
+    }
+
+    ucs_spin_lock(&ucs_topo_global_ctx.lock);
+    if (sys_dev >= ucs_topo_global_ctx.num_devices) {
+        ucs_spin_unlock(&ucs_topo_global_ctx.lock);
+        return 0;
+    }
+
+    p2p_redirect = ucs_topo_global_ctx.devices[sys_dev].p2p_redirect;
+    bus_id       = ucs_topo_global_ctx.devices[sys_dev].bus_id;
+    ucs_spin_unlock(&ucs_topo_global_ctx.lock);
+
+    if (p2p_redirect != UCS_AUTO) {
+        return p2p_redirect == UCS_YES;
+    }
+
+    /* Scan sysfs without the lock, concurrent scans get the same result */
+    status = ucs_string_alloc_path_buffer(&path, "sysfs_path");
+    if (status != UCS_OK) {
+        return 0;
+    }
+
+    status        = ucs_topo_bus_id_to_sysfs_path(&bus_id, path, PATH_MAX);
+    is_redirected = (status == UCS_OK) &&
+                    ucs_topo_sysfs_is_p2p_redirected(path);
+    ucs_free(path);
+
+    ucs_spin_lock(&ucs_topo_global_ctx.lock);
+    if (sys_dev < ucs_topo_global_ctx.num_devices) {
+        ucs_topo_global_ctx.devices[sys_dev].p2p_redirect =
+                is_redirected ? UCS_YES : UCS_NO;
+    }
+    ucs_spin_unlock(&ucs_topo_global_ctx.lock);
+
+    ucs_debug("%s: peer-to-peer traffic %s through the root complex",
+              ucs_topo_sys_device_get_name(sys_dev),
+              is_redirected ? "goes" : "does not go");
+    return is_redirected;
+}
+
+int ucs_topo_is_same_root_port(ucs_sys_device_t sys_dev1,
+                               ucs_sys_device_t sys_dev2)
+{
+    int result;
+
+    if ((sys_dev1 == UCS_SYS_DEVICE_ID_UNKNOWN) ||
+        (sys_dev2 == UCS_SYS_DEVICE_ID_UNKNOWN)) {
+        return 0;
+    }
+
+    if (sys_dev1 == sys_dev2) {
+        return 1;
+    }
+
+    ucs_spin_lock(&ucs_topo_global_ctx.lock);
+    result = (sys_dev1 < ucs_topo_global_ctx.num_devices) &&
+             (sys_dev2 < ucs_topo_global_ctx.num_devices) &&
+             (ucs_topo_global_ctx.devices[sys_dev1].root_port >= 0) &&
+             (ucs_topo_global_ctx.devices[sys_dev1].root_port ==
+              ucs_topo_global_ctx.devices[sys_dev2].root_port);
     ucs_spin_unlock(&ucs_topo_global_ctx.lock);
 
     return result;
