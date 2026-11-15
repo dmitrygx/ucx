@@ -459,6 +459,12 @@ typedef struct ucp_context {
     ucp_rsc_index_t               num_tls;    /* Number of resources in the array */
     ucp_proto_id_mask_t           proto_bitmap;  /* Enabled protocols */
 
+    /* System devices shared by several network devices of a transport, e.g.
+     * the ports of a multi-port PCI function. Only network devices which
+     * access registered memory count, unlike TCP, since only they move the
+     * data of other devices peer-to-peer. */
+    ucp_sys_dev_map_t             shared_net_sys_dev_map;
+
     /* GPU-to-NIC assignment, set to NULL when not in use */
     ucp_gpu_nic_assignment_t      *gpu_nic_assignment;
 

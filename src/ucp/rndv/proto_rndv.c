@@ -336,6 +336,23 @@ ucp_proto_rndv_rkey_mem_flags_estimate(const ucp_proto_init_params_t *params)
     return mem_flags;
 }
 
+/* Whether the lanes know the local devices of their remote ends, which the
+ * protocols use to tell the PCIe topology of the lanes */
+static int
+ucp_proto_rndv_has_dst_local_sys_dev(const ucp_ep_config_key_t *ep_config_key)
+{
+    ucp_lane_index_t lane;
+
+    for (lane = 0; lane < ep_config_key->num_lanes; ++lane) {
+        if (ep_config_key->lanes[lane].dst_local_sys_dev !=
+            UCS_SYS_DEVICE_ID_UNKNOWN) {
+            return 1;
+        }
+    }
+
+    return 0;
+}
+
 /*
  * Init protocols that can be used by the remote peer
  * (assuming peer has the same configuration)
@@ -382,9 +399,13 @@ static ucs_status_t ucp_proto_rndv_ctrl_select_remote_proto(
     remote_init_params                 = params->super.super;
     remote_init_params.select_param    = remote_select_param;
     remote_init_params.rkey_config_key = &rkey_config_key;
+    /* The local devices of the remote ends make the protocols depend on the
+     * buffer, which is not the buffer of the peer, so the protocols of the
+     * peer and of a remote key of a real buffer must not be shared */
     if (ucp_proto_rndv_shm_pipeline_force(&remote_init_params) ||
         ucp_proto_rndv_shm_pipeline_force_rkey_ptr_mtype(
-                &remote_init_params)) {
+                &remote_init_params) ||
+        ucp_proto_rndv_has_dst_local_sys_dev(&ep_config->key)) {
         rkey_config_key.flags |= UCP_RKEY_CONFIG_FLAG_PROTO_ESTIMATION;
     }
 

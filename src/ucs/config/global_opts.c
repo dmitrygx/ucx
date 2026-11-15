@@ -221,6 +221,8 @@ static ucs_config_field_t ucs_global_opts_table[] = {
   "the root complex, because of ACS redirect or IOMMU address translation.\n"
   "Then the root port link carries that traffic together with the host memory\n"
   "traffic of the devices.\n"
+  "Same-host endpoints then move device memory between different network\n"
+  "devices, which must reach each other through the network.\n"
   " - auto : detect from the IOMMU groups of the devices and their domain\n"
   "          type, as the kernel set them up. ACS changes at run time (e.g.\n"
   "          by setpci) and peer-to-peer traffic of address-translated (ATS)\n"
