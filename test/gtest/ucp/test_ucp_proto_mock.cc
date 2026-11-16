@@ -1039,8 +1039,8 @@ UCS_TEST_P(test_ucp_proto_mock_rcx, rndv_4_paths,
     check_ep_config(sender(), {
         {1,       477,    "rendezvous fragmented copy-in copy-out",
          "rc_mlx5/mock_1:1/path0"},
-        {478,     3813,   "rendezvous zero-copy", "rc_mlx5/mock_1:1/path0"},
-        {3814,    283699, "rendezvous zero-copy read from remote",
+        {478,     562,    "rendezvous zero-copy", "rc_mlx5/mock_1:1/path0"},
+        {563,     283699, "rendezvous zero-copy read from remote",
          "12% on rc_mlx5/mock_1:1/path0, 14% on rc_mlx5/mock_0:1/path0, "
          "14% on rc_mlx5/mock_0:1/path1, 12% on rc_mlx5/mock_1:1/path1, 14%"},
         {283700,  INF,    "rendezvous zero-copy fenced write to remote",
@@ -1103,9 +1103,9 @@ UCS_TEST_P(test_ucp_proto_mock_rcx2, rndv_send_recv_small_frag,
     key.param.op_attr          = 0;
 
     check_ep_config(sender(), {
-        {1,   433, "rendezvous fragmented copy-in copy-out",
+        {1,   139, "rendezvous fragmented copy-in copy-out",
          "rc_mlx5/mock_0:1/path0"},
-        {434, INF, "rendezvous zero-copy read from remote",
+        {140, INF, "rendezvous zero-copy read from remote",
          "54% on rc_mlx5/mock_0:1/path0 and 46% on rc_mlx5/mock_1:1/path0"},
     }, key);
 

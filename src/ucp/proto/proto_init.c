@@ -1,5 +1,5 @@
 /**
- * Copyright (c) NVIDIA CORPORATION & AFFILIATES, 2021. ALL RIGHTS RESERVED.
+ * Copyright (c) NVIDIA CORPORATION & AFFILIATES, 2021-2026. ALL RIGHTS RESERVED.
  * Copyright (C) Intel Corporation, 2026. ALL RIGHTS RESERVED.
  *
  * See file LICENSE for terms.
@@ -187,6 +187,37 @@ ucp_proto_init_add_tl_perf(const ucp_proto_common_init_params_t *params,
                                     ucp_proto_perf_node_new_data("transport",
                                                                  ""),
                                     tl_perf->node);
+}
+
+/* Add the transport performance of messages in [range_start, range_end]:
+ * 'short_tl_perf' (if not NULL) up to 'short_max_length', 'tl_perf' above it */
+static ucs_status_t ucp_proto_init_add_tl_perf_split(
+        const ucp_proto_common_init_params_t *params,
+        const ucp_proto_common_tl_perf_t *tl_perf,
+        const ucp_proto_common_tl_perf_t *short_tl_perf,
+        size_t short_max_length, size_t range_start, size_t range_end,
+        ucp_proto_perf_t *perf)
+{
+    ucs_status_t status;
+
+    if ((short_tl_perf == NULL) || (short_max_length < range_start)) {
+        return ucp_proto_init_add_tl_perf(params, tl_perf, range_start,
+                                          range_end, perf);
+    }
+
+    if (short_max_length >= range_end) {
+        return ucp_proto_init_add_tl_perf(params, short_tl_perf, range_start,
+                                          range_end, perf);
+    }
+
+    status = ucp_proto_init_add_tl_perf(params, short_tl_perf, range_start,
+                                        short_max_length, perf);
+    if (status != UCS_OK) {
+        return status;
+    }
+
+    return ucp_proto_init_add_tl_perf(params, tl_perf, short_max_length + 1,
+                                      range_end, perf);
 }
 
 /**
@@ -519,10 +550,12 @@ ucp_proto_common_check_mem_access(const ucp_proto_common_init_params_t *params)
            (params->memtype_op != UCT_EP_OP_LAST);
 }
 
-ucs_status_t ucp_proto_init_perf(const ucp_proto_common_init_params_t *params,
-                                 const ucp_proto_common_tl_perf_t *tl_perf,
-                                 ucp_md_map_t reg_md_map, const char *perf_name,
-                                 ucp_proto_perf_t **perf_p)
+ucs_status_t
+ucp_proto_init_perf(const ucp_proto_common_init_params_t *params,
+                    const ucp_proto_common_tl_perf_t *tl_perf,
+                    const ucp_proto_common_tl_perf_t *short_tl_perf,
+                    size_t short_max_length, ucp_md_map_t reg_md_map,
+                    const char *perf_name, ucp_proto_perf_t **perf_p)
 {
     const ucp_proto_perf_segment_t *frag_seg;
     size_t range_start, range_end;
@@ -549,8 +582,9 @@ ucs_status_t ucp_proto_init_perf(const ucp_proto_common_init_params_t *params,
         return status;
     }
 
-    status = ucp_proto_init_add_tl_perf(params, tl_perf, range_start, range_end,
-                                        perf);
+    status = ucp_proto_init_add_tl_perf_split(params, tl_perf, short_tl_perf,
+                                              short_max_length, range_start,
+                                              range_end, perf);
     if (status != UCS_OK) {
         goto err_cleanup_perf;
     }

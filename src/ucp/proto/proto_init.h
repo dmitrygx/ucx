@@ -1,5 +1,5 @@
 /**
- * Copyright (c) NVIDIA CORPORATION & AFFILIATES, 2021. ALL RIGHTS RESERVED.
+ * Copyright (c) NVIDIA CORPORATION & AFFILIATES, 2021-2026. ALL RIGHTS RESERVED.
  *
  * See file LICENSE for terms.
  */
@@ -66,10 +66,28 @@ ucp_proto_init_add_buffer_copy_time(ucp_worker_h worker, const char *title,
                                     int local, ucp_proto_perf_t *perf);
 
 
-ucs_status_t ucp_proto_init_perf(const ucp_proto_common_init_params_t *params,
-                                 const ucp_proto_common_tl_perf_t *tl_perf,
-                                 ucp_md_map_t reg_md_map, const char *perf_name,
-                                 ucp_proto_perf_t **perf_p);
+/**
+ * Create the performance of a protocol from the performance of its transport.
+ *
+ * @param [in]  params            Protocol initialization parameters.
+ * @param [in]  tl_perf           Transport performance.
+ * @param [in]  short_tl_perf     If not NULL, transport performance of messages
+ *                                up to @a short_max_length, which replaces
+ *                                @a tl_perf for them.
+ * @param [in]  short_max_length  Maximal message length that uses
+ *                                @a short_tl_perf.
+ * @param [in]  reg_md_map        Memory domains to register the buffer on.
+ * @param [in]  perf_name         Name of the created performance object.
+ * @param [out] perf_p            Filled with the created performance object.
+ *
+ * @return Error code as defined by @ref ucs_status_t.
+ */
+ucs_status_t
+ucp_proto_init_perf(const ucp_proto_common_init_params_t *params,
+                    const ucp_proto_common_tl_perf_t *tl_perf,
+                    const ucp_proto_common_tl_perf_t *short_tl_perf,
+                    size_t short_max_length, ucp_md_map_t reg_md_map,
+                    const char *perf_name, ucp_proto_perf_t **perf_p);
 
 
 /**

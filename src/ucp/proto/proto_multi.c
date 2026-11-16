@@ -906,6 +906,8 @@ static ucs_status_t ucp_proto_multi_init_perf(
         const ucp_proto_multi_priv_t *mpriv, ucp_md_map_t reg_md_map,
         ucp_proto_common_tl_perf_t *perf, ucp_proto_perf_t **perf_p)
 {
+    const ucp_proto_common_tl_perf_t *first_lane_perf = NULL;
+    size_t first_lane_max_length                      = 0;
     ucp_lane_index_t lane;
     ucs_status_t status;
 
@@ -918,9 +920,16 @@ static ucs_status_t ucp_proto_multi_init_perf(
         ucs_for_each_bit(lane, selection->lane_map) {
             ucp_proto_perf_node_add_child(perf->node, lanes_perf[lane].node);
         }
+
+        /* A message shorter than the minimal end offset of the first lane is
+         * not split, it is sent on the first lane only (see
+         * ucp_proto_multi_lane_payload and ucp_proto_rndv_bulk_max_payload) */
+        first_lane_perf       = &lanes_perf[mpriv->lanes[0].super.lane];
+        first_lane_max_length = mpriv->lanes[0].min_end_offset - 1;
     }
 
-    status = ucp_proto_init_perf(&params->super, perf, reg_md_map, perf_name,
+    status = ucp_proto_init_perf(&params->super, perf, first_lane_perf,
+                                 first_lane_max_length, reg_md_map, perf_name,
                                  perf_p);
     ucp_proto_perf_node_deref(&perf->node);
     return status;

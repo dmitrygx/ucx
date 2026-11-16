@@ -62,7 +62,7 @@ ucs_status_t ucp_proto_single_init(const ucp_proto_single_init_params_t *params,
         return status;
     }
 
-    status = ucp_proto_init_perf(&params->super, &tl_perf, reg_md_map,
+    status = ucp_proto_init_perf(&params->super, &tl_perf, NULL, 0, reg_md_map,
                                  proto_name, perf_p);
     ucp_proto_perf_node_deref(&tl_perf.node);
 
