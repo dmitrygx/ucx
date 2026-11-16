@@ -2720,6 +2720,85 @@ UCP_INSTANTIATE_TEST_CASE_TLS(test_ucp_proto_mock_rcx_twins_get_inline_0, rcx,
                               "rc_x")
 
 /*
+ * Two equal lanes. A multi-lane PUT or GET sends a message shorter than
+ * MIN_RMA_CHUNK_SIZE on the first lane only, so its zero-copy threshold must
+ * not depend on the number of RMA rails.
+ */
+class test_ucp_proto_mock_rcx_rma_rails : public test_ucp_proto_mock {
+public:
+    test_ucp_proto_mock_rcx_rma_rails()
+    {
+        mock_transport("rc_mlx5");
+    }
+
+    virtual void init() override
+    {
+        auto iface_attr_func = [](uct_iface_attr_t &iface_attr) {
+            iface_attr.cap.put.max_short = 208;
+            iface_attr.bandwidth.shared  = 28e9;
+            iface_attr.latency.c         = 500e-9;
+            iface_attr.latency.m         = 1e-9;
+        };
+
+        add_mock_iface("mock_0:1", iface_attr_func);
+        add_mock_iface("mock_1:1", iface_attr_func);
+        test_ucp_proto_mock::init();
+    }
+
+protected:
+    void check_config(ucp_operation_id_t op_id,
+                      const proto_select_data_vec_t &data_vec)
+    {
+        /* Zero-copy with any number of rails, so the PUT completes only after
+         * the data is written to the remote buffer */
+        auto rkey_cfg_index = send_recv_rma(64 * UCS_KBYTE, op_id);
+        ASSERT_NE(UCP_WORKER_CFG_INDEX_NULL, rkey_cfg_index);
+
+        ucp_proto_select_key_t key = any_key();
+        key.param.op_id_flags      = op_id;
+        key.param.op_attr          = 0;
+
+        check_rkey_config(sender(), data_vec, key, rkey_cfg_index);
+    }
+};
+
+UCS_TEST_P(test_ucp_proto_mock_rcx_rma_rails, put_1_rail, "IB_NUM_PATHS?=1",
+           "MAX_RMA_RAILS=1")
+{
+    check_config(UCP_OP_ID_PUT, {{0, 208, "short", "rc_mlx5/mock_0:1"},
+                                 {209, 477, "copy-in", "rc_mlx5/mock_0:1"},
+                                 {478, INF, "zero-copy", "rc_mlx5/mock_0:1"}});
+}
+
+UCS_TEST_P(test_ucp_proto_mock_rcx_rma_rails, put_2_rails, "IB_NUM_PATHS?=1",
+           "MAX_RMA_RAILS=2")
+{
+    check_config(UCP_OP_ID_PUT,
+                 {{0, 208, "short", "rc_mlx5/mock_0:1"},
+                  {209, 477, "copy-in", "rc_mlx5/mock_0:1"},
+                  {478, INF, "zero-copy",
+                   "50% on rc_mlx5/mock_0:1 and 50% on rc_mlx5/mock_1:1"}});
+}
+
+UCS_TEST_P(test_ucp_proto_mock_rcx_rma_rails, get_1_rail, "IB_NUM_PATHS?=1",
+           "MAX_RMA_RAILS=1")
+{
+    check_config(UCP_OP_ID_GET, {{0, 624, "copy-out", "rc_mlx5/mock_0:1"},
+                                 {625, INF, "zero-copy", "rc_mlx5/mock_0:1"}});
+}
+
+UCS_TEST_P(test_ucp_proto_mock_rcx_rma_rails, get_2_rails, "IB_NUM_PATHS?=1",
+           "MAX_RMA_RAILS=2")
+{
+    check_config(UCP_OP_ID_GET,
+                 {{0, 624, "copy-out", "rc_mlx5/mock_0:1"},
+                  {625, INF, "zero-copy",
+                   "50% on rc_mlx5/mock_0:1 and 50% on rc_mlx5/mock_1:1"}});
+}
+
+UCP_INSTANTIATE_TEST_CASE_TLS(test_ucp_proto_mock_rcx_rma_rails, rcx, "rc_x")
+
+/*
  * Tests the min-distance filter and deterministic sort in
  * ucp_proto_multi_filter_single_net_device(). Sets up three mock NICs
  * with identical bandwidth (so all survive the filter's bandwidth
