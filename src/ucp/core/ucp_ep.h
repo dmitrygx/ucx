@@ -1136,6 +1136,16 @@ ucp_ep_tf_hold(ucp_ep_h ep, ucp_lane_index_t lane, uct_ep_h uct_ep);
 
 
 /**
+ * Nonzero when an endpoint with @a key can use token failover: its error mode
+ * is FAILOVER, the failover mode is not software, it has no CM lane and the
+ * release of its peer supports the token exchange. A lane also needs a
+ * transport that queries tokens.
+ */
+int ucp_ep_config_key_tf_supported(ucp_context_h context,
+                                   const ucp_ep_config_key_t *key);
+
+
+/**
  * Purge a held lane whose RX token is already stored, after this callback
  * returns. The transport records the outstanding range only then.
  */
