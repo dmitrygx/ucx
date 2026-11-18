@@ -31,18 +31,15 @@ static size_t ucp_am_eager_single_hdr_size(ucp_operation_id_t op_id)
 
 /* AUTO keeps transport selection unchanged and is rewritten to SW only when
  * indirect atomics are enabled. Otherwise token replay is used on lanes that
- * can query a token. */
+ * can query a token. These sends complete when posted, so they are enabled only
+ * on endpoints whose failed lanes are held for the token replay. */
 static int
 ucp_am_eager_enable_token_failover(ucp_proto_single_init_params_t *params)
 {
     const ucp_proto_init_params_t *init_params = &params->super.super;
-    ucp_failover_mode_t failover_mode          =
-            init_params->worker->context->config.ext.failover_mode;
 
-    if ((init_params->ep_config_key->err_mode !=
-         UCP_ERR_HANDLING_MODE_FAILOVER) ||
-        ((failover_mode != UCP_FAILOVER_MODE_TOKEN) &&
-         (failover_mode != UCP_FAILOVER_MODE_AUTO))) {
+    if (!ucp_ep_config_key_tf_supported(init_params->worker->context,
+                                        init_params->ep_config_key)) {
         return 0;
     }
 

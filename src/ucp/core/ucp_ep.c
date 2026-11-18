@@ -2780,6 +2780,15 @@ static void ucp_ep_tf_note_ids(ucp_ep_lane_tf_t *tf, uint32_t request_id,
     }
 }
 
+int ucp_ep_config_key_tf_supported(ucp_context_h context,
+                                   const ucp_ep_config_key_t *key)
+{
+    return (key->err_mode == UCP_ERR_HANDLING_MODE_FAILOVER) &&
+           (context->config.ext.failover_mode != UCP_FAILOVER_MODE_SW) &&
+           !ucp_ep_config_key_has_cm_lane(key) &&
+           (key->dst_version >= UCP_MIN_DST_VERSION_WIREUP_ADDR_TOKEN);
+}
+
 /* A lane can enter the token path only when a later hold would accept it.
  * Anything else stays on the software discard path. */
 static int
@@ -2788,13 +2797,9 @@ ucp_ep_tf_lane_supported(ucp_ep_h ep, ucp_lane_index_t lane, uct_ep_h uct_ep)
     ucp_worker_iface_t *wiface;
     size_t tx_len;
 
-    if ((ep->worker->context->config.ext.failover_mode ==
-         UCP_FAILOVER_MODE_SW) ||
-        (ep->flags & UCP_EP_FLAG_FAILED) ||
-        !ucp_ep_err_mode_eq(ep, UCP_ERR_HANDLING_MODE_FAILOVER) ||
-        ucp_ep_has_cm_lane(ep) ||
-        (ucp_ep_config(ep)->key.dst_version <
-         UCP_MIN_DST_VERSION_WIREUP_ADDR_TOKEN) ||
+    if ((ep->flags & UCP_EP_FLAG_FAILED) ||
+        !ucp_ep_config_key_tf_supported(ep->worker->context,
+                                        &ucp_ep_config(ep)->key) ||
         (ucp_ep_get_lane(ep, lane) != uct_ep)) {
         return 0;
     }
