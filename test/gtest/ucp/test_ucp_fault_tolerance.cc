@@ -1405,6 +1405,170 @@ UCS_TEST_P(test_ucp_fault_tolerance_tf_am_proto, older_peer)
 
 UCP_INSTANTIATE_TEST_CASE_TLS(test_ucp_fault_tolerance_tf_am_proto, rcx, "rc_x")
 
+/* Many eager AMs (short or single bcopy) are in flight on the AM lane when it
+ * fails. Token failover must deliver each of them once, with its payload. */
+class test_ucp_fault_tolerance_tf_am_burst :
+        public test_ucp_fault_tolerance_tf {
+public:
+    static void get_test_variants(std::vector<ucp_test_variant> &variants)
+    {
+        add_variant_with_value(variants, UCP_FEATURE_AM, 256, "short");
+        add_variant_with_value(variants, UCP_FEATURE_AM, 4096, "bcopy");
+    }
+
+protected:
+    static constexpr uint16_t BURST_AM_ID = 1;
+    static constexpr unsigned BURST_COUNT = 512;
+
+    static uint8_t burst_byte(uint32_t seq, size_t offset)
+    {
+        return (uint8_t)(seq * 31 + offset);
+    }
+
+    static ucs_status_t
+    burst_recv_cb(void *arg, const void *header, size_t header_length,
+                  void *data, size_t length, const ucp_am_recv_param_t *param)
+    {
+        auto *self = reinterpret_cast<test_ucp_fault_tolerance_tf_am_burst*>(
+                arg);
+        const uint8_t *bytes = static_cast<const uint8_t*>(data);
+        uint32_t seq;
+        size_t i;
+
+        if ((param->recv_attr & UCP_AM_RECV_ATTR_FLAG_RNDV) ||
+            (length != self->m_size)) {
+            ++self->m_bad;
+            return UCS_OK;
+        }
+
+        memcpy(&seq, data, sizeof(seq));
+        for (i = sizeof(seq); i < length; ++i) {
+            if (bytes[i] != burst_byte(seq, i)) {
+                ++self->m_bad;
+                return UCS_OK;
+            }
+        }
+
+        if (seq >= self->m_counts.size()) {
+            ++self->m_bad;
+            return UCS_OK;
+        }
+
+        ++self->m_counts[seq];
+        ++self->m_received;
+        return UCS_OK;
+    }
+
+    void send_burst(ucp_ep_h ep, uint32_t first, std::vector<void*> &reqs)
+    {
+        ucp_request_param_t param = {};
+        uint32_t seq;
+        size_t i;
+
+        for (seq = first; seq < (first + BURST_COUNT); ++seq) {
+            std::vector<uint8_t> &buf = m_bufs[seq];
+
+            buf.resize(m_size);
+            memcpy(buf.data(), &seq, sizeof(seq));
+            for (i = sizeof(seq); i < m_size; ++i) {
+                buf[i] = burst_byte(seq, i);
+            }
+
+            reqs.push_back(ucp_am_send_nbx(ep, BURST_AM_ID, NULL, 0,
+                                           buf.data(), m_size, &param));
+        }
+    }
+
+    void run_am_burst(failure_side_t failure_side)
+    {
+        ucp_ep_h ep = sender().ep(0, INJECTED_EP_INDEX);
+        ucp_am_handler_param_t param;
+        std::vector<void*> reqs;
+        ucp_ep_h inject_ep;
+        ucp_lane_index_t am_lane;
+        unsigned missing, duplicate;
+        size_t seq;
+
+        m_size = get_variant_value();
+        flush_workers();
+
+        param.field_mask = UCP_AM_HANDLER_PARAM_FIELD_ID |
+                           UCP_AM_HANDLER_PARAM_FIELD_CB |
+                           UCP_AM_HANDLER_PARAM_FIELD_ARG;
+        param.id         = BURST_AM_ID;
+        param.cb         = burst_recv_cb;
+        param.arg        = this;
+        ASSERT_UCS_OK(ucp_worker_set_am_recv_handler(receiver().worker(),
+                                                     &param));
+
+        if (ucp_ep_config(ep)->key.num_lanes < 2) {
+            UCS_TEST_SKIP_R("needs 2 lanes");
+        }
+
+        m_counts.assign(2 * BURST_COUNT, 0);
+        m_bufs.resize(2 * BURST_COUNT);
+
+        inject_ep = (failure_side == FAILURE_SIDE_INITIATOR) ?
+                    ep : receiver().ep(0, INJECTED_EP_INDEX);
+        am_lane   = ucp_ep_config(inject_ep)->key.am_lane;
+        UCS_TEST_MESSAGE << "size " << m_size << " am_lane " << int(am_lane)
+                         << " of " << int(ucp_ep_num_lanes(inject_ep));
+
+        send_burst(ep, 0, reqs);
+        ASSERT_UCS_OK(uct_ep_invalidate(ucp_ep_get_lane(inject_ep, am_lane),
+                                        0));
+        send_burst(ep, BURST_COUNT, reqs);
+
+        EXPECT_UCS_OK(requests_wait(reqs));
+        wait_for_cond([this]() {
+            return (m_received + m_bad) >= (2 * BURST_COUNT);
+        }, [this]() { short_progress_loop(); });
+        /* Late duplicates */
+        short_progress_loop();
+
+        missing   = 0;
+        duplicate = 0;
+        for (seq = 0; seq < m_counts.size(); ++seq) {
+            if (m_counts[seq] == 0) {
+                if (missing++ < 5) {
+                    UCS_TEST_MESSAGE << "missing AM " << seq;
+                }
+            } else if (m_counts[seq] > 1) {
+                if (duplicate++ < 5) {
+                    UCS_TEST_MESSAGE << "AM " << seq << " received "
+                                     << m_counts[seq] << " times";
+                }
+            }
+        }
+
+        EXPECT_EQ(0u, m_bad) << "AMs with a wrong length or payload";
+        EXPECT_EQ(0u, missing) << "AMs not received";
+        EXPECT_EQ(0u, duplicate) << "AMs received more than once";
+        EXPECT_EQ(0, total_err_count());
+    }
+
+    size_t m_size     = 0;
+    size_t m_received = 0;
+    size_t m_bad      = 0;
+    std::vector<unsigned> m_counts;
+    std::vector<std::vector<uint8_t>> m_bufs;
+};
+
+UCS_TEST_P(test_ucp_fault_tolerance_tf_am_burst, initiator_failure,
+           "MAX_EAGER_LANES=8", "RECOVERY_RETRIES=100")
+{
+    run_am_burst(FAILURE_SIDE_INITIATOR);
+}
+
+UCS_TEST_P(test_ucp_fault_tolerance_tf_am_burst, target_failure,
+           "MAX_EAGER_LANES=8", "RECOVERY_RETRIES=100")
+{
+    run_am_burst(FAILURE_SIDE_TARGET);
+}
+
+UCP_INSTANTIATE_TEST_CASE_TLS(test_ucp_fault_tolerance_tf_am_burst, rcx,
+                              "rc_x")
+
 /* A send on a FAILOVER endpoint is canceled locally when the user closes the
  * endpoint or destroys the worker while the send is still pending or in flight.
  * The send must complete once, without a restart on the endpoint which is going
