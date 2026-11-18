@@ -29,14 +29,15 @@ static size_t ucp_am_eager_single_hdr_size(ucp_operation_id_t op_id)
            ((op_id == UCP_OP_ID_AM_SEND) ? 0 : sizeof(ucp_am_reply_ftr_t));
 }
 
+/* These sends complete when posted, so they are enabled only on endpoints
+ * whose failed lanes are held for the token replay. */
 static int
 ucp_am_eager_enable_token_failover(ucp_proto_single_init_params_t *params)
 {
     const ucp_proto_init_params_t *init_params = &params->super.super;
 
-    if ((init_params->ep_config_key->err_mode !=
-         UCP_ERR_HANDLING_MODE_FAILOVER) ||
-        !ucp_context_is_token_failover(init_params->worker->context)) {
+    if (!ucp_ep_config_key_tf_supported(init_params->worker->context,
+                                        init_params->ep_config_key)) {
         return 0;
     }
 
