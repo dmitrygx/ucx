@@ -1636,6 +1636,64 @@ UCP_FT_TESTS(test_ucp_fault_tolerance_tf)
 UCP_INSTANTIATE_TEST_CASE(test_ucp_fault_tolerance)
 UCP_INSTANTIATE_TEST_CASE_TLS(test_ucp_fault_tolerance_tf, rcx, "rc_x")
 
+/* Short and single bcopy AMs complete when they are posted, so after a lane
+ * failure only token replay delivers them. A peer which cannot exchange tokens
+ * makes the lane fail in software, which would drop them: the eager AM of such
+ * a peer has to stay on the PSN protocol, which completes after delivery. */
+class test_ucp_fault_tolerance_tf_am_proto :
+        public test_ucp_fault_tolerance_tf {
+public:
+    static void get_test_variants(std::vector<ucp_test_variant> &variants)
+    {
+        add_variant_with_value(variants, UCP_FEATURE_AM, TEST_OP_AM,
+                               op_name(TEST_OP_AM));
+    }
+
+protected:
+    std::string am_proto_name(ucp_worker_cfg_index_t cfg_index, size_t length)
+    {
+        ucp_worker_h worker = sender().worker();
+        const ucp_proto_threshold_elem_t *thresh;
+        ucp_proto_select_param_t select_param;
+        ucp_proto_select_elem_t *select_elem;
+        ucp_memory_info_t mem_info;
+
+        ucp_memory_info_set_host(&mem_info);
+        ucp_proto_select_param_init(&select_param, UCP_OP_ID_AM_SEND, 0, 0,
+                                    UCP_DATATYPE_CONTIG, &mem_info, 1);
+        select_elem = ucp_proto_select_lookup_slow(
+                worker, &ucp_worker_ep_config(worker, cfg_index)->proto_select,
+                0, cfg_index, UCP_WORKER_CFG_INDEX_NULL, &select_param);
+        if (select_elem == NULL) {
+            return "";
+        }
+
+        thresh = ucp_proto_thresholds_search_slow(select_elem->thresholds,
+                                                  length);
+        return (thresh == NULL) ? "" : thresh->proto_config.proto->name;
+    }
+};
+
+UCS_TEST_P(test_ucp_fault_tolerance_tf_am_proto, older_peer)
+{
+    ucp_ep_h ep = sender().ep(0, INJECTED_EP_INDEX);
+    ucp_worker_cfg_index_t cfg_index;
+    ucp_ep_config_key_t key;
+
+    flush_workers();
+    key = ucp_ep_config(ep)->key;
+    ASSERT_EQ(UCP_ERR_HANDLING_MODE_FAILOVER, key.err_mode);
+    ASSERT_EQ("am/egr/short", am_proto_name(ep->cfg_index, 64));
+
+    key.dst_version = UCP_MIN_DST_VERSION_WIREUP_ADDR_TOKEN - 1;
+    ASSERT_UCS_OK(ucp_worker_get_ep_config(sender().worker(), &key, 0,
+                                           &cfg_index));
+    EXPECT_EQ("am/egr/multi/zcopy/psn", am_proto_name(cfg_index, 64));
+    EXPECT_EQ("am/egr/multi/zcopy/psn", am_proto_name(cfg_index, UCS_KBYTE));
+}
+
+UCP_INSTANTIATE_TEST_CASE_TLS(test_ucp_fault_tolerance_tf_am_proto, rcx, "rc_x")
+
 /* A send on a FAILOVER endpoint is canceled locally when the user closes the
  * endpoint or destroys the worker while the send is still pending or in flight.
  * The send must complete once, without a restart on the endpoint which is going
