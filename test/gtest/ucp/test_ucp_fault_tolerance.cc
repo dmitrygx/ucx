@@ -409,6 +409,8 @@ protected:
                              << " operation after failure injection on lane "
                              << size_t(lane) << '/' << lanes.size() << "...";
 
+            m_am_received = false;
+            m_am_rbuf.clear();
             status_ptrs.push_back(
                     ucp_put_nbx(sender().ep(0, INJECTED_EP_INDEX), lbuf.ptr(), size,
                     uintptr_t(rbuf.ptr()), rkey, &m_req_empty_param));
@@ -421,6 +423,8 @@ protected:
             status = requests_wait(status_ptrs);
             EXPECT_EQ(UCS_OK, status) << "PUT, AM and FLUSH operations completed with status: "
                                       << ucs_status_string(status);
+            wait_for_value(&m_am_received, true);
+            EXPECT_TRUE(m_am_received) << "the AM did not arrive";
 
             // Check that no other lanes have been affected
             for (ucp_lane_index_t valid_lane = lane_idx + 1; valid_lane < lanes.size();
@@ -735,6 +739,9 @@ protected:
 
     ucs_status_t do_am_send_and_wait(ucp_ep_h ep, size_t size, bool flush_after) {
         m_am_received = false;
+        /* A short or bcopy send completes when posted: check this AM arrived,
+         * not the data of the previous one */
+        m_am_rbuf.clear();
 
         mem_buffer sbuf(size, UCS_MEMORY_TYPE_HOST);
         sbuf.pattern_fill(m_seed, size);
@@ -757,6 +764,11 @@ protected:
         }
 
         wait_for_value(&m_am_received, true);
+        if (!m_am_received) {
+            return UCS_ERR_TIMED_OUT;
+        }
+
+        EXPECT_EQ(size, m_am_rbuf.size());
         mem_buffer::pattern_check(m_am_rbuf.data(), size, m_seed);
         return UCS_OK;
     }
