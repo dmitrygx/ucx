@@ -1406,8 +1406,8 @@ void test_ucp_fault_tolerance::run_probe_completes_after_handshake()
     ASSERT_NE(nullptr, wireup_ep);
     EXPECT_EQ(UCS_BIT(lane), ucp_ep_get_failed_lanes(ep));
     EXPECT_FALSE(wireup_ep->flags & UCP_WIREUP_EP_FLAG_READY);
-    EXPECT_TRUE(wireup_ep->flags & UCP_WIREUP_EP_FLAG_LOCAL_CONNECTED)
-            << "lane was not connected during the exchange";
+    EXPECT_FALSE(wireup_ep->flags & UCP_WIREUP_EP_FLAG_LOCAL_CONNECTED)
+            << "lane was connected before its probe completed";
 
     req_id      = ep->ext->tf_request_id;
     peer_req_id = peer_ep->ext->tf_request_id;
