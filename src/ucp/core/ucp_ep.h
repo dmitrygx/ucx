@@ -560,6 +560,9 @@ typedef struct ucp_ep_recovery_arg {
     uint8_t                 resend;
     /* Lanes are connected from progress after their probes completed */
     uint8_t                 connect_scheduled;
+    /* The recovery ended while a probe was in flight. The endpoint no longer
+     * refers to this object, and the last probe completion releases it. */
+    uint8_t                 detached;
     /* Highest peer LANES_ADDR request id accepted while this object is
      * alive. 0 means none. Moved into the ext slot when the object is freed. */
     uint16_t                seen_peer_id;
