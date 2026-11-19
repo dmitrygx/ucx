@@ -2145,6 +2145,20 @@ static void ucp_ep_tf_seen_peer_id_set(ucp_ep_h ep, uint16_t peer_id)
                                                      UCP_EP_SLOT_PEER_ID_BIT);
 }
 
+static int ucp_ep_recovery_probe_in_flight(const ucp_ep_recovery_arg_t *arg)
+{
+    ucp_lane_index_t lane;
+
+    /* The transport owns a probe completion until it invokes it */
+    for (lane = 0; lane < UCP_MAX_LANES; ++lane) {
+        if (arg->probe[lane].comp.count != 0) {
+            return 1;
+        }
+    }
+
+    return 0;
+}
+
 static void ucp_ep_recovery_arg_free(ucp_ep_h ep)
 {
     ucp_ep_recovery_arg_t *arg = ucp_ep_recovery_arg(ep);
@@ -2154,16 +2168,24 @@ static void ucp_ep_recovery_arg_free(ucp_ep_h ep)
     ucs_assert(arg != NULL);
 
     seen_peer_id = arg->seen_peer_id;
-    ucp_ep_refcount_assert(ep, probe, ==, 0);
     ucp_wireup_tf_reply_discard(ep);
     ucp_ep_tf_cleanup(ep);
     for (lane = 0; lane < UCP_MAX_LANES; ++lane) {
         ucp_ep_recovery_peer_addr_free(&arg->probe[lane]);
     }
 
-    ucs_free(arg);
     ep->ext->recovery_arg = NULL;
     ucp_ep_tf_seen_peer_id_set(ep, seen_peer_id);
+
+    /* A probe can still be in flight on an aux endpoint that is being
+     * discarded, and its completion points into this object */
+    if (ucp_ep_recovery_probe_in_flight(arg)) {
+        ucs_debug("ep %p: recovery ended with a probe in flight", ep);
+        arg->detached = 1;
+        return;
+    }
+
+    ucs_free(arg);
 }
 
 static void ucp_ep_recovery_probe_complete(ucp_ep_h ep, ucs_status_t status)
@@ -2178,19 +2200,33 @@ static void ucp_ep_recovery_probe_comp(uct_completion_t *self)
     ucp_ep_recovery_probe_t *probe = ucs_container_of(self,
                                                       ucp_ep_recovery_probe_t,
                                                       comp);
+    ucp_ep_recovery_arg_t *arg     = ucs_container_of(probe - probe->lane,
+                                                      ucp_ep_recovery_arg_t,
+                                                      probe);
     ucp_ep_h ep                    = probe->ep;
-    ucp_ep_recovery_arg_t *arg;
 
     ucs_debug("ep %p: recovery probe lane %d done: %s", ep, probe->lane,
               ucs_status_string(self->status));
+    if (arg->detached) {
+        /* The recovery ended while the probe was in flight */
+        if (!ucp_ep_recovery_probe_in_flight(arg)) {
+            ucs_free(arg);
+        }
+
+        ucp_ep_refcount_remove(ep, probe); /* may destroy the EP */
+        return;
+    }
+
+    ucs_assertv(arg == ucp_ep_recovery_arg(ep),
+                "ep %p: probe lane %d arg %p, recovery arg %p", ep,
+                probe->lane, arg, ucp_ep_recovery_arg(ep));
     ucp_ep_recovery_probe_complete(ep, self->status);
 
     /* The peer address arrived while the probe was in flight, and the peer
      * may already use its side of the lane. Connect ours from progress now,
      * rather than after another address exchange. */
-    arg = ucp_ep_recovery_arg(ep);
-    if ((arg != NULL) && (self->status == UCS_OK) &&
-        (probe->peer_addr != NULL) && !arg->connect_scheduled) {
+    if ((self->status == UCS_OK) && (probe->peer_addr != NULL) &&
+        !arg->connect_scheduled) {
         arg->connect_scheduled = 1;
         ucs_callbackq_add_oneshot(&ep->worker->uct->progress_q, ep,
                                   ucp_ep_recovery_connect_progress, ep);
