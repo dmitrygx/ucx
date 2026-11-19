@@ -504,6 +504,12 @@ typedef struct ucp_ep_recovery_probe {
     uct_completion_t  comp;
     ucp_ep_h          ep;
     ucp_lane_index_t  lane;
+    /* Device and endpoint address of the peer replacement transport endpoint
+     * of the lane, from the last address exchange, to connect the lane when
+     * the probe completes. NULL if not known. */
+    void              *peer_addr;
+    size_t            peer_dev_addr_len;
+    size_t            peer_ep_addr_len;
 } ucp_ep_recovery_probe_t;
 
 
@@ -552,6 +558,8 @@ typedef struct ucp_ep_recovery_arg {
     /* The next idle round republishes lanes already sent. A new failure
      * clears this and publishes only lanes that have not been sent. */
     uint8_t                 resend;
+    /* Lanes are connected from progress after their probes completed */
+    uint8_t                 connect_scheduled;
     /* Highest peer LANES_ADDR request id accepted while this object is
      * alive. 0 means none. Moved into the ext slot when the object is freed. */
     uint16_t                seen_peer_id;
