@@ -2014,3 +2014,384 @@ UCS_TEST_P(test_ucp_ft_tf_parked_rma, put_zcopy_2_rails,
 }
 
 UCP_INSTANTIATE_TEST_CASE_TLS(test_ucp_ft_tf_parked_rma, rcx, "rc_x")
+
+/* Token failover holds a failed lane. A flush or a graceful close issued then
+ * must complete after the operations of the lane: those which were outstanding
+ * on it, which the token purge reposts, and the requests from its pending
+ * queue, which wait in the recovery queue. */
+class test_ucp_ft_tf_hold_flush : public test_ucp_ft_tf_hold {
+protected:
+    /* Where the put waits when the flush or the close is issued */
+    enum put_state_t {
+        PUT_OUTSTANDING,     /* Outstanding on the held transport endpoint */
+        PUT_PARKED,          /* In the recovery queue */
+        PUT_PARKED_LANE_DOWN /* In the recovery queue, and the failed lane does
+                                not recover */
+    };
+
+    void test_held_put(put_state_t put_state, bool close_ep)
+    {
+        const char *what = close_ep ? "close" : "flush";
+        ucs::mock probe_mock;
+        void *put_req;
+
+        init_rma(rma_msg_size());
+        if (put_state == PUT_OUTSTANDING) {
+            /* Posted on the failed lane before the failure is detected */
+            ASSERT_UCS_OK(uct_ep_invalidate(m_uct_ep, 0));
+            put_req = rma_nb(m_req_empty_param);
+            ASSERT_TRUE(UCS_PTR_IS_PTR(put_req));
+            wait_for_hold();
+        } else {
+            if (put_state == PUT_PARKED_LANE_DOWN) {
+                /* The rebuilt lane does not recover */
+                mock_recovery_probe(sender().worker(), probe_mock,
+                                    recovery_probe_fail);
+            }
+
+            put_req = post_parked(0, m_req_empty_param);
+        }
+
+        EXPECT_FALSE(is_delivered());
+        check_flush(flush_or_close(close_ep), put_req, what);
+        if (put_state == PUT_PARKED_LANE_DOWN) {
+            EXPECT_TRUE(ucp_ep_get_failed_lanes(m_ep) & UCS_BIT(m_lane))
+                    << "lane " << unsigned(m_lane) << " recovered";
+        } else if (!close_ep) {
+            test_recovery(TEST_OP_PUT);
+        }
+    }
+
+    /* The flush or the close is issued while token failover exchanges the
+     * tokens of the failed lane of a put, so it flushes only the live lanes,
+     * and the test keeps these flushes in progress. Then the token purge
+     * reposts the put on a live lane. When these flushes complete, the flush
+     * or the close must flush the live lanes again. */
+    void test_flush_before_repost(bool close_ep)
+    {
+        const char *what = close_ep ? "close" : "flush";
+        ucp_ep_h peer_ep = receiver().ep(0, INJECTED_EP_INDEX);
+        ucs::mock probe_mock;
+        uct_ep_h peer_uct_ep;
+        unsigned num_held;
+        void *put_req, *req;
+
+        init_rma(rma_msg_size());
+        if ((m_lane >= ucp_ep_num_lanes(peer_ep)) ||
+            ucp_wireup_ep_test(ucp_ep_get_lane(peer_ep, m_lane))) {
+            UCS_TEST_SKIP_R("the receiver has no transport endpoint on lane " +
+                            std::to_string(unsigned(m_lane)));
+        }
+
+        /* A close which completes too early must not destroy the endpoint */
+        if (close_ep && !(m_ep->flags & UCP_EP_FLAG_REMOTE_CONNECTED)) {
+            UCS_TEST_SKIP_R("the close destroys the endpoint");
+        }
+
+        /* The receiver holds its end of the lane, and replied to the request */
+        peer_uct_ep  = ucp_ep_get_lane(peer_ep, m_lane);
+        auto replied = [this, peer_ep, peer_uct_ep]() {
+            return ucp_ep_tf_is_held(peer_ep, m_lane, peer_uct_ep) &&
+                   (ucp_ep_recovery_arg(peer_ep)->tf[m_lane].peer_id != 0) &&
+                   (ucp_ep_recovery_arg(peer_ep)->tf_reply == NULL);
+        };
+
+        /* The rebuilt lane does not recover, so no lane is replaced */
+        mock_recovery_probe(sender().worker(), probe_mock, recovery_probe_fail);
+        mock_ep_flush(m_ep, m_mock, flush_held);
+
+        /* The put is posted on the failed lane before the failure is detected.
+         * Only the sender progresses until it holds the lane and requests its
+         * token, and then only the receiver, until it holds its end and
+         * replies. */
+        ASSERT_UCS_OK(uct_ep_invalidate(m_uct_ep, 0));
+        put_req = rma_nb(m_req_empty_param);
+        ASSERT_TRUE(UCS_PTR_IS_PTR(put_req));
+        wait_for_cond([this]() {
+            return held() &&
+                   (ucp_ep_recovery_arg(m_ep)->tf[m_lane].request_id != 0);
+        }, [this]() { sender().progress(); });
+        wait_for_cond(replied, [this]() { receiver().progress(); });
+        if (!held() || !replied()) {
+            UCS_TEST_ABORT("lane " << unsigned(m_lane) << " is not held on "
+                           << "both sides, or the receiver did not reply");
+        }
+
+        m_held_lanes = ucp_ep_get_live_lanes(m_ep);
+        req          = flush_or_close(close_ep);
+        ASSERT_TRUE(UCS_PTR_IS_PTR(req)) << what << " completed before the put";
+        EXPECT_NE(0u, m_held_count) << what << " did not flush the live lanes";
+
+        /* Only the sender progresses, until the purge reposts the put */
+        wait_for_cond([this]() { return purged(); },
+                      [this]() { sender().progress(); });
+        num_held = m_held_count;
+        complete_held();
+        EXPECT_EQ(UCS_INPROGRESS, ucp_request_check_status(req))
+                << what << " completed before it flushed the lane of the "
+                << "repost";
+        EXPECT_GT(m_held_count, num_held)
+                << what << " did not flush the live lanes again after the "
+                << "purge";
+
+        /* Release the flushes which are still held, the lanes flush the next
+         * ones */
+        m_mock.cleanup();
+        complete_held();
+        EXPECT_UCS_OK(wait_and_release(req));
+        EXPECT_UCS_OK(wait_and_release(put_req));
+        EXPECT_TRUE(is_delivered()) << "put data was not delivered";
+        EXPECT_EQ(0, total_err_count());
+    }
+
+    /* A put is outstanding on a lane which fails, and a flush waits in the
+     * pending queue of that lane, while another lane owes the completion of its
+     * flush. The flush must complete after the put. */
+    void test_flush_pending_on_held_lane()
+    {
+        ucp_lane_map_t other_lanes;
+        void *put_req, *req;
+
+        init_rma(rma_msg_size());
+        other_lanes = ucp_ep_get_live_lanes(m_ep) &
+                      ucp_ep_config(m_ep)->p2p_lanes & ~UCS_BIT(m_lane);
+        if (other_lanes == 0) {
+            UCS_TEST_SKIP_R("requires another p2p lane");
+        }
+
+        m_held_lanes = UCS_BIT(ucs_ffs64(other_lanes));
+        mock_pending();
+        mock_ep_flush(m_ep, m_mock, flush_held);
+
+        /* Posted on the failed lane before the failure is detected */
+        ASSERT_UCS_OK(uct_ep_invalidate(m_uct_ep, 0));
+        put_req = rma_nb(m_req_empty_param);
+        req     = ucp_ep_flush_nbx(m_ep, &m_req_empty_param);
+        ASSERT_TRUE(UCS_PTR_IS_PTR(put_req) && UCS_PTR_IS_PTR(req));
+        EXPECT_EQ(&ucp_req(req)->send.uct, m_pending_req)
+                << "flush is not pending on lane " << unsigned(m_lane);
+        EXPECT_NE(0u, m_held_count);
+
+        /* The hold takes the flush from the pending queue of the lane. Then the
+         * lanes flush the next flushes. */
+        wait_for_hold();
+        m_mock.cleanup();
+        complete_held();
+        check_flush(req, put_req, "flush");
+    }
+
+    void *flush_or_close(bool close_ep)
+    {
+        return close_ep ?
+               ep_close_nbx(sender().revoke_ep(0, INJECTED_EP_INDEX), 0) :
+               ucp_ep_flush_nbx(m_ep, &m_req_empty_param);
+    }
+
+    /* The flush or the close 'req' completes after the put, and the data of
+     * the put arrives */
+    void check_flush(void *req, void *put_req, const char *what)
+    {
+        EXPECT_TRUE(UCS_PTR_IS_PTR(req)) << what << " completed before the put";
+        EXPECT_UCS_OK(wait_and_release(req));
+        EXPECT_TRUE(is_request_completed(put_req))
+                << "put completed after the " << what;
+        EXPECT_TRUE(is_delivered()) << "put data was not delivered when the "
+                                    << what << " completed";
+        EXPECT_UCS_OK(wait_and_release(put_req));
+        EXPECT_EQ(0, total_err_count());
+    }
+
+    void *flush_nb()
+    {
+        ucp_request_param_t param;
+
+        param.op_attr_mask = UCP_OP_ATTR_FIELD_CALLBACK |
+                             UCP_OP_ATTR_FIELD_USER_DATA;
+        param.cb.send      = flush_cb;
+        param.user_data    = this;
+        return ucp_ep_flush_nbx(m_ep, &param);
+    }
+
+    /* Record the status of a flush, and close 'm_close_ep' by force at the
+     * first one */
+    static void flush_cb(void *request, ucs_status_t status, void *user_data)
+    {
+        auto self = static_cast<test_ucp_ft_tf_hold_flush*>(user_data);
+        void *close_req;
+
+        self->m_flush_status.push_back(status);
+        if ((self->m_flush_status.size() == 1) && (self->m_close_ep != NULL)) {
+            close_req = ep_close_nbx(self->m_close_ep, UCP_EP_CLOSE_FLAG_FORCE);
+            if (UCS_PTR_IS_PTR(close_req)) {
+                ucp_request_free(close_req);
+            }
+        }
+
+        ucp_request_free(request);
+    }
+
+    /* The first flush with a completion of a lane in 'm_held_lanes', and any
+     * later one with the same completion, stays in progress until the test
+     * completes it. Any other flush of 'm_pending_uct_ep' has no resources. */
+    static ucs_status_t
+    flush_held(uct_ep_h ep, unsigned flags, uct_completion_t *comp)
+    {
+        auto self             = static_cast<test_ucp_ft_tf_hold_flush*>(m_self);
+        ucp_lane_index_t lane = ucp_ep_lookup_lane(self->m_ep, ep);
+
+        if ((comp != NULL) && (lane != UCP_NULL_LANE) &&
+            (self->m_held_lanes & UCS_BIT(lane)) &&
+            ((self->m_held_comp == NULL) || (comp == self->m_held_comp))) {
+            self->m_held_comp = comp;
+            ++self->m_held_count;
+            return UCS_INPROGRESS;
+        } else if (ep == self->m_pending_uct_ep) {
+            return UCS_ERR_NO_RESOURCE;
+        }
+
+        return self->m_mock.orig_func(&ep->iface->ops.ep_flush, ep, flags,
+                                      comp);
+    }
+
+    /* Complete the flushes which the mock holds. A completion can make the
+     * flush flush the lanes again. */
+    void complete_held()
+    {
+        for (unsigned num = m_held_count; m_released < num; ++m_released) {
+            uct_invoke_completion(m_held_comp, UCS_OK);
+        }
+    }
+
+    ucp_lane_map_t            m_held_lanes = 0;
+    uct_completion_t          *m_held_comp = NULL;
+    unsigned                  m_held_count = 0;
+    unsigned                  m_released   = 0;
+    ucp_ep_h                  m_close_ep   = NULL;
+    std::vector<ucs_status_t> m_flush_status;
+};
+
+UCS_TEST_P(test_ucp_ft_tf_hold_flush, flush_outstanding_put)
+{
+    test_held_put(PUT_OUTSTANDING, false);
+}
+
+UCS_TEST_P(test_ucp_ft_tf_hold_flush, flush_parked_put)
+{
+    test_held_put(PUT_PARKED, false);
+}
+
+UCS_TEST_P(test_ucp_ft_tf_hold_flush, flush_parked_put_lane_down)
+{
+    test_held_put(PUT_PARKED_LANE_DOWN, false);
+}
+
+UCS_TEST_P(test_ucp_ft_tf_hold_flush, close_outstanding_put)
+{
+    test_held_put(PUT_OUTSTANDING, true);
+}
+
+UCS_TEST_P(test_ucp_ft_tf_hold_flush, close_parked_put)
+{
+    test_held_put(PUT_PARKED, true);
+}
+
+UCS_TEST_P(test_ucp_ft_tf_hold_flush, flush_live_lanes_before_repost)
+{
+    test_flush_before_repost(false);
+}
+
+UCS_TEST_P(test_ucp_ft_tf_hold_flush, close_live_lanes_before_repost)
+{
+    test_flush_before_repost(true);
+}
+
+UCS_TEST_P(test_ucp_ft_tf_hold_flush, flush_pending_on_held_lane,
+           "PROTO_REQUEST_RESET=n")
+{
+    test_flush_pending_on_held_lane();
+}
+
+UCS_TEST_P(test_ucp_ft_tf_hold_flush, flush_pending_on_held_lane_req_reset,
+           "PROTO_REQUEST_RESET=y")
+{
+    test_flush_pending_on_held_lane();
+}
+
+/* A flush waits in the pending queue of a lane which fails. Only the transport
+ * progresses until the hold, and then the worker is destroyed. The flush must
+ * complete once, with an error. */
+UCS_TEST_P(test_ucp_ft_tf_hold_flush, flush_pending_worker_destroy)
+{
+    ucp_worker_h worker = sender().worker();
+    uct_iface_h iface;
+    void *req;
+
+    init_rma(rma_msg_size());
+    iface = m_uct_ep->iface;
+    mock_pending();
+    mock_ep_flush(m_ep, m_mock, flush_held);
+    req = flush_nb();
+    ASSERT_TRUE(UCS_PTR_IS_PTR(req));
+    EXPECT_EQ(&ucp_req(req)->send.uct, m_pending_req)
+            << "flush is not pending on lane " << unsigned(m_lane);
+
+    /* Only the lane which fails keeps the flush */
+    wait_for_cond([req]() {
+        return ucp_req(req)->send.state.uct_comp.count <= 1;
+    }, [this]() { progress(); });
+    EXPECT_EQ(1, ucp_req(req)->send.state.uct_comp.count);
+
+    ASSERT_UCS_OK(uct_ep_invalidate(m_uct_ep, 0));
+    UCP_WORKER_THREAD_CS_ENTER_CONDITIONAL(worker);
+    wait_for_cond([this]() { return held(); },
+                  [iface]() { uct_iface_progress(iface); });
+    UCP_WORKER_THREAD_CS_EXIT_CONDITIONAL(worker);
+    ASSERT_TRUE(held());
+    EXPECT_EQ(nullptr, m_pending_req);
+    /* The mocks and the rkey belong to the worker */
+    m_mock.cleanup();
+    m_rkey.reset();
+
+    {
+        scoped_log_handler slh(wrap_errors_logger);
+        sender().destroy_worker(0);
+        /* The peer endpoints lost their peer */
+        receiver().disconnect_nb(0, GOOD_EP_INDEX, UCP_EP_CLOSE_FLAG_FORCE);
+        receiver().disconnect_nb(0, INJECTED_EP_INDEX, UCP_EP_CLOSE_FLAG_FORCE);
+    }
+
+    ASSERT_EQ(1u, m_flush_status.size());
+    EXPECT_TRUE(UCS_STATUS_IS_ERR(m_flush_status[0]))
+            << "flush status " << ucs_status_string(m_flush_status[0]);
+}
+
+/* Two flushes wait for token failover. The completion callback of the first
+ * one closes the endpoint by force, so the second one must complete once, with
+ * an error. */
+UCS_TEST_P(test_ucp_ft_tf_hold_flush, flush_cb_close_ep)
+{
+    init_rma(rma_msg_size());
+    ASSERT_UCS_OK(uct_ep_invalidate(m_uct_ep, 0));
+    wait_for_hold();
+
+    /* The flush callback closes the endpoint, the entity does not close it */
+    m_close_ep = sender().revoke_ep(0, INJECTED_EP_INDEX);
+    for (int i = 0; i < 2; ++i) {
+        EXPECT_TRUE(UCS_PTR_IS_PTR(flush_nb()))
+                << "flush completed before the held lane was purged";
+    }
+
+    wait_for_cond([this]() { return m_flush_status.size() >= 2; },
+                  [this]() { progress(); });
+    {
+        scoped_log_handler slh(wrap_errors_logger);
+        receiver().disconnect_nb(0, INJECTED_EP_INDEX, UCP_EP_CLOSE_FLAG_FORCE);
+    }
+
+    ASSERT_EQ(2u, m_flush_status.size());
+    EXPECT_UCS_OK(m_flush_status[0]);
+    EXPECT_TRUE(UCS_STATUS_IS_ERR(m_flush_status[1]))
+            << "second flush status " << ucs_status_string(m_flush_status[1]);
+}
+
+UCP_INSTANTIATE_TEST_CASE_TLS(test_ucp_ft_tf_hold_flush, rcx, "rc_x")
