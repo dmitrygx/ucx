@@ -504,6 +504,11 @@ typedef struct ucp_ep_recovery_probe {
     uct_completion_t  comp;
     ucp_ep_h          ep;
     ucp_lane_index_t  lane;
+    /* Device and endpoint address of the peer endpoint of the lane from the
+     * last address exchange, connected once the probe succeeds */
+    void              *peer_addr;
+    size_t            peer_dev_addr_len;
+    size_t            peer_ep_addr_len;
 } ucp_ep_recovery_probe_t;
 
 
