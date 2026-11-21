@@ -968,6 +968,8 @@ protected:
     void run_worker_flush_during_recovery();
     void run_recovery_retries_exhausted_live_lanes();
     void run_recovery_probe_after_peer_connected();
+    void run_recovery_ends_with_probe_in_flight();
+    void run_recovery_gives_up_with_probe_in_flight();
 
     /* A lane of @a lanes on which an endpoint sends nothing by itself: no AM,
      * wireup or keepalive role on either endpoint */
@@ -1597,6 +1599,201 @@ void test_ucp_fault_tolerance::run_recovery_probe_after_peer_connected()
     EXPECT_EQ(0, total_err_count());
 }
 
+/*
+ * A connected lane stays failed until the next keepalive, and an address
+ * message of the peer that names the lane in between, such as a request the
+ * peer repeated, probes the lane again. The keepalive then ends the recovery
+ * while that probe is in flight. The probe completes later, when its aux
+ * endpoint is discarded, possibly after the lane has failed again.
+ */
+void test_ucp_fault_tolerance::run_recovery_ends_with_probe_in_flight()
+{
+    skip_unless_rc_probe_gate();
+
+    struct peer_address {
+        void                   *buffer  = NULL;
+        ucp_unpacked_address_t unpacked = {};
+
+        ~peer_address()
+        {
+            ucs_free(unpacked.address_list);
+            ucs_free(buffer);
+        }
+    } address;
+    ucp_ep_h sender_ep         = sender().ep(0, INJECTED_EP_INDEX);
+    ucp_ep_h receiver_ep       = receiver().ep(0, INJECTED_EP_INDEX);
+    ucp_context_h context      = receiver().ucph();
+    ucp_ep_recovery_arg_t *arg = NULL;
+    uct_completion_t *late_probe;
+    ucp_lane_map_t connected, probed;
+    ucp_lane_index_t lane;
+    uint16_t req_id;
+    size_t length;
+    ucs_status_t status;
+
+    flush_workers();
+    lane = lane_without_own_traffic(get_lanes(TEST_OP_AM), sender_ep,
+                                    receiver_ep);
+    if ((lane == UCP_NULL_LANE) || !ucp_ep_is_lane_p2p(sender_ep, lane)) {
+        UCS_TEST_SKIP_R("no p2p lane without traffic of its own");
+    }
+
+    ucs::mock mock;
+    mock_recovery_probe(sender().worker(), mock, recovery_probe_hold);
+    status = uct_ep_invalidate(ucp_ep_get_lane(sender_ep, lane), 0);
+    if (status == UCS_ERR_UNSUPPORTED) {
+        UCS_TEST_SKIP_R("uct_ep_invalidate is not supported");
+    }
+
+    ASSERT_UCS_OK(status);
+    EXPECT_UCS_OK(do_am_send_and_wait(sender_ep, am_msg_size(), false));
+
+    /* The sender holds its probe, the receiver has recovered the lane */
+    wait_for_cond([&]() {
+        uct_ep_h uct_ep = ucp_ep_get_lane(receiver_ep, lane);
+
+        arg = ucp_ep_recovery_arg(sender_ep);
+        return (arg != NULL) && (m_held_probe_comp != NULL) &&
+               (arg->probe[lane].peer_addr != NULL) &&
+               !(ucp_ep_get_failed_lanes(receiver_ep) & UCS_BIT(lane)) &&
+               !ucp_wireup_ep_test(uct_ep) && !ucp_is_uct_ep_failed(uct_ep);
+    }, [this]() { short_progress_loop(); });
+    ASSERT_NE(nullptr, arg);
+    ASSERT_EQ(&arg->probe[lane].comp, m_held_probe_comp);
+    ASSERT_NE(nullptr, arg->probe[lane].peer_addr)
+            << "the receiver did not recover the lane";
+
+    /* The address the receiver publishes for the lane */
+    ASSERT_UCS_OK(ucp_address_pack(
+            receiver().worker(), receiver_ep, &context->tl_bitmap,
+            ucp_worker_default_address_pack_flags(receiver().worker()) |
+                    UCP_ADDRESS_PACK_FLAG_TL_RSC_IDX,
+            context->config.ext.worker_addr_version, NULL, UINT_MAX, &length,
+            &address.buffer));
+    ASSERT_UCS_OK(ucp_address_unpack(sender().worker(), address.buffer,
+                                     UCP_ADDRESS_PACK_FLAGS_ALL,
+                                     &address.unpacked));
+
+    /* The probe completes, and two address messages of the receiver are
+     * handled before the next keepalive: the first one connects the lane,
+     * the second one probes it again */
+    req_id = sender_ep->ext->tf_request_id;
+    {
+        ucs::scoped_async_lock lock(sender().worker()->async);
+        mock_invoke_completion(UCS_OK);
+        connected = ucp_ep_recovery_rebuild_lanes(sender_ep, UCS_BIT(lane),
+                                                  &address.unpacked);
+        probed    = ucp_ep_recovery_rebuild_lanes(sender_ep, UCS_BIT(lane),
+                                                  &address.unpacked);
+    }
+
+    ASSERT_EQ(UCS_BIT(lane), connected) << "the lane was not connected";
+    ASSERT_EQ(0, probed);
+    ASSERT_EQ(&arg->probe[lane].comp, m_held_probe_comp)
+            << "the connected lane was not probed again";
+
+    /* The keepalive ends the recovery while the probe is in flight */
+    wait_for_cond([&]() {
+        return (ucp_ep_recovery_arg(sender_ep) == NULL) &&
+               !ucp_wireup_ep_test(ucp_ep_get_lane(sender_ep, lane));
+    }, [this]() { short_progress_loop(); });
+    ASSERT_EQ(nullptr, ucp_ep_recovery_arg(sender_ep))
+            << "the recovery did not end";
+    EXPECT_EQ(0, ucp_ep_get_failed_lanes(sender_ep));
+    EXPECT_EQ(req_id, sender_ep->ext->tf_request_id);
+
+    /* The lane fails again, and the new recovery holds its probe. The late
+     * probe completes before an assertion can end the test. */
+    late_probe        = m_held_probe_comp;
+    m_held_probe_comp = NULL;
+    EXPECT_UCS_OK(uct_ep_invalidate(ucp_ep_get_lane(sender_ep, lane), 0));
+    EXPECT_UCS_OK(do_am_send_and_wait(sender_ep, am_msg_size(), false));
+    wait_for_cond([&]() {
+        arg = ucp_ep_recovery_arg(sender_ep);
+        return (arg != NULL) && (m_held_probe_comp != NULL) &&
+               (arg->state == UCP_EP_RECOVERY_STATE_PROBING);
+    }, [this]() { short_progress_loop(); });
+    req_id = sender_ep->ext->tf_request_id;
+    {
+        ucs::scoped_async_lock lock(sender().worker()->async);
+        uct_invoke_completion(late_probe, UCS_OK);
+    }
+
+    progress_for(0.5);
+    ASSERT_NE(nullptr, arg) << "the lane did not fail again";
+    EXPECT_EQ(arg, ucp_ep_recovery_arg(sender_ep));
+    EXPECT_EQ(UCP_EP_RECOVERY_STATE_PROBING, arg->state)
+            << "the late probe changed the new recovery";
+    EXPECT_EQ(req_id, sender_ep->ext->tf_request_id)
+            << "the late probe started another address exchange";
+
+    /* The probe of the new recovery completes */
+    {
+        ucs::scoped_async_lock lock(sender().worker()->async);
+        mock_invoke_completion(UCS_OK);
+    }
+
+    wait_for_cond([&]() {
+        return (ucp_ep_get_failed_lanes(sender_ep) == 0) &&
+               (ucp_ep_recovery_arg(sender_ep) == NULL);
+    }, [this]() { short_progress_loop(); });
+    EXPECT_EQ(0, ucp_ep_get_failed_lanes(sender_ep))
+            << "the lane did not recover again";
+    EXPECT_UCS_OK(do_am_send_and_wait(sender_ep, am_msg_size(), true));
+    EXPECT_EQ(0, total_err_count());
+}
+
+/*
+ * The recovery gives up on a lane after its last retry, while a probe of the
+ * lane is in flight. The probe completes after the recovery has ended.
+ */
+void test_ucp_fault_tolerance::run_recovery_gives_up_with_probe_in_flight()
+{
+    ucp_ep_h ep                = sender().ep(0, INJECTED_EP_INDEX);
+    ucp_ep_recovery_arg_t *arg = NULL;
+    ucp_lane_index_t lane;
+    uint16_t req_id;
+
+    skip_unless_rc_probe_gate();
+    ucs::mock mock;
+    lane = setup_one_failed_lane(mock);
+    if (lane == UCP_NULL_LANE) {
+        UCS_TEST_SKIP_R("no suitable p2p lane");
+    }
+
+    wait_for_cond([&]() {
+        arg = ucp_ep_recovery_arg(ep);
+        return (arg != NULL) && (m_held_probe_comp != NULL);
+    }, [this]() { short_progress_loop(); });
+    ASSERT_NE(nullptr, arg);
+    ASSERT_EQ(&arg->probe[lane].comp, m_held_probe_comp);
+
+    /* The last retry waited for a reply in vain, while a probe that a request
+     * of the peer armed is in flight */
+    {
+        ucs::scoped_async_lock lock(sender().worker()->async);
+        arg->state        = UCP_EP_RECOVERY_STATE_WAIT_REPLY;
+        arg->retries_left = 1;
+        ucp_ep_recovery_progress(ep);
+    }
+
+    ASSERT_EQ(nullptr, ucp_ep_recovery_arg(ep)) << "the recovery did not end";
+    req_id = ep->ext->tf_request_id;
+    {
+        ucs::scoped_async_lock lock(sender().worker()->async);
+        mock_invoke_completion(UCS_OK);
+    }
+
+    progress_for(0.5);
+    EXPECT_EQ(nullptr, ucp_ep_recovery_arg(ep))
+            << "the late probe restarted the recovery";
+    EXPECT_EQ(req_id, ep->ext->tf_request_id);
+    EXPECT_TRUE(ucp_ep_get_failed_lanes(ep) & UCS_BIT(lane))
+            << "the late probe recovered the lane";
+    EXPECT_UCS_OK(do_am_send_and_wait(ep, am_msg_size(), true));
+    EXPECT_EQ(0, total_err_count());
+}
+
 #define UCP_FT_TEST(_fixture, _name, ...) \
     UCS_TEST_P(_fixture, _name, __VA_ARGS__) \
     { \
@@ -1625,6 +1822,10 @@ void test_ucp_fault_tolerance::run_recovery_probe_after_peer_connected()
                 "MAX_EAGER_LANES=8", "RECOVERY_RETRIES=2", \
                 "KEEPALIVE_INTERVAL=0.1s") \
     UCP_FT_TEST(_fixture, recovery_probe_after_peer_connected, \
+                "MAX_EAGER_LANES=8", "RECOVERY_RETRIES=1000") \
+    UCP_FT_TEST(_fixture, recovery_ends_with_probe_in_flight, \
+                "MAX_EAGER_LANES=8", "RECOVERY_RETRIES=1000") \
+    UCP_FT_TEST(_fixture, recovery_gives_up_with_probe_in_flight, \
                 "MAX_EAGER_LANES=8", "RECOVERY_RETRIES=1000")
 
 UCP_FT_TESTS(test_ucp_fault_tolerance)
