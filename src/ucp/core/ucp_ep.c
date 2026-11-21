@@ -2145,6 +2145,20 @@ static void ucp_ep_tf_seen_peer_id_set(ucp_ep_h ep, uint16_t peer_id)
                                                      UCP_EP_SLOT_PEER_ID_BIT);
 }
 
+static int ucp_ep_recovery_probe_in_flight(const ucp_ep_recovery_arg_t *arg)
+{
+    ucp_lane_index_t lane;
+
+    for (lane = 0; lane < UCP_MAX_LANES; ++lane) {
+        if (ucp_ep_recovery_probe_status(&arg->probe[lane]) ==
+            UCS_INPROGRESS) {
+            return 1;
+        }
+    }
+
+    return 0;
+}
+
 static void ucp_ep_recovery_arg_free(ucp_ep_h ep)
 {
     ucp_ep_recovery_arg_t *arg = ucp_ep_recovery_arg(ep);
@@ -2154,16 +2168,23 @@ static void ucp_ep_recovery_arg_free(ucp_ep_h ep)
     ucs_assert(arg != NULL);
 
     seen_peer_id = arg->seen_peer_id;
-    ucp_ep_refcount_assert(ep, probe, ==, 0);
     ucp_wireup_tf_reply_discard(ep);
     ucp_ep_tf_cleanup(ep);
     for (lane = 0; lane < UCP_MAX_LANES; ++lane) {
         ucp_ep_recovery_peer_addr_free(&arg->probe[lane]);
     }
 
-    ucs_free(arg);
     ep->ext->recovery_arg = NULL;
     ucp_ep_tf_seen_peer_id_set(ep, seen_peer_id);
+
+    /* A probe can still be in flight on an aux endpoint that is being
+     * discarded. Its completion points into this object and releases it. */
+    if (ucp_ep_recovery_probe_in_flight(arg)) {
+        ucs_debug("ep %p: recovery ended with a probe in flight", ep);
+        return;
+    }
+
+    ucs_free(arg);
 }
 
 static void ucp_ep_recovery_probe_complete(ucp_ep_h ep, ucs_status_t status)
@@ -2183,11 +2204,20 @@ static void ucp_ep_recovery_probe_comp(uct_completion_t *self)
     ucp_ep_recovery_probe_t *probe = ucs_container_of(self,
                                                       ucp_ep_recovery_probe_t,
                                                       comp);
-    ucp_ep_h ep = probe->ep;
+    ucp_ep_recovery_arg_t *arg     = ucs_container_of(probe - probe->lane,
+                                                      ucp_ep_recovery_arg_t,
+                                                      probe);
+    ucp_ep_h ep                    = probe->ep;
 
     ucs_debug("ep %p: recovery probe lane %d done: %s", ep, probe->lane,
               ucs_status_string(self->status));
-    ucp_ep_recovery_probe_complete(ep, self->status);
+    if (arg == ucp_ep_recovery_arg(ep)) {
+        ucp_ep_recovery_probe_complete(ep, self->status);
+    } else if (!ucp_ep_recovery_probe_in_flight(arg)) {
+        /* The recovery has ended, and this was its last probe in flight */
+        ucs_free(arg);
+    }
+
     ucp_ep_refcount_remove(ep, probe); /* may destroy the EP */
 }
 
