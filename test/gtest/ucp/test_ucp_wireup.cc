@@ -2816,6 +2816,49 @@ UCS_TEST_P(test_ucp_reconfig_connect_remote, put_canceled)
 
 UCP_INSTANTIATE_TEST_CASE_TLS(test_ucp_reconfig_connect_remote, tcp, "tcp")
 
+class test_ucp_wireup_no_aux : public ucp_test {
+public:
+    static void get_test_variants(std::vector<ucp_test_variant> &variants)
+    {
+        add_variant(variants, UCP_FEATURE_TAG);
+    }
+};
+
+/*
+ * Without an auxiliary transport, the wireup message lane of a p2p transport
+ * fails to connect after the endpoint lanes are created. The failed endpoint
+ * must destroy them, otherwise their wireup endpoints block the worker flush.
+ */
+UCS_TEST_P(test_ucp_wireup_no_aux, ep_create_unreachable) {
+    ucp_worker_h worker       = sender().worker();
+    ucp_ep_params_t ep_params = get_ep_params();
+    ucp_address_t *address;
+    size_t address_length;
+    ucs_status_t status;
+    ucp_ep_h ep;
+
+    ASSERT_UCS_OK(ucp_worker_get_address(receiver().worker(), &address,
+                                         &address_length));
+
+    ep_params.field_mask |= UCP_EP_PARAM_FIELD_REMOTE_ADDRESS;
+    ep_params.address     = address;
+    {
+        scoped_log_handler slh(hide_errors_logger);
+        status = ucp_ep_create(worker, &ep_params, &ep);
+    }
+
+    ucp_worker_release_address(receiver().worker(), address);
+    ASSERT_EQ(UCS_ERR_UNREACHABLE, status);
+
+    /* The transport endpoints of the lanes are discarded on progress */
+    wait_for_value(&worker->flush_ops_count, 0u);
+    ASSERT_EQ(0u, worker->flush_ops_count);
+
+    flush_worker(sender());
+}
+
+UCP_INSTANTIATE_TEST_CASE_TLS(test_ucp_wireup_no_aux, rc_mlx5, "rc_mlx5")
+
 
 /* The token sections of a LANES_ADDR message are parsed before the addresses,
  * so a malformed section must be rejected rather than shift the addresses. */
