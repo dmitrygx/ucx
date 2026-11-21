@@ -967,7 +967,44 @@ protected:
     void run_teardown_with_outstanding_probe();
     void run_worker_flush_during_recovery();
     void run_recovery_retries_exhausted_live_lanes();
-    void run_recovery_probe_after_peer_connected();
+
+    /* The endpoint which holds its recovery probe */
+    enum probe_holder_t {
+        PROBE_HOLDER_SENDER,            /* Its request is answered in time */
+        PROBE_HOLDER_SENDER_LATE_REPLY, /* Its request times out first */
+        PROBE_HOLDER_RECEIVER           /* It answers the sender request */
+    };
+
+    void test_probe_after_peer_connected(probe_holder_t holder_type,
+                                         ucs_status_t probe_status = UCS_OK);
+
+    void run_recovery_probe_after_peer_connected()
+    {
+        test_probe_after_peer_connected(PROBE_HOLDER_SENDER);
+    }
+
+    void run_late_reply_probe_after_peer_connected()
+    {
+        test_probe_after_peer_connected(PROBE_HOLDER_SENDER_LATE_REPLY);
+    }
+
+    void run_receiver_probe_after_peer_connected()
+    {
+        test_probe_after_peer_connected(PROBE_HOLDER_RECEIVER);
+    }
+
+    void run_receiver_probe_fail_after_peer_connected()
+    {
+        test_probe_after_peer_connected(PROBE_HOLDER_RECEIVER,
+                                        UCS_ERR_ENDPOINT_TIMEOUT);
+    }
+
+    static bool recovery_state_is(ucp_ep_h ep, int state)
+    {
+        ucp_ep_recovery_arg_t *arg = ucp_ep_recovery_arg(ep);
+
+        return (arg != NULL) && (arg->state == state);
+    }
 
     /* A lane of @a lanes on which an endpoint sends nothing by itself: no AM,
      * wireup or keepalive role on either endpoint */
@@ -1520,79 +1557,116 @@ void test_ucp_fault_tolerance::run_probe_fail_after_peer_recovered()
 }
 
 /*
- * The recovery probe of the sender completes only after the receiver has
- * connected its replacement queue pair and put the lane back into its
- * endpoint. The sender has the address of that queue pair from the address
- * exchange already, so it must connect the lane as soon as its probe
- * completes. Another address exchange would report the lane failed again,
- * and the receiver would drop its working queue pair.
+ * A lane fails on the sender. One endpoint, the holder, holds its recovery
+ * probe of the lane, while the other one, the peer, connects its replacement
+ * queue pair and puts the lane back into its endpoint. The holder has the
+ * address of that queue pair from the address exchange already. So it must
+ * not publish the lane again while the probe is in flight, and must connect
+ * the lane as soon as the probe completes. Another address exchange would
+ * report the lane failed again, and the peer would drop its working queue
+ * pair. A probe that fails is completed with @a probe_status: then the holder
+ * publishes the lane again, and both recover it.
  */
-void test_ucp_fault_tolerance::run_recovery_probe_after_peer_connected()
+void test_ucp_fault_tolerance::test_probe_after_peer_connected(
+        probe_holder_t holder_type, ucs_status_t probe_status)
 {
     skip_unless_rc_probe_gate();
 
-    ucp_ep_h sender_ep, receiver_ep;
+    bool by_receiver = (holder_type == PROBE_HOLDER_RECEIVER);
+    entity &holder   = by_receiver ? receiver() : sender();
+    entity &peer     = by_receiver ? sender() : receiver();
+    ucp_ep_h sender_ep, holder_ep, peer_ep;
     std::vector<ucp_lane_index_t> lanes;
-    uct_ep_h receiver_uct_ep;
+    uct_ep_h peer_uct_ep;
+    uint16_t request_id;
     ucp_lane_index_t lane;
     ucs_status_t status;
 
     flush_workers();
-    lanes       = get_lanes(TEST_OP_AM);
-    sender_ep   = sender().ep(0, INJECTED_EP_INDEX);
-    receiver_ep = receiver().ep(0, INJECTED_EP_INDEX);
-    lane        = lane_without_own_traffic(lanes, sender_ep, receiver_ep);
+    lanes     = get_lanes(TEST_OP_AM);
+    sender_ep = sender().ep(0, INJECTED_EP_INDEX);
+    holder_ep = holder.ep(0, INJECTED_EP_INDEX);
+    peer_ep   = peer.ep(0, INJECTED_EP_INDEX);
+    lane      = lane_without_own_traffic(lanes, holder_ep, peer_ep);
     if (lane == UCP_NULL_LANE) {
         UCS_TEST_SKIP_R("every lane carries AM, wireup or keepalive traffic");
     }
 
-    if (!ucp_ep_is_lane_p2p(receiver_ep, lane)) {
+    if (!ucp_ep_is_lane_p2p(receiver().ep(0, INJECTED_EP_INDEX), lane)) {
         UCS_TEST_SKIP_R("the lane is not a p2p lane");
     }
 
     ucs::mock mock;
-    mock_recovery_probe(sender().worker(), mock, recovery_probe_hold_once);
+    mock_recovery_probe(holder.worker(), mock, recovery_probe_hold_once);
 
-    status = uct_ep_invalidate(ucp_ep_get_lane(sender_ep, lane), 0);
+    /* Only the sender requests the lane addresses, and only once */
+    request_id = uint16_t(holder_ep->ext->tf_request_id + !by_receiver);
+    status     = uct_ep_invalidate(ucp_ep_get_lane(sender_ep, lane), 0);
     if (status == UCS_ERR_UNSUPPORTED) {
         UCS_TEST_SKIP_R("uct_ep_invalidate is not supported");
     }
 
     ASSERT_UCS_OK(status);
-    UCS_TEST_MESSAGE << "lane " << size_t(lane)
-                     << ": the sender holds its recovery probe";
-    EXPECT_UCS_OK(do_am_send_and_wait(sender_ep, am_msg_size(), false));
+    UCS_TEST_MESSAGE << "lane " << size_t(lane) << ": the "
+                     << (by_receiver ? "receiver" : "sender")
+                     << " holds its recovery probe";
+    if (holder_type == PROBE_HOLDER_SENDER_LATE_REPLY) {
+        /* Only the sender progresses, so its request times out before the
+         * receiver answers it */
+        for (int state : {UCP_EP_RECOVERY_STATE_WAIT_REPLY,
+                          UCP_EP_RECOVERY_STATE_IDLE}) {
+            wait_for_cond([sender_ep, state]() {
+                return recovery_state_is(sender_ep, state);
+            }, [this]() { sender().progress(); });
+            ASSERT_TRUE(recovery_state_is(sender_ep, state))
+                    << "the sender recovery did not reach state " << state;
+        }
+    } else {
+        EXPECT_UCS_OK(do_am_send_and_wait(sender_ep, am_msg_size(), false));
+    }
 
-    /* The receiver recovers the lane while the sender probe is in flight */
-    wait_for_cond([this, receiver_ep, lane]() {
-        uct_ep_h uct_ep = ucp_ep_get_lane(receiver_ep, lane);
+    /* The peer recovers the lane while the holder probe is in flight */
+    wait_for_cond([this, peer_ep, lane]() {
+        uct_ep_h uct_ep = ucp_ep_get_lane(peer_ep, lane);
 
         return (m_held_probe_comp != NULL) &&
-               !(ucp_ep_get_failed_lanes(receiver_ep) & UCS_BIT(lane)) &&
+               !(ucp_ep_get_failed_lanes(peer_ep) & UCS_BIT(lane)) &&
                !ucp_wireup_ep_test(uct_ep) && !ucp_is_uct_ep_failed(uct_ep);
     }, [this]() { short_progress_loop(); });
-    ASSERT_TRUE(m_held_probe_comp != NULL) << "no sender probe in flight";
-    ASSERT_FALSE(ucp_ep_get_failed_lanes(receiver_ep) & UCS_BIT(lane))
-            << "the receiver did not recover the lane";
-    ASSERT_TRUE(ucp_ep_get_failed_lanes(sender_ep) & UCS_BIT(lane))
-            << "the sender recovered the lane without its probe";
-    receiver_uct_ep = ucp_ep_get_lane(receiver_ep, lane);
+    ASSERT_TRUE(m_held_probe_comp != NULL) << "no recovery probe in flight";
+    ASSERT_FALSE(ucp_ep_get_failed_lanes(peer_ep) & UCS_BIT(lane))
+            << "the peer did not recover the lane";
+    ASSERT_TRUE(ucp_ep_get_failed_lanes(holder_ep) & UCS_BIT(lane))
+            << "the holder recovered the lane without its probe";
+    peer_uct_ep = ucp_ep_get_lane(peer_ep, lane);
 
-    mock_invoke_completion(UCS_OK);
+    /* Keepalive rounds of the holder while its probe is in flight */
+    progress_for(1.0);
+    EXPECT_EQ(request_id, holder_ep->ext->tf_request_id)
+            << "the lane was published again while its probe was in flight";
 
-    wait_for_cond([sender_ep]() {
-        return ucp_ep_get_failed_lanes(sender_ep) == 0;
+    UCP_WORKER_THREAD_CS_ENTER_CONDITIONAL(holder.worker());
+    mock_invoke_completion(probe_status);
+    UCP_WORKER_THREAD_CS_EXIT_CONDITIONAL(holder.worker());
+
+    wait_for_cond([holder_ep]() {
+        return ucp_ep_get_failed_lanes(holder_ep) == 0;
     }, [this]() { short_progress_loop(); });
-    EXPECT_EQ(0, ucp_ep_get_failed_lanes(sender_ep))
-            << "the sender did not recover the lane";
+    EXPECT_EQ(0, ucp_ep_get_failed_lanes(holder_ep))
+            << "the holder did not recover the lane";
 
     /* A few more keepalive rounds */
     progress_for(1.0);
 
-    EXPECT_EQ(receiver_uct_ep, ucp_ep_get_lane(receiver_ep, lane))
-            << "the receiver replaced the queue pair of the recovered lane";
-    EXPECT_EQ(0, ucp_ep_get_failed_lanes(receiver_ep))
-            << "the receiver failed the recovered lane again";
+    if (probe_status == UCS_OK) {
+        EXPECT_EQ(request_id, holder_ep->ext->tf_request_id)
+                << "another address exchange after the probe completed";
+        EXPECT_EQ(peer_uct_ep, ucp_ep_get_lane(peer_ep, lane))
+                << "the peer replaced the queue pair of the recovered lane";
+    }
+
+    EXPECT_EQ(0, ucp_ep_get_failed_lanes(peer_ep))
+            << "the peer failed the recovered lane again";
     EXPECT_UCS_OK(do_am_send_and_wait(sender_ep, am_msg_size(), true));
     EXPECT_EQ(0, total_err_count());
 }
@@ -1625,6 +1699,12 @@ void test_ucp_fault_tolerance::run_recovery_probe_after_peer_connected()
                 "MAX_EAGER_LANES=8", "RECOVERY_RETRIES=2", \
                 "KEEPALIVE_INTERVAL=0.1s") \
     UCP_FT_TEST(_fixture, recovery_probe_after_peer_connected, \
+                "MAX_EAGER_LANES=8", "RECOVERY_RETRIES=1000") \
+    UCP_FT_TEST(_fixture, late_reply_probe_after_peer_connected, \
+                "MAX_EAGER_LANES=8", "RECOVERY_RETRIES=1000") \
+    UCP_FT_TEST(_fixture, receiver_probe_after_peer_connected, \
+                "MAX_EAGER_LANES=8", "RECOVERY_RETRIES=1000") \
+    UCP_FT_TEST(_fixture, receiver_probe_fail_after_peer_connected, \
                 "MAX_EAGER_LANES=8", "RECOVERY_RETRIES=1000")
 
 UCP_FT_TESTS(test_ucp_fault_tolerance)
