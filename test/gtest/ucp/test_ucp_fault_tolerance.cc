@@ -932,24 +932,34 @@ protected:
         return UCS_ERR_ENDPOINT_TIMEOUT;
     }
 
-    static void mock_recovery_probe(ucp_worker_h worker, ucs::mock &mock,
-                                    uct_ep_check_func_t ep_check)
+    /* Interfaces which the worker opened */
+    static std::vector<ucp_worker_iface_t*> worker_ifaces(ucp_worker_h worker)
     {
         ucp_context_h context = worker->context;
+        std::vector<ucp_worker_iface_t*> wifaces;
+        ucp_worker_iface_t *wiface;
         ucp_rsc_index_t rsc_index;
-
-        m_probe_mock = &mock;
 
         for (rsc_index = 0; rsc_index < context->num_tls; ++rsc_index) {
             if (!UCS_STATIC_BITMAP_GET(context->tl_bitmap, rsc_index)) {
                 continue;
             }
 
-            ucp_worker_iface_t *wiface = ucp_worker_iface(worker, rsc_index);
-            if ((wiface == NULL) || (wiface->iface == NULL)) {
-                continue;
+            wiface = ucp_worker_iface(worker, rsc_index);
+            if ((wiface != NULL) && (wiface->iface != NULL)) {
+                wifaces.push_back(wiface);
             }
+        }
 
+        return wifaces;
+    }
+
+    static void mock_recovery_probe(ucp_worker_h worker, ucs::mock &mock,
+                                    uct_ep_check_func_t ep_check)
+    {
+        m_probe_mock = &mock;
+
+        for (ucp_worker_iface_t *wiface : worker_ifaces(worker)) {
             uint64_t flags = wiface->attr.cap.flags;
             if ((flags & UCT_IFACE_FLAG_EP_CHECK) &&
                 (flags & UCT_IFACE_FLAG_CONNECT_TO_IFACE)) {
@@ -998,6 +1008,23 @@ protected:
 
     size_t total_err_count() const {
         return m_total_err_count;
+    }
+
+    size_t initiator_err_count() const {
+        return m_initiator_err_count;
+    }
+
+    static bool has_wireup_lane(ucp_ep_h ep)
+    {
+        ucp_lane_index_t lane;
+
+        for (lane = 0; lane < ucp_ep_num_lanes(ep); ++lane) {
+            if (ucp_wireup_ep_test(ucp_ep_get_lane(ep, lane))) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     static uct_completion_t *m_held_probe_comp;
@@ -1409,9 +1436,11 @@ UCP_FT_TESTS(test_ucp_fault_tolerance_tf)
 UCP_INSTANTIATE_TEST_CASE(test_ucp_fault_tolerance)
 UCP_INSTANTIATE_TEST_CASE_TLS(test_ucp_fault_tolerance_tf, rcx, "rc_x")
 
-/* Token purge reports an AM short with the length that the failed lane took.
- * The lane it is reposted on may take less as AM short, for example when only
- * the failed lane has device memory. */
+/* Token purge reports an operation with the length that the failed lane took.
+ * The lane it is reposted on may take less, for example less AM short when
+ * only the failed lane has device memory. An AM has no completion: it finished
+ * when it was posted, so the endpoint must fail if the AM cannot be sent
+ * again. */
 class test_ucp_fault_tolerance_tf_repost : public test_ucp_fault_tolerance_tf {
 public:
     static void get_test_variants(std::vector<ucp_test_variant> &variants)
@@ -1420,62 +1449,261 @@ public:
     }
 
 protected:
-    /* Largest AM short, with its header, that a lane of the endpoint takes */
-    static size_t max_am_short(ucp_ep_h ep)
+    /* Largest AM, with its header, that a lane of the endpoint takes as
+     * @a operation, AM short or AM bcopy */
+    static size_t max_am_length(ucp_ep_h ep, uct_ep_operation_t operation)
     {
-        size_t max_short = 0;
-        const uct_iface_attr_t *iface_attr;
+        size_t max_length = 0;
         ucp_lane_index_t lane;
+        size_t length;
 
         for (lane = 0; lane < ucp_ep_num_lanes(ep); ++lane) {
-            iface_attr = ucp_ep_get_iface_attr(ep, lane);
-            if (iface_attr->cap.flags & UCT_IFACE_FLAG_AM_SHORT) {
-                max_short = std::max(max_short, iface_attr->cap.am.max_short);
+            if (operation == UCT_EP_OP_AM_SHORT) {
+                length = ucp_ep_get_iface_attr(ep, lane)->cap.am.max_short;
+            } else {
+                length = ucp_ep_get_max_bcopy(ep, lane);
+            }
+
+            max_length = std::max(max_length, length);
+        }
+
+        return max_length;
+    }
+
+    /* Repost @a op_info as the purge of a failed lane reports it */
+    ucs_status_t repost(ucp_ep_h ep, const uct_ep_op_info_t &op_info)
+    {
+        ucs::scoped_async_lock lock(sender().worker()->async);
+
+        m_post_ep = NULL;
+        return ucp_proto_repost_submit(ep, &op_info);
+    }
+
+    /* Repost an eager AM with @a length bytes of the pattern to the test
+     * handler, as the purge reports it */
+    ucs_status_t repost_am(ucp_ep_h ep, uct_ep_operation_t operation,
+                           size_t length)
+    {
+        std::vector<uint8_t> sbuf(sizeof(ucp_am_hdr_t) + length);
+        uint8_t *data            = sbuf.data() + sizeof(ucp_am_hdr_t);
+        uct_ep_op_info_t op_info = {};
+        ucp_am_hdr_t am_hdr;
+
+        am_hdr.u64   = 0;
+        am_hdr.am_id = AM_ID;
+        memcpy(sbuf.data(), &am_hdr, sizeof(am_hdr));
+        mem_buffer::pattern_fill(data, length, m_seed);
+
+        op_info.field_mask             = UCT_EP_OP_INFO_FIELD_OPERATION |
+                                         UCT_EP_OP_INFO_FIELD_AM;
+        op_info.operation              = operation;
+        op_info.am.field_mask          = UCT_EP_OP_INFO_AM_FIELD_AM_ID |
+                                         UCT_EP_OP_INFO_AM_FIELD_PAYLOAD_DATA;
+        op_info.am.am_id               = UCP_AM_ID_AM_SINGLE;
+        op_info.am.header.value        = am_hdr.u64;
+        op_info.am.payload.data.buffer = data;
+        op_info.am.payload.data.length = length;
+        if (operation == UCT_EP_OP_AM_SHORT) {
+            op_info.am.field_mask |= UCT_EP_OP_INFO_AM_FIELD_HEADER_VALUE;
+        } else {
+            /* AM bcopy reports the header together with the payload */
+            op_info.am.field_mask         |= UCT_EP_OP_INFO_AM_FIELD_FLAGS;
+            op_info.am.payload.data.buffer = sbuf.data();
+            op_info.am.payload.data.length = sbuf.size();
+        }
+
+        m_am_received = false;
+        return repost(ep, op_info);
+    }
+
+    bool wait_for_am(size_t length)
+    {
+        wait_for_value(&m_am_received, true);
+        if (!m_am_received || (m_am_rbuf.size() != length)) {
+            return false;
+        }
+
+        mem_buffer::pattern_check(m_am_rbuf.data(), length, m_seed);
+        return true;
+    }
+
+    void wait_for_lanes_connected(ucp_ep_h ep)
+    {
+        flush_workers();
+        wait_for_cond([ep]() { return !has_wireup_lane(ep); },
+                      [this]() { short_progress_loop(); });
+        if (has_wireup_lane(ep)) {
+            UCS_TEST_ABORT("the endpoint lanes are not connected");
+        }
+    }
+
+    /* Mock AM and the pending queue of every sender interface */
+    void mock_sender_ifaces(ucs::mock &mock)
+    {
+        m_self = this;
+        m_mock = &mock;
+        for (ucp_worker_iface_t *wiface : worker_ifaces(sender().worker())) {
+            uct_iface_ops_t &ops = wiface->iface->ops;
+
+            mock.setup(&ops.ep_am_short, am_short_mock);
+            mock.setup(&ops.ep_am_bcopy, am_bcopy_mock);
+            mock.setup(&ops.ep_pending_add, pending_add_mock);
+            mock.setup(&ops.ep_pending_purge, pending_purge_mock);
+        }
+    }
+
+    /* Repost an AM one byte longer than any lane of the endpoint takes even
+     * as AM bcopy: the transport must not get it, and the endpoint must fail */
+    void test_am_lost(uct_ep_operation_t operation)
+    {
+        ucp_ep_h ep = sender().ep(0, INJECTED_EP_INDEX);
+        ucs::mock mock;
+        size_t length;
+
+        flush_workers();
+        mock_sender_ifaces(mock);
+
+        length = max_am_length(ep, UCT_EP_OP_AM_BCOPY) -
+                 sizeof(ucp_am_hdr_t) + 1;
+        {
+            scoped_log_handler slh(wrap_errors_logger);
+            ASSERT_UCS_OK(repost_am(ep, operation, length));
+            wait_for_cond([this]() { return initiator_err_count() != 0; },
+                          [this]() { short_progress_loop(); });
+        }
+
+        EXPECT_EQ((uct_ep_h)NULL, m_post_ep) << "the transport got the AM";
+        EXPECT_EQ(1u, initiator_err_count()) << "the lost AM was not reported";
+        EXPECT_FALSE(m_am_received);
+    }
+
+    /* Return this status for the test AM bcopy instead of sending it, unless
+     * OK */
+    ucs_status_t m_am_bcopy_status   = UCS_OK;
+    /* Transport endpoint which got the last test AM */
+    uct_ep_h m_post_ep               = NULL;
+    /* Repost which waits for resources, and its transport endpoint */
+    uct_pending_req_t *m_pending_req = NULL;
+    uct_ep_h m_pending_ep            = NULL;
+
+private:
+    static ucs_status_t am_short_mock(uct_ep_h ep, uint8_t id, uint64_t header,
+                                      const void *payload, unsigned length)
+    {
+        if (id == UCP_AM_ID_AM_SINGLE) {
+            m_self->m_post_ep = ep;
+        }
+
+        return m_self->m_mock->orig_func(&ep->iface->ops.ep_am_short, ep, id,
+                                         header, payload, length);
+    }
+
+    static ssize_t am_bcopy_mock(uct_ep_h ep, uint8_t id,
+                                 uct_pack_callback_t pack_cb, void *arg,
+                                 unsigned flags)
+    {
+        if (id == UCP_AM_ID_AM_SINGLE) {
+            m_self->m_post_ep = ep;
+            if (m_self->m_am_bcopy_status != UCS_OK) {
+                return m_self->m_am_bcopy_status;
             }
         }
 
-        return max_short;
+        return m_self->m_mock->orig_func(&ep->iface->ops.ep_am_bcopy, ep, id,
+                                         pack_cb, arg, flags);
     }
+
+    /* The interface has resources, so keep the repost which got
+     * UCS_ERR_NO_RESOURCE here */
+    static ucs_status_t
+    pending_add_mock(uct_ep_h ep, uct_pending_req_t *req, unsigned flags)
+    {
+        if ((m_self->m_am_bcopy_status == UCS_ERR_NO_RESOURCE) &&
+            (m_self->m_pending_req == NULL)) {
+            m_self->m_pending_req = req;
+            m_self->m_pending_ep  = ep;
+            return UCS_OK;
+        }
+
+        return m_self->m_mock->orig_func(&ep->iface->ops.ep_pending_add, ep,
+                                         req, flags);
+    }
+
+    static void pending_purge_mock(uct_ep_h ep,
+                                   uct_pending_purge_callback_t cb, void *arg)
+    {
+        uct_pending_req_t *req = m_self->m_pending_req;
+
+        if ((req != NULL) && (ep == m_self->m_pending_ep)) {
+            m_self->m_pending_req = NULL;
+            cb(req, arg);
+        }
+
+        m_self->m_mock->orig_func(&ep->iface->ops.ep_pending_purge, ep, cb,
+                                  arg);
+    }
+
+    /* The mocks are C callbacks, so they reach the test through this */
+    static test_ucp_fault_tolerance_tf_repost *m_self;
+    ucs::mock *m_mock = NULL;
 };
+
+test_ucp_fault_tolerance_tf_repost *test_ucp_fault_tolerance_tf_repost::m_self =
+        NULL;
 
 UCS_TEST_P(test_ucp_fault_tolerance_tf_repost, am_short_above_max_short)
 {
-    ucp_ep_h ep              = sender().ep();
-    uct_ep_op_info_t op_info = {};
-    ucp_am_hdr_t am_hdr;
-    ucs_status_t status;
+    ucp_ep_h ep = sender().ep(0, INJECTED_EP_INDEX);
+    size_t length;
 
     flush_workers();
 
     /* One byte more than any lane of the endpoint takes as AM short */
-    const size_t length = max_am_short(ep) - sizeof(am_hdr) + 1;
-    mem_buffer sbuf(length, UCS_MEMORY_TYPE_HOST);
-    sbuf.pattern_fill(m_seed, length);
+    length = max_am_length(ep, UCT_EP_OP_AM_SHORT) - sizeof(ucp_am_hdr_t) + 1;
+    ASSERT_UCS_OK(repost_am(ep, UCT_EP_OP_AM_SHORT, length));
+    ASSERT_TRUE(wait_for_am(length))
+            << "the reposted AM short was not received";
+}
 
-    am_hdr.u64   = 0;
-    am_hdr.am_id = AM_ID;
+UCS_TEST_P(test_ucp_fault_tolerance_tf_repost, am_short_above_max_bcopy)
+{
+    test_am_lost(UCT_EP_OP_AM_SHORT);
+}
 
-    op_info.field_mask             = UCT_EP_OP_INFO_FIELD_OPERATION |
-                                     UCT_EP_OP_INFO_FIELD_AM;
-    op_info.operation              = UCT_EP_OP_AM_SHORT;
-    op_info.am.field_mask          = UCT_EP_OP_INFO_AM_FIELD_AM_ID |
-                                     UCT_EP_OP_INFO_AM_FIELD_HEADER_VALUE |
-                                     UCT_EP_OP_INFO_AM_FIELD_PAYLOAD_DATA;
-    op_info.am.am_id               = UCP_AM_ID_AM_SINGLE;
-    op_info.am.header.value        = am_hdr.u64;
-    op_info.am.payload.data.buffer = sbuf.ptr();
-    op_info.am.payload.data.length = length;
+UCS_TEST_P(test_ucp_fault_tolerance_tf_repost, am_bcopy_wait_on_discarded_lane)
+{
+    const size_t length = UCS_KBYTE;
+    ucp_ep_h ep         = sender().ep(0, INJECTED_EP_INDEX);
+    ucs::mock mock;
+    ucp_lane_index_t lane;
 
-    m_am_received = false;
+    if (ucp_ep_num_lanes(ep) < 2) {
+        UCS_TEST_SKIP_R("another lane is needed to repost on");
+    }
+
+    wait_for_lanes_connected(ep);
+
+    /* The repost waits for resources on its lane */
+    mock_sender_ifaces(mock);
+    m_am_bcopy_status = UCS_ERR_NO_RESOURCE;
+    ASSERT_UCS_OK(repost_am(ep, UCT_EP_OP_AM_BCOPY, length));
+    m_am_bcopy_status = UCS_OK;
+    ASSERT_NE((uct_pending_req_t*)NULL, m_pending_req)
+            << "the repost did not wait for resources";
+
+    lane = ucp_ep_lookup_lane(ep, m_pending_ep);
+    ASSERT_NE(UCP_NULL_LANE, lane);
+
+    /* The failover discards the lane in software when it cannot hold it */
     UCS_ASYNC_BLOCK(&sender().worker()->async);
-    status = ucp_proto_repost_submit(ep, &op_info);
+    ucp_ep_set_lanes_failed(ep, UCS_BIT(lane), UCS_ERR_ENDPOINT_TIMEOUT);
     UCS_ASYNC_UNBLOCK(&sender().worker()->async);
-    ASSERT_UCS_OK(status);
+    ASSERT_EQ((uct_pending_req_t*)NULL, m_pending_req)
+            << "the discard did not purge the lane";
 
-    wait_for_value(&m_am_received, true);
-    ASSERT_TRUE(m_am_received) << "the reposted AM short was not received";
-    ASSERT_EQ(length, m_am_rbuf.size());
-    mem_buffer::pattern_check(m_am_rbuf.data(), length, m_seed);
+    ASSERT_TRUE(wait_for_am(length))
+            << "the repost on the discarded lane was lost";
+    EXPECT_EQ(0u, initiator_err_count());
 }
 
 UCP_INSTANTIATE_TEST_CASE_TLS(test_ucp_fault_tolerance_tf_repost, rcx, "rc_x")
@@ -1543,19 +1771,6 @@ protected:
         self->m_am_restarted   = req->send.msg_proto.am.flags &
                                  UCP_AM_HDR_FLAG_RESEND;
         ucp_request_free(request);
-    }
-
-    static bool has_wireup_lane(ucp_ep_h ep)
-    {
-        ucp_lane_index_t lane;
-
-        for (lane = 0; lane < ucp_ep_num_lanes(ep); ++lane) {
-            if (ucp_wireup_ep_test(ucp_ep_get_lane(ep, lane))) {
-                return true;
-            }
-        }
-
-        return false;
     }
 
     void test_teardown(bool connected, teardown_t teardown)

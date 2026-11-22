@@ -1135,7 +1135,8 @@ public:
     }
 
     template<typename Fn, typename... Args>
-    ucs_status_t orig_func(Fn *orig_ptr, Args &&...args) const
+    auto orig_func(Fn *orig_ptr, Args &&...args) const
+            -> decltype((*orig_ptr)(std::forward<Args>(args)...))
     {
         auto it    = m_mock_map.find((func*)orig_ptr);
         Fn orig_fn = (it == m_mock_map.end()) ? *orig_ptr :
