@@ -1459,8 +1459,13 @@ static void
 ucp_ep_config_activate_worker_ifaces(ucp_worker_h worker,
                                      ucp_worker_cfg_index_t cfg_index)
 {
-    ucp_ep_config_t *ep_config = ucp_worker_ep_config(worker, cfg_index);
+    ucp_ep_config_t *ep_config;
 
+    if (cfg_index == UCP_WORKER_CFG_INDEX_NULL) {
+        return;
+    }
+
+    ep_config = ucp_worker_ep_config(worker, cfg_index);
     ucs_debug("activate wifaces worker %p ep config %u ep count %u", worker,
               cfg_index, ep_config->ep_count);
     if (ep_config->ep_count++ == 0) {
@@ -5845,7 +5850,9 @@ void ucp_ep_set_cfg_index(ucp_ep_h ep, ucp_worker_cfg_index_t cfg_index,
 
     ucs_trace("ep %p: set cfg_index %u -> %u", ep, ep->cfg_index, cfg_index);
     ep->cfg_index = cfg_index;
-    ep->am_lane   = ucp_ep_config(ep)->key.am_lane;
+    ep->am_lane   = (cfg_index == UCP_WORKER_CFG_INDEX_NULL) ?
+                              UCP_NULL_LANE :
+                              ucp_ep_config(ep)->key.am_lane;
 }
 
 unsigned ucp_ep_err_mode_init_flags(ucp_err_handling_mode_t err_mode)

@@ -971,6 +971,13 @@ ucp_wireup_process_request(ucp_worker_h worker, ucp_ep_h ep,
     return;
 
 err_set_ep_failed:
+    if (ep->cfg_index == UCP_WORKER_CFG_INDEX_NULL) {
+        /* The endpoint was created above and has no lanes to fail */
+        ucp_ep_match_remove_ep(worker, ep);
+        ucp_ep_delete(ep);
+        return;
+    }
+
     ucp_ep_set_lanes_failed_schedule(ep, 0, status);
 }
 
@@ -2883,7 +2890,7 @@ ucs_status_t ucp_wireup_init_lanes(ucp_ep_h ep, unsigned ep_init_flags,
     ucp_rsc_index_t rsc_idx;
     ucp_lane_map_t connect_lane_bitmap;
     ucp_ep_config_key_t key;
-    ucp_worker_cfg_index_t new_cfg_index;
+    ucp_worker_cfg_index_t old_cfg_index, new_cfg_index;
     ucp_lane_index_t lane;
     ucs_status_t status;
     char str[32];
@@ -2997,6 +3004,7 @@ ucs_status_t ucp_wireup_init_lanes(ucp_ep_h ep, unsigned ep_init_flags,
         ucs_fatal("endpoint reconfiguration not supported yet");
     }
 
+    old_cfg_index = ep->cfg_index;
     ucp_ep_set_cfg_index(ep, new_cfg_index, 1);
 
     snprintf(str, sizeof(str), "ep %p", ep);
@@ -3014,7 +3022,7 @@ ucs_status_t ucp_wireup_init_lanes(ucp_ep_h ep, unsigned ep_init_flags,
                                              key.lanes[lane].path_index,
                                              remote_address, addr_indices[lane]);
             if (status != UCS_OK) {
-                goto out;
+                goto err_cleanup_lanes;
             }
         }
 
@@ -3028,7 +3036,16 @@ ucs_status_t ucp_wireup_init_lanes(ucp_ep_h ep, unsigned ep_init_flags,
 
     ucp_worker_keepalive_add_ep(ep);
     status = UCS_OK;
+    goto out;
 
+err_cleanup_lanes:
+    if (old_cfg_index == UCP_WORKER_CFG_INDEX_NULL) {
+        /* A new endpoint has only the lanes created above: destroy them and
+         * remove the configuration, so the caller can delete the endpoint.
+         * The caller fails an existing endpoint, which discards its lanes. */
+        ucp_ep_cleanup_lanes(ep);
+        ucp_ep_set_cfg_index(ep, UCP_WORKER_CFG_INDEX_NULL, 0);
+    }
 out:
     ucp_wireup_replay_pending_requests(ep, &replay_pending_queue);
     ucs_log_indent(-1);

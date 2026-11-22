@@ -1075,7 +1075,9 @@ ucs_status_t ucp_ep_realloc_lanes(ucp_ep_h ep, unsigned new_num_lanes);
  * of the new configuration.
  *
  * @param [in] ep         Endpoint object.
- * @param [in] cfg_index  Endpoint configuration index.
+ * @param [in] cfg_index  Endpoint configuration index, or
+ *                        @ref UCP_WORKER_CFG_INDEX_NULL to remove the
+ *                        configuration.
  * @param [in] reactivate Flag indicating whether to reactivate worker
  *                        interfaces.
  */
