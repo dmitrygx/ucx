@@ -1535,6 +1535,7 @@ protected:
     {
         m_mock            = &mock;
         m_am_bcopy_status = UCS_OK;
+        m_am_bcopy_count  = 0;
         m_pending_ep      = NULL;
         m_pending_req     = NULL;
 
@@ -1548,6 +1549,8 @@ protected:
 
     /* Return this status for the test AM instead of sending it, unless OK */
     static ucs_status_t m_am_bcopy_status;
+    /* Test AMs passed to the transport */
+    static unsigned m_am_bcopy_count;
     /* Repost which waits for resources, and its transport endpoint */
     static uct_pending_req_t *m_pending_req;
     static uct_ep_h m_pending_ep;
@@ -1557,8 +1560,11 @@ private:
                                  uct_pack_callback_t pack_cb, void *arg,
                                  unsigned flags)
     {
-        if ((id == UCP_AM_ID_AM_SINGLE) && (m_am_bcopy_status != UCS_OK)) {
-            return m_am_bcopy_status;
+        if (id == UCP_AM_ID_AM_SINGLE) {
+            ++m_am_bcopy_count;
+            if (m_am_bcopy_status != UCS_OK) {
+                return m_am_bcopy_status;
+            }
         }
 
         return m_mock->orig_func(&ep->iface->ops.ep_am_bcopy, ep, id, pack_cb,
@@ -1598,6 +1604,7 @@ private:
 };
 
 ucs_status_t test_ucp_fault_tolerance_tf_repost::m_am_bcopy_status = UCS_OK;
+unsigned test_ucp_fault_tolerance_tf_repost::m_am_bcopy_count        = 0;
 uct_pending_req_t *test_ucp_fault_tolerance_tf_repost::m_pending_req = NULL;
 uct_ep_h test_ucp_fault_tolerance_tf_repost::m_pending_ep            = NULL;
 ucs::mock *test_ucp_fault_tolerance_tf_repost::m_mock                = NULL;
@@ -1632,6 +1639,31 @@ UCS_TEST_P(test_ucp_fault_tolerance_tf_repost, am_short_above_max_bcopy)
         wait_for_initiator_error();
     }
 
+    EXPECT_EQ(1u, initiator_err_count()) << "the lost AM was not reported";
+    EXPECT_FALSE(m_am_received);
+}
+
+UCS_TEST_P(test_ucp_fault_tolerance_tf_repost, am_bcopy_above_max_bcopy)
+{
+    ucp_ep_h ep = sender().ep(0, INJECTED_EP_INDEX);
+    ucs::mock mock;
+
+    flush_workers();
+
+    /* The transport does not check the packed length, so it must not get the
+     * AM: the pack would overrun its send buffer */
+    mock_sender_ifaces(mock);
+    m_am_bcopy_status = UCS_ERR_INVALID_PARAM;
+
+    /* One byte more than any lane of the endpoint takes as AM bcopy */
+    const size_t length = max_am_bcopy(ep) - sizeof(ucp_am_hdr_t) + 1;
+    {
+        scoped_log_handler slh(wrap_errors_logger);
+        ASSERT_UCS_OK(repost_am(ep, UCT_EP_OP_AM_BCOPY, length));
+        wait_for_initiator_error();
+    }
+
+    EXPECT_EQ(0u, m_am_bcopy_count) << "the transport got the AM";
     EXPECT_EQ(1u, initiator_err_count()) << "the lost AM was not reported";
     EXPECT_FALSE(m_am_received);
 }
