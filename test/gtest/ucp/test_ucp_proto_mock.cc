@@ -5270,6 +5270,21 @@ public:
         while (progress());
     }
 
+    static size_t ep_rkey_config_count(ucp_worker_h worker,
+                                       ucp_worker_cfg_index_t ep_cfg_index)
+    {
+        size_t count = 0;
+
+        for (unsigned i = 0; i < ucs_array_length(&worker->rkey_config); ++i) {
+            if (ucp_worker_rkey_config(worker, i)->key.ep_cfg_index ==
+                ep_cfg_index) {
+                ++count;
+            }
+        }
+
+        return count;
+    }
+
     void test_port_speed(std::function<ucp_worker_cfg_index_t()> send,
                          ucp_operation_id_t op_id)
     {
@@ -5282,6 +5297,14 @@ public:
         unsigned ep_config_count = worker->ep_config.length;
         EXPECT_GT(rkey_config_count, 0);
         EXPECT_GT(ep_config_count, 0);
+
+        // An EP config has the rkey config of the RMA rkey and the one that
+        // rendezvous uses to select the remote protocols. The latter has only
+        // the MDs of the EP lanes, so it is the same config when the RMA rkey
+        // has no other MDs, e.g. on a host with one IB device
+        const size_t ep_rkey_configs =
+                ep_rkey_config_count(worker, sender().ep()->cfg_index);
+        EXPECT_GT(ep_rkey_configs, 0);
 
         // Existing configurations are used during second operation
         EXPECT_EQ(initial_rkey_cfg_index, send());
@@ -5297,12 +5320,11 @@ public:
         }, key, initial_rkey_cfg_index);
 
         // Reduce port_speed of mock_0:1 by 50%, new EP & rkey configs are created
-        // Each new EP config adds two rkey configs: RMA and rendezvous
         set_port_speed("mock_0:1", 14e9);
         const auto reduced_rkey_cfg_index = send();
         EXPECT_NE(initial_rkey_cfg_index, reduced_rkey_cfg_index);
         EXPECT_EQ(ucs_array_length(&worker->rkey_config),
-                  rkey_config_count += 2);
+                  rkey_config_count += ep_rkey_configs);
         EXPECT_EQ(worker->ep_config.length, ++ep_config_count);
 
         // Slightly change port_speed, so that quantized value remains the same
@@ -5322,7 +5344,7 @@ public:
         const auto equal_rkey_cfg_index = send();
         EXPECT_NE(reduced_rkey_cfg_index, equal_rkey_cfg_index);
         EXPECT_EQ(ucs_array_length(&worker->rkey_config),
-                  rkey_config_count += 2);
+                  rkey_config_count += ep_rkey_configs);
         EXPECT_EQ(worker->ep_config.length, ++ep_config_count);
 
         check_rkey_config(sender(), {
