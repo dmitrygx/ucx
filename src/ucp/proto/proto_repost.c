@@ -505,6 +505,14 @@ static ucs_status_t ucp_proto_repost_progress(uct_pending_req_t *self)
         status = ucp_proto_repost_am_short(req, rpriv->lane, uct_ep);
         break;
     case UCT_EP_OP_AM_BCOPY:
+        /* The purged lane may take a longer AM bcopy than this lane, and the
+         * transport does not check the length which the pack returns */
+        if (info->am.payload.data.length >
+            ucp_ep_get_max_bcopy(req->send.ep, rpriv->lane)) {
+            status = UCS_ERR_UNSUPPORTED;
+            break;
+        }
+
         pack.buffer = info->am.payload.data.buffer;
         pack.length = info->am.payload.data.length;
         packed      = uct_ep_am_bcopy(uct_ep, info->am.am_id,
