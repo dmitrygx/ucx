@@ -425,15 +425,36 @@ static void ucp_proto_repost_completion(uct_completion_t *self)
 }
 
 
+/* An operation without a completion finished when it was posted, so no request
+ * can send it again. Fail the endpoint, so that the error callback, a fetch
+ * atomic which waits for its reply, and a flush see the loss. Schedule it,
+ * since the repost runs inside a purge of the endpoint lanes, which failing
+ * the endpoint would purge again. */
+static void ucp_proto_repost_lost(ucp_ep_h ep, const uct_ep_op_info_t *info,
+                                  ucs_status_t status)
+{
+    /* A failed or a closed endpoint drops its operations anyway */
+    if (ep->flags & (UCP_EP_FLAG_FAILED | UCP_EP_FLAG_CLOSED)) {
+        return;
+    }
+
+    ucs_error("ep %p: failed to repost %s: %s, failing the endpoint", ep,
+              uct_ep_operation_names[info->operation],
+              ucs_status_string(status));
+    ucp_ep_set_lanes_failed_schedule(ep, 0, UCS_ERR_ENDPOINT_TIMEOUT);
+}
+
 static void ucp_proto_repost_abort(ucp_request_t *req, ucs_status_t status)
 {
     uct_completion_t *origin = ucp_proto_repost_origin_comp(req);
 
-    /* The repost completion is installed only after a successful save, so an
-     * unsupported operation must complete the purged operation directly. */
+    /* The transport invokes the repost completion only after UCS_INPROGRESS,
+     * so complete the purged operation here. */
     if (origin != NULL) {
         req->send.repost.info->comp = NULL;
         ucp_invoke_uct_completion(origin, status);
+    } else if (UCS_STATUS_IS_ERR(status)) {
+        ucp_proto_repost_lost(req->send.ep, req->send.repost.info, status);
     }
 
     ucp_proto_repost_release(req, status);
@@ -560,6 +581,9 @@ static ucs_status_t ucp_proto_repost_reset(ucp_request_t *req)
     return UCS_OK;
 }
 
+static void
+ucp_proto_repost_pending_abort(ucp_request_t *req, ucs_status_t status);
+
 
 ucp_proto_t ucp_repost_proto = {
     .name     = "repost",
@@ -569,7 +593,7 @@ ucp_proto_t ucp_repost_proto = {
     .probe    = ucp_proto_repost_probe,
     .query    = ucp_proto_default_query,
     .progress = {ucp_proto_repost_progress},
-    .abort    = ucp_proto_repost_abort,
+    .abort    = ucp_proto_repost_pending_abort,
     .reset    = ucp_proto_repost_reset
 };
 
@@ -603,6 +627,32 @@ ucp_proto_repost_config(ucp_ep_h ep)
     return &thresh->proto_config;
 }
 
+/* A software discard of a lane aborts the reposts which wait there for
+ * resources. They were not sent, so on a live endpoint select them again on
+ * the current lanes, once per configuration. The origin request of an
+ * operation with a completion restarts it instead. */
+static void
+ucp_proto_repost_pending_abort(ucp_request_t *req, ucs_status_t status)
+{
+    ucp_ep_h ep = req->send.ep;
+    const ucp_proto_config_t *config;
+
+    if ((ucp_proto_repost_origin_comp(req) == NULL) &&
+        !(ep->flags & (UCP_EP_FLAG_FAILED | UCP_EP_FLAG_CLOSED)) &&
+        (req->send.proto_config->ep_cfg_index != ep->cfg_index)) {
+        config = ucp_proto_repost_config(ep);
+        if (config != NULL) {
+            ucp_trace_req(req, "repost select again after %s",
+                          ucs_status_string(status));
+            ucp_proto_request_set_proto(req, config, 0);
+            ucp_request_send(req);
+            return;
+        }
+    }
+
+    ucp_proto_repost_abort(req, status);
+}
+
 ucs_status_t
 ucp_proto_repost_submit(ucp_ep_h ep, const uct_ep_op_info_t *op_info)
 {
@@ -634,18 +684,21 @@ ucp_proto_repost_submit(ucp_ep_h ep, const uct_ep_op_info_t *op_info)
 
     config = ucp_proto_repost_config(ep);
     if (config == NULL) {
-        return UCS_ERR_UNREACHABLE;
+        status = UCS_ERR_UNREACHABLE;
+        goto err;
     }
 
     rpriv = config->priv;
     if ((rpriv->lane == UCP_NULL_LANE) ||
         (ucp_ep_get_lane(ep, rpriv->lane) == NULL)) {
-        return UCS_ERR_UNREACHABLE;
+        status = UCS_ERR_UNREACHABLE;
+        goto err;
     }
 
     req = ucp_request_get(ep->worker);
     if (req == NULL) {
-        return UCS_ERR_NO_MEMORY;
+        status = UCS_ERR_NO_MEMORY;
+        goto err;
     }
 
     req->flags                     = UCP_REQUEST_FLAG_PROTO_SEND |
@@ -659,13 +712,8 @@ ucp_proto_repost_submit(ucp_ep_h ep, const uct_ep_op_info_t *op_info)
 
     status = ucp_proto_repost_save(req, op_info);
     if (status != UCS_OK) {
-        /* Abort frees the descriptor, so sample it before the call. */
-        int stored = (req->send.repost.info != NULL);
-
-        /* A stored descriptor makes this abort complete the origin. Return
-         * success so the purge callback does not complete it again. */
-        ucp_proto_repost_abort(req, status);
-        return stored ? UCS_OK : status;
+        ucp_proto_repost_release(req, status);
+        goto err;
     }
 
     if (ucp_proto_repost_origin_comp(req) != NULL) {
@@ -678,4 +726,12 @@ ucp_proto_repost_submit(ucp_ep_h ep, const uct_ep_op_info_t *op_info)
                   (unsigned)rpriv->lane);
     ucp_request_send(req);
     return UCS_OK;
+
+err:
+    /* The purge callback completes an operation which has a completion */
+    if (!(op_info->field_mask & UCT_EP_OP_INFO_FIELD_COMP)) {
+        ucp_proto_repost_lost(ep, op_info, status);
+    }
+
+    return status;
 }
