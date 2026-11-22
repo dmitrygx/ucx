@@ -215,6 +215,15 @@ static void ucp_ep_flush_progress(ucp_request_t *req)
 
     if ((req->send.flush.sw_state == UCP_FLUSH_SW_STATE_NOT_STARTED) &&
         (req->send.state.uct_comp.count == 0)) {
+        /* Token failover can keep operations issued before the flush, and
+         * send them on the live lanes later */
+        if (ucp_ep_err_mode_eq(ep, UCP_ERR_HANDLING_MODE_FAILOVER) &&
+            (req->status == UCS_OK) &&
+            !(req->send.flush.uct_flags & UCT_FLUSH_FLAG_CANCEL) &&
+            ucp_ep_tf_flush_wait(ep, req)) {
+            return;
+        }
+
         /* Start waiting for remote completions only after all lanes are flushed
          * on the transport level, so we are sure all pending requests were sent.
          * We don't need to wait for remote completions in these cases:
@@ -424,6 +433,72 @@ static void ucp_ep_flush_request_resched(ucp_ep_h ep, ucp_request_t *req)
                   ep);
     ucs_callbackq_add_oneshot(&ep->worker->uct->progress_q, req,
                               ucp_ep_flush_resume_slow_path_callback, req);
+}
+
+int ucp_ep_flush_request_tf_hold(ucp_request_t *req)
+{
+    ucp_ep_h ep = req->send.ep;
+
+    /* Token failover holds the lane in whose pending queue the flush waited,
+     * and resumes the flush after it sends the operations of the lane */
+    ucp_trace_req(req, "flush ep %p lane %d is held", ep, req->send.lane);
+    req->send.lane = UCP_NULL_LANE;
+    if (req->send.flush.sw_state == UCP_FLUSH_SW_STATE_RESTART_PENDING) {
+        /* Its restart callback resets it */
+        return 0;
+    }
+
+    ucs_callbackq_remove_oneshot(&ep->worker->uct->progress_q, req,
+                                 ucp_ep_flush_slow_path_remove_filter, req);
+    if (req->send.flush.sw_state == UCP_FLUSH_SW_STATE_STARTED) {
+        /* It flushes the live lanes again, and then waits for the remote
+         * completions again */
+        if (!req->send.flush.sw_done) {
+            ucs_hlist_del(&ucp_ep_flush_state(ep)->reqs, &req->send.list);
+        }
+
+        req->send.flush.sw_state = UCP_FLUSH_SW_STATE_NOT_STARTED;
+        req->send.flush.sw_done  = 0;
+    }
+
+    return 1;
+}
+
+/* The flushes in progress on the lanes completed, after token failover
+ * canceled the flush */
+static void ucp_ep_flush_tf_canceled_completion(uct_completion_t *self)
+{
+    ucp_request_t *req = ucs_container_of(self, ucp_request_t,
+                                          send.state.uct_comp);
+
+    ucp_flush_check_completion(req);
+}
+
+void ucp_ep_flush_request_tf_resume(ucp_request_t *req, ucs_status_t status)
+{
+    ucp_lane_map_t lanes;
+    int num_lanes;
+
+    ucp_trace_req(req, "flush resumed by token failover: %s",
+                  ucs_status_string(status));
+    if (status == UCS_OK) {
+        /* The lane generation changed, so it flushes the live lanes again */
+        --req->send.state.uct_comp.count;
+        ucp_ep_flush_progress(req);
+        ucp_flush_check_completion(req);
+        return;
+    }
+
+    /* A failed endpoint does not flush its lanes again, nor restarts the
+     * flush: it completes after the flushes in progress on its lanes */
+    lanes     = req->send.flush.all_lanes & req->send.flush.lane_mask &
+                ~req->send.flush.started_lanes;
+    num_lanes = ucs_popcount(lanes);
+    ucp_ep_flush_request_update_uct_comp(req, -num_lanes, lanes);
+    req->status                   = status;
+    req->send.flush.sw_done       = 1;
+    req->send.state.uct_comp.func = ucp_ep_flush_tf_canceled_completion;
+    ucp_invoke_uct_completion(&req->send.state.uct_comp, status);
 }
 
 ucs_status_t ucp_ep_flush_progress_pending(uct_pending_req_t *self)

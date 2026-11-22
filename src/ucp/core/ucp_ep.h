@@ -569,6 +569,9 @@ typedef struct ucp_ep_recovery_arg {
      * completion callback is saved in tf_drain_func. */
     ucp_request_t           *tf_drain_req;
     uct_completion_callback_t tf_drain_func;
+    /* Flush requests which wait for token failover, see
+     * ucp_ep_tf_flush_wait() */
+    ucs_hlist_head_t        tf_flush_reqs;
     /* LANES_ADDR reply waiting for error completions. Owned by wireup.
      * NULL when no reply is waiting. */
     void                    *tf_reply;
@@ -588,7 +591,9 @@ typedef struct ucp_ep_ext {
      * next failure does not restart at 1. */
     uint16_t                      tf_request_id;
     uint32_t                      lane_generation; /* Incremented whenever a lane
-                                                       is updated */
+                                                       is updated, or token
+                                                       failover sends operations
+                                                       on the live lanes */
     ucs_ptr_map_key_t             local_ep_id;   /* Local EP ID */
     ucs_ptr_map_key_t             remote_ep_id;  /* Remote EP ID */
     ucp_err_handler_cb_t          err_cb;        /* Error handler */
@@ -976,6 +981,12 @@ void ucp_ep_flush_mem_completion(uct_completion_t *self);
 
 void ucp_ep_flush_request_ff(ucp_request_t *req, ucs_status_t status);
 
+/* Return nonzero if the flush, which waited in the pending queue of a lane
+ * which token failover holds, must wait for token failover */
+int ucp_ep_flush_request_tf_hold(ucp_request_t *req);
+
+void ucp_ep_flush_request_tf_resume(ucp_request_t *req, ucs_status_t status);
+
 void
 ucp_ep_purge_lanes(ucp_ep_h ep, uct_pending_purge_callback_t purge_cb,
                    void *purge_arg);
@@ -1198,6 +1209,19 @@ int ucp_ep_tf_is_held(ucp_ep_h ep, ucp_lane_index_t lane, uct_ep_h uct_ep);
  * held lane has outstanding operations left to purge.
  */
 int ucp_ep_tf_is_queued(ucp_ep_h ep, const ucp_request_t *req);
+
+
+/**
+ * Called when flush request @a req flushed the live lanes. Token failover can
+ * keep operations issued before the flush: outstanding on a held lane which is
+ * not purged yet, or in the recovery queue. Then @a req waits for them with one
+ * more completion, which token failover releases after it sends them on the
+ * live lanes, see @ref ucp_ep_flush_request_tf_resume. Then @a req flushes the
+ * live lanes again.
+ *
+ * @return Nonzero if @a req waits.
+ */
+int ucp_ep_tf_flush_wait(ucp_ep_h ep, ucp_request_t *req);
 
 
 /**

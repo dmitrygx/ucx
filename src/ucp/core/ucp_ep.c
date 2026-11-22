@@ -2137,6 +2137,7 @@ static void ucp_ep_recovery_arg_free(ucp_ep_h ep)
     ucp_ep_refcount_assert(ep, probe, ==, 0);
     ucp_wireup_tf_reply_discard(ep);
     ucp_ep_tf_cleanup(ep);
+    ucs_assert(ucs_hlist_is_empty(&arg->tf_flush_reqs));
     ucs_free(arg);
     ep->ext->recovery_arg = NULL;
     ucp_ep_tf_seen_peer_id_set(ep, seen_peer_id);
@@ -3067,6 +3068,7 @@ static void ucp_ep_tf_arg_init(ucp_ep_recovery_arg_t *arg)
     ucp_lane_index_t lane;
 
     ucs_queue_head_init(&arg->tf_pending_q);
+    ucs_hlist_head_init(&arg->tf_flush_reqs);
     for (lane = 0; lane < UCP_MAX_LANES; ++lane) {
         arg->tf[lane].deactivate_cfg_index = UCP_WORKER_CFG_INDEX_NULL;
         arg->tf[lane].state                = UCP_EP_TF_LANE_EMPTY;
@@ -3130,13 +3132,52 @@ static int ucp_ep_tf_has_unpurged_lanes(const ucp_ep_recovery_arg_t *arg)
     return 0;
 }
 
-/* Nonzero when requests wait in the recovery queue, no held lane has
- * outstanding operations left to purge, and the first request does not wait
- * for its operations in flight */
+/* Nonzero when requests or flushes wait for token failover, no held lane has
+ * outstanding operations left to purge, and the first request in the recovery
+ * queue does not wait for its operations in flight */
 static int ucp_ep_tf_can_resume(const ucp_ep_recovery_arg_t *arg)
 {
-    return (arg != NULL) && !ucs_queue_is_empty(&arg->tf_pending_q) &&
+    return (arg != NULL) &&
+           (!ucs_queue_is_empty(&arg->tf_pending_q) ||
+            !ucs_hlist_is_empty(&arg->tf_flush_reqs)) &&
            (arg->tf_drain_req == NULL) && !ucp_ep_tf_has_unpurged_lanes(arg);
+}
+
+/* A flush waits for token failover with one more completion */
+static void
+ucp_ep_tf_flush_park(ucp_ep_recovery_arg_t *arg, ucp_request_t *req)
+{
+    ++req->send.state.uct_comp.count;
+    ucs_hlist_add_tail(&arg->tf_flush_reqs, &req->send.list);
+}
+
+int ucp_ep_tf_flush_wait(ucp_ep_h ep, ucp_request_t *req)
+{
+    ucp_ep_recovery_arg_t *arg = ucp_ep_recovery_arg(ep);
+    int wait;
+
+    if (arg == NULL) {
+        return 0;
+    }
+
+    /* A wireup message handler can purge a held lane on the async thread */
+    UCS_ASYNC_BLOCK(&ep->worker->async);
+    wait = !ucs_queue_is_empty(&arg->tf_pending_q) ||
+           ucp_ep_tf_has_unpurged_lanes(arg);
+    if (wait) {
+        ucp_trace_req(req, "flush ep %p waits for token failover", ep);
+        ucp_ep_tf_flush_park(arg, req);
+    }
+    UCS_ASYNC_UNBLOCK(&ep->worker->async);
+
+    return wait;
+}
+
+/* Nonzero if the endpoint cannot send the operations of held lanes */
+static int ucp_ep_tf_is_failed(ucp_ep_h ep)
+{
+    return (ep->flags & UCP_EP_FLAG_FAILED) ||
+           !ucp_ep_err_mode_eq(ep, UCP_ERR_HANDLING_MODE_FAILOVER);
 }
 
 static int
@@ -3287,23 +3328,50 @@ static void ucp_ep_tf_replay(ucp_ep_h ep, ucp_ep_recovery_arg_t *arg)
  * The requests from the pending queues of held lanes can follow the operations
  * which the token purge reposted on the live lanes. Send them now: the failed
  * lanes can take long to recover, or never recover. A closed endpoint sends
- * them too, since they were issued before the close, and a failed endpoint
- * cancels them.
+ * them too, since its close flush waits for them, and a failed endpoint
+ * cancels them. Then the flushes which waited for these operations flush the
+ * live lanes again, or fail on a failed endpoint.
  */
 static void ucp_ep_tf_resume(ucp_ep_h ep)
 {
     ucp_ep_recovery_arg_t *arg = ucp_ep_recovery_arg(ep);
+    ucs_hlist_head_t flush_reqs;
+    ucp_request_t *req;
 
     if (!ucp_ep_tf_can_resume(arg)) {
         return;
     }
 
-    if ((ep->flags & UCP_EP_FLAG_FAILED) ||
-        !ucp_ep_err_mode_eq(ep, UCP_ERR_HANDLING_MODE_FAILOVER)) {
+    if (ucp_ep_tf_is_failed(ep)) {
         ucp_ep_tf_abort_pending(&arg->tf_pending_q, UCS_ERR_CANCELED);
     } else {
         ucp_ep_tf_replay(ep, arg);
+        if (!ucs_queue_is_empty(&arg->tf_pending_q)) {
+            /* A request waits for its operations in flight */
+            return;
+        }
+
+        /* A flush in progress flushes the live lanes again */
+        ++ep->ext->lane_generation;
     }
+
+    /* A flush completion callback can close the endpoint, so the status is
+     * checked for every flush */
+    flush_reqs = arg->tf_flush_reqs;
+    ucs_hlist_head_init(&arg->tf_flush_reqs);
+    ucs_hlist_for_each_extract(req, &flush_reqs, send.list) {
+        ucp_ep_flush_request_tf_resume(req, ucp_ep_tf_is_failed(ep) ?
+                                            UCS_ERR_CANCELED : UCS_OK);
+    }
+}
+
+/* Resume from a progress callback. A completion callback can close the
+ * endpoint, so it is released only after the resume. */
+static void ucp_ep_tf_resume_held(ucp_ep_h ep)
+{
+    ucp_ep_refcount_add(ep, flush);
+    ucp_ep_tf_resume(ep);
+    ucp_ep_refcount_remove(ep, flush);
 }
 
 static unsigned ucp_ep_tf_resume_progress(void *arg)
@@ -3312,7 +3380,7 @@ static unsigned ucp_ep_tf_resume_progress(void *arg)
     ucp_worker_h worker = ep->worker;
 
     UCS_ASYNC_BLOCK(&worker->async);
-    ucp_ep_tf_resume(ep);
+    ucp_ep_tf_resume_held(ep);
     UCS_ASYNC_UNBLOCK(&worker->async);
     return 1;
 }
@@ -3335,6 +3403,24 @@ int ucp_ep_tf_is_queued(ucp_ep_h ep, const ucp_request_t *req)
     }
 
     return 0;
+}
+
+/* A request from the pending queue of a held lane waits in the recovery queue,
+ * and a flush waits for token failover */
+static void ucp_ep_tf_pending_purge_cb(uct_pending_req_t *self, void *arg)
+{
+    ucp_ep_recovery_arg_t *rarg = arg;
+    ucp_request_t *req;
+
+    if (self->func != ucp_ep_flush_progress_pending) {
+        ucp_request_purge_enqueue_cb(self, &rarg->tf_pending_q);
+        return;
+    }
+
+    req = ucs_container_of(self, ucp_request_t, send.uct);
+    if (ucp_ep_flush_request_tf_hold(req)) {
+        ucp_ep_tf_flush_park(rarg, req);
+    }
 }
 
 /* Complete an outstanding operation. Teardown must not allocate a repost. */
@@ -3413,9 +3499,12 @@ ucp_ep_tf_purge_lane(ucp_ep_h ep, ucp_lane_index_t lane, ucp_ep_lane_tf_t *tf)
     if (status != UCS_OK) {
         ucs_error("ep %p: outstanding purge on lane %d failed: %s", ep, lane,
                   ucs_status_string(status));
+        return status;
     }
 
-    return status;
+    /* A flush in progress flushes the live lanes again, after the reposts */
+    ++ep->ext->lane_generation;
+    return UCS_OK;
 }
 
 void ucp_ep_tf_lanes_purge_outstanding(ucp_ep_h ep, ucp_lane_map_t lanes,
@@ -3597,10 +3686,11 @@ static ucs_status_t ucp_ep_tf_detach(ucp_ep_h ep, ucp_lane_index_t lane)
         tf->deactivate_cfg_index = UCP_WORKER_CFG_INDEX_NULL;
     }
 
-    /* Keep pending requests off this endpoint. They are replayed after
-     * outstanding operations of every held lane are resolved. */
-    uct_ep_pending_purge(tf->uct_ep, ucp_request_purge_enqueue_cb,
-                         &ucp_ep_recovery_arg(ep)->tf_pending_q);
+    /* Keep pending requests off this endpoint. They are replayed, and the
+     * flushes resumed, after outstanding operations of every held lane are
+     * resolved. */
+    uct_ep_pending_purge(tf->uct_ep, ucp_ep_tf_pending_purge_cb,
+                         ucp_ep_recovery_arg(ep));
     ucp_failed_tl_iface_get();
     ucp_ep_set_lane(ep, lane, &ucp_failed_tl_ep_discard_arg.failed_ep);
     ucs_debug("ep %p: detached lane %d uct_ep %p", ep, lane, tf->uct_ep);
@@ -3751,7 +3841,7 @@ static unsigned ucp_ep_tf_purge_held_progress(void *arg)
 
     uct_ep_destroy(tf->uct_ep);
     ucp_ep_tf_lane_release(ep, tf);
-    ucp_ep_tf_resume(ep);
+    ucp_ep_tf_resume_held(ep);
 
 out:
     UCS_ASYNC_UNBLOCK(&worker->async);
