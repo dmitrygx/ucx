@@ -1557,7 +1557,7 @@ protected:
         }
     }
 
-    /* Mock AM and the pending queue of every sender interface */
+    /* Mock AM, RMA and the pending queue of every sender interface */
     void mock_sender_ifaces(ucs::mock &mock)
     {
         m_self = this;
@@ -1567,6 +1567,9 @@ protected:
 
             mock.setup(&ops.ep_am_short, am_short_mock);
             mock.setup(&ops.ep_am_bcopy, am_bcopy_mock);
+            mock.setup(&ops.ep_get_bcopy, get_bcopy_mock);
+            mock.setup(&ops.ep_get_zcopy, zcopy_mock<UCT_EP_OP_GET_ZCOPY>);
+            mock.setup(&ops.ep_put_zcopy, zcopy_mock<UCT_EP_OP_PUT_ZCOPY>);
             mock.setup(&ops.ep_pending_add, pending_add_mock);
             mock.setup(&ops.ep_pending_purge, pending_purge_mock);
         }
@@ -1672,14 +1675,73 @@ protected:
         expect_on_another_lane(ep, lane);
     }
 
+    /* Hold the first post of @a operation as if a failed lane purged it, then
+     * repost it while the repost lane takes one byte less than it */
+    void test_rma_on_another_lane(uct_ep_operation_t operation, size_t size)
+    {
+        const bool is_get = (operation != UCT_EP_OP_PUT_ZCOPY);
+        ucp_ep_h ep       = sender().ep(0, INJECTED_EP_INDEX);
+        mapped_buffer lbuf(size, sender());
+        mapped_buffer rbuf(size, receiver());
+        ucs::handle<ucp_rkey_h> rkey = rbuf.rkey(sender());
+        ucp_request_param_t param    = {};
+        ucs::mock mock;
+        uct_iface_attr_t *attr;
+        ucp_lane_index_t lane;
+        ucs_status_ptr_t sptr;
+        size_t *max_length;
+
+        lane       = mock_and_find_repost_lane(ep, mock);
+        attr       = ucp_ep_get_iface_attr(ep, lane);
+        max_length = (operation == UCT_EP_OP_GET_BCOPY) ?
+                     &attr->cap.get.max_bcopy :
+                     (operation == UCT_EP_OP_GET_ZCOPY) ?
+                     &attr->cap.get.max_zcopy : &attr->cap.put.max_zcopy;
+
+        (is_get ? rbuf : lbuf).pattern_fill(m_seed, size);
+        (is_get ? lbuf : rbuf).memset(0);
+        param.op_attr_mask = UCP_OP_ATTR_FIELD_MEMH;
+        param.memh         = lbuf.memh();
+        m_rma_hold_op      = operation;
+        if (is_get) {
+            sptr = ucp_get_nbx(ep, lbuf.ptr(), size, (uintptr_t)rbuf.ptr(),
+                               rkey.get(), &param);
+        } else {
+            sptr = ucp_put_nbx(ep, lbuf.ptr(), size, (uintptr_t)rbuf.ptr(),
+                               rkey.get(), &param);
+        }
+
+        ASSERT_TRUE(UCS_PTR_IS_PTR(sptr));
+        wait_for_cond([this]() { return m_rma_held.field_mask != 0; },
+                      [this]() { short_progress_loop(); });
+        ASSERT_NE(0u, m_rma_held.field_mask)
+                << "the request did not post "
+                << uct_ep_operation_names[operation];
+
+        {
+            iface_limit limit(max_length, m_rma_held_length - 1);
+
+            ASSERT_UCS_OK(repost(ep, m_rma_held));
+            ASSERT_UCS_OK(request_wait(sptr));
+        }
+
+        (is_get ? lbuf : rbuf).pattern_check(m_seed, size);
+        expect_on_another_lane(ep, lane);
+    }
+
     /* Return this status for the test AM bcopy instead of sending it, unless
      * OK */
     ucs_status_t m_am_bcopy_status   = UCS_OK;
-    /* Transport endpoint which got the last test AM */
+    /* Transport endpoint which got the last test AM or the last repost */
     uct_ep_h m_post_ep               = NULL;
     /* Repost which waits for resources, and its transport endpoint */
     uct_pending_req_t *m_pending_req = NULL;
     uct_ep_h m_pending_ep            = NULL;
+    /* RMA operation to hold at its first post, and the held operation */
+    uct_ep_operation_t m_rma_hold_op = UCT_EP_OP_LAST;
+    uct_ep_op_info_t m_rma_held      = {};
+    std::vector<uct_iov_t> m_rma_held_iov;
+    size_t m_rma_held_length         = 0;
 
 private:
     static ucs_status_t am_short_mock(uct_ep_h ep, uint8_t id, uint64_t header,
@@ -1706,6 +1768,91 @@ private:
 
         return m_self->m_mock->orig_func(&ep->iface->ops.ep_am_bcopy, ep, id,
                                          pack_cb, arg, flags);
+    }
+
+    /* Keep the first post of the RMA operation to hold instead of posting
+     * it, and note the transport endpoint of the repost, which has its own
+     * completion */
+    static bool rma_hold(uct_ep_h ep, uct_ep_operation_t operation,
+                         uint64_t remote_addr, uct_rkey_t rkey,
+                         uct_completion_t *comp, size_t length)
+    {
+        uct_ep_op_info_t &held = m_self->m_rma_held;
+
+        if ((operation != m_self->m_rma_hold_op) || (comp == NULL)) {
+            return false;
+        }
+
+        if (held.field_mask != 0) {
+            if (comp != held.comp) {
+                m_self->m_post_ep = ep;
+            }
+
+            return false;
+        }
+
+        held.field_mask           = UCT_EP_OP_INFO_FIELD_OPERATION |
+                                    UCT_EP_OP_INFO_FIELD_RMA |
+                                    UCT_EP_OP_INFO_FIELD_COMP;
+        held.operation            = operation;
+        held.comp                 = comp;
+        held.rma.field_mask       = UCT_EP_OP_INFO_RMA_FIELD_REMOTE_ADDR |
+                                    UCT_EP_OP_INFO_RMA_FIELD_RKEY;
+        held.rma.remote_addr      = remote_addr;
+        held.rma.rkey             = rkey;
+        m_self->m_rma_held_length = length;
+        return true;
+    }
+
+    static ucs_status_t
+    get_bcopy_mock(uct_ep_h ep, uct_unpack_callback_t unpack_cb, void *arg,
+                   size_t length, uint64_t remote_addr, uct_rkey_t rkey,
+                   uct_completion_t *comp)
+    {
+        uct_ep_op_info_t &held = m_self->m_rma_held;
+
+        if (!rma_hold(ep, UCT_EP_OP_GET_BCOPY, remote_addr, rkey, comp,
+                      length)) {
+            return m_self->m_mock->orig_func(&ep->iface->ops.ep_get_bcopy, ep,
+                                             unpack_cb, arg, length,
+                                             remote_addr, rkey, comp);
+        }
+
+        held.rma.field_mask              |=
+                UCT_EP_OP_INFO_RMA_FIELD_PAYLOAD_UNPACK;
+        held.rma.payload.unpack.unpack_cb = unpack_cb;
+        held.rma.payload.unpack.arg       = arg;
+        held.rma.payload.unpack.length    = length;
+        return UCS_INPROGRESS;
+    }
+
+    /* GET and PUT zcopy have the same arguments */
+    template<uct_ep_operation_t operation>
+    static ucs_status_t
+    zcopy_mock(uct_ep_h ep, const uct_iov_t *iov, size_t iovcnt,
+               uint64_t remote_addr, uct_rkey_t rkey, uct_completion_t *comp)
+    {
+        uct_ep_put_zcopy_func_t *orig = (operation == UCT_EP_OP_GET_ZCOPY) ?
+                                        &ep->iface->ops.ep_get_zcopy :
+                                        &ep->iface->ops.ep_put_zcopy;
+        uct_ep_op_info_t &held        = m_self->m_rma_held;
+        size_t length                 = 0;
+        size_t i;
+
+        for (i = 0; i < iovcnt; ++i) {
+            length += iov[i].length * iov[i].count;
+        }
+
+        if (!rma_hold(ep, operation, remote_addr, rkey, comp, length)) {
+            return m_self->m_mock->orig_func(orig, ep, iov, iovcnt,
+                                             remote_addr, rkey, comp);
+        }
+
+        m_self->m_rma_held_iov.assign(iov, iov + iovcnt);
+        held.rma.field_mask          |= UCT_EP_OP_INFO_RMA_FIELD_PAYLOAD_ZCOPY;
+        held.rma.payload.zcopy.iov    = m_self->m_rma_held_iov.data();
+        held.rma.payload.zcopy.iovcnt = iovcnt;
+        return UCS_INPROGRESS;
     }
 
     /* The interface has resources, so keep the repost which got
@@ -1814,6 +1961,25 @@ UCS_TEST_P(test_ucp_fault_tolerance_tf_repost, am_short_on_another_lane)
 UCS_TEST_P(test_ucp_fault_tolerance_tf_repost, am_bcopy_on_another_lane)
 {
     test_am_on_another_lane(UCT_EP_OP_AM_BCOPY);
+}
+
+/* Below cap.get.min_zcopy, so GET uses bcopy */
+UCS_TEST_P(test_ucp_fault_tolerance_tf_repost, get_bcopy_on_another_lane,
+           "ZCOPY_THRESH=inf")
+{
+    test_rma_on_another_lane(UCT_EP_OP_GET_BCOPY, 32);
+}
+
+UCS_TEST_P(test_ucp_fault_tolerance_tf_repost, get_zcopy_on_another_lane,
+           "ZCOPY_THRESH=0")
+{
+    test_rma_on_another_lane(UCT_EP_OP_GET_ZCOPY, 4 * UCS_KBYTE);
+}
+
+UCS_TEST_P(test_ucp_fault_tolerance_tf_repost, put_zcopy_on_another_lane,
+           "ZCOPY_THRESH=0")
+{
+    test_rma_on_another_lane(UCT_EP_OP_PUT_ZCOPY, 4 * UCS_KBYTE);
 }
 
 UCP_INSTANTIATE_TEST_CASE_TLS(test_ucp_fault_tolerance_tf_repost, rcx, "rc_x")
