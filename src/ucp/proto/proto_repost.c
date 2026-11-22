@@ -15,6 +15,7 @@
 
 #include <ucp/core/ucp_ep.inl>
 #include <ucp/core/ucp_rkey.inl>
+#include <ucp/wireup/wireup_ep.h>
 
 #include <string.h>
 
@@ -380,30 +381,80 @@ ucp_proto_repost_zcopy_memh(ucp_request_t *req, ucp_lane_index_t lane)
     return UCS_OK;
 }
 
-/* The purged lane may take a longer AM short than this lane, for example with
- * device memory. Send the same bytes as AM bcopy then. */
-static ucs_status_t
-ucp_proto_repost_am_short(ucp_request_t *req, ucp_lane_index_t lane,
-                          uct_ep_h uct_ep)
+static size_t ucp_proto_repost_am_short_length(const uct_ep_op_info_t *info)
 {
-    uct_ep_op_info_t *info = req->send.repost.info;
-    size_t length          = sizeof(info->am.header.value) +
-                             info->am.payload.data.length;
-    ssize_t packed;
+    return sizeof(info->am.header.value) + info->am.payload.data.length;
+}
 
-    if (length <= ucp_ep_get_iface_attr(req->send.ep, lane)->cap.am.max_short) {
-        return uct_ep_am_short(uct_ep, info->am.am_id, info->am.header.value,
-                               info->am.payload.data.buffer,
-                               info->am.payload.data.length);
+static int ucp_proto_repost_am_short_fits(ucp_ep_h ep, ucp_lane_index_t lane,
+                                          const uct_ep_op_info_t *info)
+{
+    const uct_iface_attr_t *attr = ucp_ep_get_iface_attr(ep, lane);
+
+    return (attr->cap.flags & UCT_IFACE_FLAG_AM_SHORT) &&
+           (ucp_proto_repost_am_short_length(info) <= attr->cap.am.max_short);
+}
+
+/* The failed lane may have taken a longer AM than @a lane: longer AM short
+ * with device memory, or longer AM bcopy with a larger segment. The transport
+ * does not check the length that an AM bcopy pack returns. */
+static int ucp_proto_repost_lane_fits(ucp_request_t *req, ucp_lane_index_t lane)
+{
+    const uct_ep_op_info_t *info = req->send.repost.info;
+    ucp_ep_h ep                  = req->send.ep;
+    const uct_iface_attr_t *attr;
+
+    if ((lane >= ucp_ep_num_lanes(ep)) ||
+        (ucp_ep_get_rsc_index(ep, lane) == UCP_NULL_RESOURCE) ||
+        (ucp_ep_get_failed_lanes(ep) & UCS_BIT(lane)) ||
+        (ucp_ep_get_lane(ep, lane) == NULL)) {
+        return 0;
     }
 
-    if (length > ucp_ep_get_max_bcopy(req->send.ep, lane)) {
-        return UCS_ERR_UNSUPPORTED;
+    attr = ucp_ep_get_iface_attr(ep, lane);
+    switch (info->operation) {
+    case UCT_EP_OP_AM_SHORT:
+        return ucp_proto_repost_am_short_fits(ep, lane, info) ||
+               ((attr->cap.flags & UCT_IFACE_FLAG_AM_BCOPY) &&
+                (ucp_proto_repost_am_short_length(info) <=
+                 ucp_ep_get_max_bcopy(ep, lane)));
+    case UCT_EP_OP_AM_BCOPY:
+        return (attr->cap.flags & UCT_IFACE_FLAG_AM_BCOPY) &&
+               (info->am.payload.data.length <= ucp_ep_get_max_bcopy(ep, lane));
+    default:
+        /* The post checks the memory and the remote key of RMA */
+        return 1;
+    }
+}
+
+/* The protocol lane, or another connected lane when it does not take the
+ * operation */
+static ucp_lane_index_t ucp_proto_repost_select_lane(ucp_request_t *req)
+{
+    const ucp_proto_repost_priv_t *rpriv = req->send.proto_config->priv;
+    ucp_ep_h ep                          = req->send.ep;
+    ucp_lane_index_t lane;
+
+    if (ucp_proto_repost_lane_fits(req, rpriv->lane)) {
+        return rpriv->lane;
     }
 
-    packed = uct_ep_am_bcopy(uct_ep, info->am.am_id,
-                             ucp_proto_repost_pack_am_short, info, 0);
-    return ucp_proto_bcopy_send_func_status(packed);
+    /* An RMA operation with a completion restarts its request instead, and
+     * one without it has only the remote key of the failed lane */
+    if (req->send.repost.info->field_mask & UCT_EP_OP_INFO_FIELD_RMA) {
+        return UCP_NULL_LANE;
+    }
+
+    for (lane = 0; lane < ucp_ep_num_lanes(ep); ++lane) {
+        if (ucp_proto_repost_lane_fits(req, lane) &&
+            !ucp_wireup_ep_test(ucp_ep_get_lane(ep, lane))) {
+            ucp_trace_req(req, "repost on lane %u instead of %u",
+                          (unsigned)lane, (unsigned)rpriv->lane);
+            return lane;
+        }
+    }
+
+    return UCP_NULL_LANE;
 }
 
 
@@ -462,38 +513,37 @@ static void ucp_proto_repost_abort(ucp_request_t *req, ucs_status_t status)
 
 static ucs_status_t ucp_proto_repost_progress(uct_pending_req_t *self)
 {
-    ucp_request_t *req                   = ucs_container_of(self, ucp_request_t,
-                                                            send.uct);
-    const ucp_proto_repost_priv_t *rpriv = req->send.proto_config->priv;
-    const uct_ep_op_info_t *info         = req->send.repost.info;
-    uct_rkey_t tl_rkey                   = UCT_INVALID_RKEY;
+    ucp_request_t *req           = ucs_container_of(self, ucp_request_t,
+                                                    send.uct);
+    const uct_ep_op_info_t *info = req->send.repost.info;
+    uct_rkey_t tl_rkey           = UCT_INVALID_RKEY;
     ucp_proto_repost_pack_t pack;
     uct_completion_t *comp;
+    ucp_lane_index_t lane;
     ucs_status_t status;
     uct_ep_h uct_ep;
     ssize_t packed;
 
-    if (rpriv->lane == UCP_NULL_LANE) {
-        ucp_proto_repost_abort(req, UCS_ERR_UNREACHABLE);
-        return UCS_OK;
-    }
-
-    uct_ep = ucp_ep_get_lane(req->send.ep, rpriv->lane);
-    if (uct_ep == NULL) {
-        ucp_proto_repost_abort(req, UCS_ERR_UNREACHABLE);
-        return UCS_OK;
-    }
-
-    comp = (ucp_proto_repost_origin_comp(req) != NULL) ?
-            &req->send.state.uct_comp : NULL;
     ucp_proto_repost_assert_fields(info);
+
+    /* No lane takes it: an operation with a completion restarts its request,
+     * and one without fails the endpoint */
+    lane = ucp_proto_repost_select_lane(req);
+    if (lane == UCP_NULL_LANE) {
+        ucp_proto_repost_abort(req, UCS_ERR_UNREACHABLE);
+        return UCS_OK;
+    }
+
+    uct_ep = ucp_ep_get_lane(req->send.ep, lane);
+    comp   = (ucp_proto_repost_origin_comp(req) != NULL) ?
+             &req->send.state.uct_comp : NULL;
 
     if ((info->operation == UCT_EP_OP_PUT_SHORT) ||
         (info->operation == UCT_EP_OP_PUT_BCOPY) ||
         (info->operation == UCT_EP_OP_PUT_ZCOPY) ||
         (info->operation == UCT_EP_OP_GET_BCOPY) ||
         (info->operation == UCT_EP_OP_GET_ZCOPY)) {
-        status = ucp_proto_repost_tl_rkey(req, rpriv->lane, &tl_rkey);
+        status = ucp_proto_repost_tl_rkey(req, lane, &tl_rkey);
         if (status != UCS_OK) {
             ucp_proto_repost_abort(req, status);
             return UCS_OK;
@@ -502,7 +552,18 @@ static ucs_status_t ucp_proto_repost_progress(uct_pending_req_t *self)
 
     switch (info->operation) {
     case UCT_EP_OP_AM_SHORT:
-        status = ucp_proto_repost_am_short(req, rpriv->lane, uct_ep);
+        /* As AM short or, with the same bytes for the receiver, as AM bcopy */
+        if (ucp_proto_repost_am_short_fits(req->send.ep, lane, info)) {
+            status = uct_ep_am_short(uct_ep, info->am.am_id,
+                                     info->am.header.value,
+                                     info->am.payload.data.buffer,
+                                     info->am.payload.data.length);
+        } else {
+            packed = uct_ep_am_bcopy(uct_ep, info->am.am_id,
+                                     ucp_proto_repost_pack_am_short,
+                                     req->send.repost.info, 0);
+            status = ucp_proto_bcopy_send_func_status(packed);
+        }
         break;
     case UCT_EP_OP_AM_BCOPY:
         pack.buffer = info->am.payload.data.buffer;
@@ -525,7 +586,7 @@ static ucs_status_t ucp_proto_repost_progress(uct_pending_req_t *self)
         status      = ucp_proto_bcopy_send_func_status(packed);
         break;
     case UCT_EP_OP_PUT_ZCOPY:
-        status = ucp_proto_repost_zcopy_memh(req, rpriv->lane);
+        status = ucp_proto_repost_zcopy_memh(req, lane);
         if (status != UCS_OK) {
             break;
         }
@@ -541,7 +602,7 @@ static ucs_status_t ucp_proto_repost_progress(uct_pending_req_t *self)
                                   info->rma.remote_addr, tl_rkey, comp);
         break;
     case UCT_EP_OP_GET_ZCOPY:
-        status = ucp_proto_repost_zcopy_memh(req, rpriv->lane);
+        status = ucp_proto_repost_zcopy_memh(req, lane);
         if (status != UCS_OK) {
             break;
         }
@@ -556,7 +617,7 @@ static ucs_status_t ucp_proto_repost_progress(uct_pending_req_t *self)
     }
 
     if (status == UCS_ERR_NO_RESOURCE) {
-        req->send.lane = rpriv->lane;
+        req->send.lane = lane;
         return UCS_ERR_NO_RESOURCE;
     }
 
@@ -650,7 +711,6 @@ ucs_status_t
 ucp_proto_repost_submit(ucp_ep_h ep, const uct_ep_op_info_t *op_info)
 {
     const ucp_proto_config_t *config;
-    const ucp_proto_repost_priv_t *rpriv;
     ucp_request_t *req;
     ucs_status_t status;
 
@@ -681,13 +741,6 @@ ucp_proto_repost_submit(ucp_ep_h ep, const uct_ep_op_info_t *op_info)
         goto err;
     }
 
-    rpriv = config->priv;
-    if ((rpriv->lane == UCP_NULL_LANE) ||
-        (ucp_ep_get_lane(ep, rpriv->lane) == NULL)) {
-        status = UCS_ERR_UNREACHABLE;
-        goto err;
-    }
-
     req = ucp_request_get(ep->worker);
     if (req == NULL) {
         status = UCS_ERR_NO_MEMORY;
@@ -714,9 +767,8 @@ ucp_proto_repost_submit(ucp_ep_h ep, const uct_ep_op_info_t *op_info)
                                   ucp_proto_repost_completion);
     }
 
-    ucp_trace_req(req, "repost submit op %s lane %u",
-                  uct_ep_operation_names[op_info->operation],
-                  (unsigned)rpriv->lane);
+    ucp_trace_req(req, "repost submit op %s",
+                  uct_ep_operation_names[op_info->operation]);
     ucp_request_send(req);
     return UCS_OK;
 
