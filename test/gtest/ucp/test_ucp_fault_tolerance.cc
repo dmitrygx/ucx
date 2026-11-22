@@ -1440,15 +1440,35 @@ UCP_INSTANTIATE_TEST_CASE_TLS(test_ucp_fault_tolerance_tf, rcx, "rc_x")
  * The lane it is reposted on may take less, for example less AM short when
  * only the failed lane has device memory. An AM has no completion: it finished
  * when it was posted, so the endpoint must fail if the AM cannot be sent
- * again. */
+ * again. Another lane of the endpoint may take what the repost lane cannot. */
 class test_ucp_fault_tolerance_tf_repost : public test_ucp_fault_tolerance_tf {
 public:
     static void get_test_variants(std::vector<ucp_test_variant> &variants)
     {
-        add_variant_with_value(variants, UCP_FEATURE_AM, TEST_OP_AM, "am");
+        add_variant_with_value(variants, UCP_FEATURE_AM | UCP_FEATURE_RMA,
+                               TEST_OP_AM, "am_rma");
     }
 
 protected:
+    /* Lower a limit which an interface advertises, until destroyed */
+    class iface_limit {
+    public:
+        iface_limit(size_t *limit, size_t value) :
+            m_limit(limit), m_orig_value(*limit)
+        {
+            *m_limit = std::min(*m_limit, value);
+        }
+
+        ~iface_limit()
+        {
+            *m_limit = m_orig_value;
+        }
+
+    private:
+        size_t *m_limit;
+        size_t m_orig_value;
+    };
+
     /* Largest AM, with its header, that a lane of the endpoint takes as
      * @a operation, AM short or AM bcopy */
     static size_t max_am_length(ucp_ep_h ep, uct_ep_operation_t operation)
@@ -1552,6 +1572,53 @@ protected:
         }
     }
 
+    /* Mock the sender interfaces and return the lane which takes reposts.
+     * Skip unless another lane of the endpoint is on another interface. */
+    ucp_lane_index_t mock_and_find_repost_lane(ucp_ep_h ep, ucs::mock &mock)
+    {
+        ucp_lane_index_t lane, other;
+
+        wait_for_lanes_connected(ep);
+        mock_sender_ifaces(mock);
+
+        /* A small AM fits every lane, so it goes to the repost lane */
+        if ((repost_am(ep, UCT_EP_OP_AM_BCOPY, 1) != UCS_OK) ||
+            !wait_for_am(1)) {
+            UCS_TEST_ABORT("a small AM was not reposted");
+        }
+
+        lane = ucp_ep_lookup_lane(ep, m_post_ep);
+        if (lane == UCP_NULL_LANE) {
+            UCS_TEST_ABORT("the repost lane was not found");
+        }
+
+        for (other = 0; other < ucp_ep_num_lanes(ep); ++other) {
+            if (!(ucp_ep_get_failed_lanes(ep) & UCS_BIT(other)) &&
+                (ucp_ep_get_rsc_index(ep, other) != UCP_NULL_RESOURCE) &&
+                (ucp_ep_get_rsc_index(ep, other) !=
+                 ucp_ep_get_rsc_index(ep, lane))) {
+                break;
+            }
+        }
+
+        if (other == ucp_ep_num_lanes(ep)) {
+            UCS_TEST_SKIP_R("no lane on another interface to repost on");
+        }
+
+        return lane;
+    }
+
+    /* The last repost went through a lane other than @a lane, and the
+     * endpoint did not fail */
+    void expect_on_another_lane(ucp_ep_h ep, ucp_lane_index_t lane)
+    {
+        ASSERT_NE((uct_ep_h)NULL, m_post_ep)
+                << "the operation was not reposted";
+        EXPECT_NE(lane, ucp_ep_lookup_lane(ep, m_post_ep))
+                << "the operation was reposted on a lane which takes less";
+        EXPECT_EQ(0u, initiator_err_count());
+    }
+
     /* Repost an AM one byte longer than any lane of the endpoint takes even
      * as AM bcopy: the transport must not get it, and the endpoint must fail */
     void test_am_lost(uct_ep_operation_t operation)
@@ -1561,7 +1628,11 @@ protected:
         size_t length;
 
         flush_workers();
+
+        /* Fail the AM without packing it, the pack would overrun the send
+         * buffer of the transport */
         mock_sender_ifaces(mock);
+        m_am_bcopy_status = UCS_ERR_INVALID_PARAM;
 
         length = max_am_length(ep, UCT_EP_OP_AM_BCOPY) -
                  sizeof(ucp_am_hdr_t) + 1;
@@ -1575,6 +1646,30 @@ protected:
         EXPECT_EQ((uct_ep_h)NULL, m_post_ep) << "the transport got the AM";
         EXPECT_EQ(1u, initiator_err_count()) << "the lost AM was not reported";
         EXPECT_FALSE(m_am_received);
+    }
+
+    /* The repost lane takes one byte less than the AM, both as AM short and
+     * as AM bcopy, while another lane takes it */
+    void test_am_on_another_lane(uct_ep_operation_t operation)
+    {
+        const size_t length    = UCS_KBYTE;
+        const size_t am_length = sizeof(ucp_am_hdr_t) + length;
+        ucp_ep_h ep            = sender().ep(0, INJECTED_EP_INDEX);
+        ucs::mock mock;
+        uct_iface_attr_t *attr;
+        ucp_lane_index_t lane;
+
+        lane = mock_and_find_repost_lane(ep, mock);
+        attr = ucp_ep_get_iface_attr(ep, lane);
+        {
+            iface_limit max_short(&attr->cap.am.max_short, am_length - 1);
+            iface_limit max_bcopy(&attr->cap.am.max_bcopy, am_length - 1);
+
+            ASSERT_UCS_OK(repost_am(ep, operation, length));
+            ASSERT_TRUE(wait_for_am(length)) << "the AM was not reposted";
+        }
+
+        expect_on_another_lane(ep, lane);
     }
 
     /* Return this status for the test AM bcopy instead of sending it, unless
@@ -1670,6 +1765,11 @@ UCS_TEST_P(test_ucp_fault_tolerance_tf_repost, am_short_above_max_bcopy)
     test_am_lost(UCT_EP_OP_AM_SHORT);
 }
 
+UCS_TEST_P(test_ucp_fault_tolerance_tf_repost, am_bcopy_above_max_bcopy)
+{
+    test_am_lost(UCT_EP_OP_AM_BCOPY);
+}
+
 UCS_TEST_P(test_ucp_fault_tolerance_tf_repost, am_bcopy_wait_on_discarded_lane)
 {
     const size_t length = UCS_KBYTE;
@@ -1704,6 +1804,16 @@ UCS_TEST_P(test_ucp_fault_tolerance_tf_repost, am_bcopy_wait_on_discarded_lane)
     ASSERT_TRUE(wait_for_am(length))
             << "the repost on the discarded lane was lost";
     EXPECT_EQ(0u, initiator_err_count());
+}
+
+UCS_TEST_P(test_ucp_fault_tolerance_tf_repost, am_short_on_another_lane)
+{
+    test_am_on_another_lane(UCT_EP_OP_AM_SHORT);
+}
+
+UCS_TEST_P(test_ucp_fault_tolerance_tf_repost, am_bcopy_on_another_lane)
+{
+    test_am_on_another_lane(UCT_EP_OP_AM_BCOPY);
 }
 
 UCP_INSTANTIATE_TEST_CASE_TLS(test_ucp_fault_tolerance_tf_repost, rcx, "rc_x")
