@@ -112,6 +112,7 @@ static void ucp_ep_tf_set_request_id(ucp_ep_h ep, ucp_lane_map_t lanes,
                                      uint32_t request_id);
 static int ucp_ep_tf_purge_remove_filter(const ucs_callbackq_elem_t *elem,
                                          void *arg);
+static unsigned ucp_ep_tf_resume_progress(void *arg);
 static uct_iface_h ucp_failed_tl_iface;
 static ucs_init_once_t ucp_failed_tl_iface_once = UCS_INIT_ONCE_INITIALIZER;
 
@@ -3114,6 +3115,228 @@ ucp_ep_tf_abort_pending(ucs_queue_head_t *pending_q, ucs_status_t status)
     }
 }
 
+/* Nonzero when a held lane has outstanding operations which are not purged */
+static int ucp_ep_tf_has_unpurged_lanes(const ucp_ep_recovery_arg_t *arg)
+{
+    const ucp_ep_lane_tf_t *tf;
+
+    ucs_carray_for_each(tf, arg->tf, UCP_MAX_LANES) {
+        if ((tf->state == UCP_EP_TF_LANE_HELD) && (tf->uct_ep != NULL) &&
+            !tf->purged) {
+            return 1;
+        }
+    }
+
+    return 0;
+}
+
+/* Nonzero when requests wait in the recovery queue, no held lane has
+ * outstanding operations left to purge, and the first request does not wait
+ * for its operations in flight */
+static int ucp_ep_tf_can_resume(const ucp_ep_recovery_arg_t *arg)
+{
+    return (arg != NULL) && !ucs_queue_is_empty(&arg->tf_pending_q) &&
+           (arg->tf_drain_req == NULL) && !ucp_ep_tf_has_unpurged_lanes(arg);
+}
+
+static int
+ucp_ep_tf_resume_filter(const ucs_callbackq_elem_t *elem, void *arg)
+{
+    return (elem->cb == ucp_ep_tf_resume_progress) && (elem->arg == arg);
+}
+
+/* Resume from the progress queue: a wireup message handler, which can run on
+ * the async thread, or a completion callback must not send the requests of the
+ * user */
+static void ucp_ep_tf_resume_schedule(ucp_ep_h ep)
+{
+    ucp_worker_h worker = ep->worker;
+
+    ucs_callbackq_remove_oneshot(&worker->uct->progress_q, ep,
+                                 ucp_ep_tf_resume_filter, ep);
+    ucs_callbackq_add_oneshot(&worker->uct->progress_q, ep,
+                              ucp_ep_tf_resume_progress, ep);
+    ucp_worker_signal_internal(worker);
+}
+
+/* Nonzero if operations of the request are in flight besides the reference of
+ * its sender: on a live lane, or reposted by an earlier token purge. Only a
+ * request which sent a part of its data can wait in a pending queue with
+ * operations in flight: a multi-fragment protocol, which counts them in
+ * uct_comp. Other protocols do not initialize uct_comp. */
+static int ucp_ep_tf_req_in_flight(uct_pending_req_t *self)
+{
+    ucp_request_t *req = ucs_container_of(self, ucp_request_t, send.uct);
+
+    return ucs_test_all_flags(req->flags,
+                              UCP_REQUEST_FLAG_PROTO_SEND |
+                              UCP_REQUEST_FLAG_PROTO_INITIALIZED) &&
+           !ucp_datatype_iter_is_begin(&req->send.state.dt_iter) &&
+           (req->send.state.uct_comp.count > 1);
+}
+
+/* The first request in the recovery queue takes back the reference of its
+ * sender, and its completion callback */
+static void ucp_ep_tf_drain_stop(ucp_ep_recovery_arg_t *arg)
+{
+    ucp_request_t *req = arg->tf_drain_req;
+
+    if (req == NULL) {
+        return;
+    }
+
+    req->send.state.uct_comp.func = arg->tf_drain_func;
+    ++req->send.state.uct_comp.count;
+    arg->tf_drain_req = NULL;
+}
+
+/* The operations in flight of the first request in the recovery queue
+ * completed, so the replay can restart it */
+static void ucp_ep_tf_drain_completion(uct_completion_t *self)
+{
+    ucp_request_t *req  = ucs_container_of(self, ucp_request_t,
+                                           send.state.uct_comp);
+    ucp_ep_h ep         = req->send.ep;
+    ucp_worker_h worker = ep->worker;
+    ucp_ep_recovery_arg_t *arg;
+
+    UCS_ASYNC_BLOCK(&worker->async);
+    arg = ucp_ep_recovery_arg(ep);
+    ucs_assertv((arg != NULL) && (arg->tf_drain_req == req), "ep %p req %p",
+                ep, req);
+    ucp_trace_req(req, "operations in flight completed: %s",
+                  ucs_status_string(self->status));
+    ucp_ep_tf_drain_stop(arg);
+    ucp_ep_tf_resume_schedule(ep);
+    UCS_ASYNC_UNBLOCK(&worker->async);
+}
+
+/* The first request in the recovery queue lends the reference of its sender,
+ * so the completion of its last operation in flight calls
+ * ucp_ep_tf_drain_completion() */
+static void
+ucp_ep_tf_drain_start(ucp_ep_recovery_arg_t *arg, uct_pending_req_t *self)
+{
+    ucp_request_t *req = ucs_container_of(self, ucp_request_t, send.uct);
+
+    ucp_trace_req(req, "waits for %d operations in flight",
+                  req->send.state.uct_comp.count - 1);
+    arg->tf_drain_req             = req;
+    arg->tf_drain_func            = req->send.state.uct_comp.func;
+    req->send.state.uct_comp.func = ucp_ep_tf_drain_completion;
+    --req->send.state.uct_comp.count;
+}
+
+/*
+ * The recovery state is released, so a request cannot wait in the recovery
+ * queue for its operations in flight. It drops the reference of its sender with
+ * an error instead: the completion of its last operation restarts it, or
+ * completes it on a failed endpoint.
+ */
+static void ucp_ep_tf_drain_cancel(ucp_ep_recovery_arg_t *arg)
+{
+    ucs_queue_head_t queue;
+    uct_pending_req_t *self;
+    ucp_request_t *req;
+
+    ucp_ep_tf_drain_stop(arg);
+    ucs_queue_head_init(&queue);
+    ucs_queue_splice(&queue, &arg->tf_pending_q);
+    ucs_queue_for_each_extract(self, &queue, priv, 1) {
+        if (!ucp_ep_tf_req_in_flight(self)) {
+            ucs_queue_push(&arg->tf_pending_q, (ucs_queue_elem_t*)self->priv);
+            continue;
+        }
+
+        req = ucs_container_of(self, ucp_request_t, send.uct);
+        ucp_trace_req(req, "restarts after its operations in flight");
+        ucp_invoke_uct_completion(&req->send.state.uct_comp,
+                                  UCS_ERR_CANCELED);
+    }
+}
+
+/*
+ * Restart the requests from the recovery queue in order. The reset of a request
+ * would lose the completions of its operations in flight, so the replay stops
+ * at such a request until they complete.
+ */
+static void ucp_ep_tf_replay(ucp_ep_h ep, ucp_ep_recovery_arg_t *arg)
+{
+    ucs_queue_head_t replay_q;
+    uct_pending_req_t *self;
+
+    ucs_queue_head_init(&replay_q);
+    ucs_queue_for_each_extract(self, &arg->tf_pending_q, priv,
+                               !ucp_ep_tf_req_in_flight(self)) {
+        ucs_queue_push(&replay_q, (ucs_queue_elem_t*)self->priv);
+    }
+
+    if (!ucs_queue_is_empty(&arg->tf_pending_q)) {
+        ucp_ep_tf_drain_start(arg, ucs_queue_head_elem_non_empty(
+                                           &arg->tf_pending_q,
+                                           uct_pending_req_t, priv));
+    }
+
+    if (!ucs_queue_is_empty(&replay_q)) {
+        ucs_debug("ep %p: replay requests of held lanes", ep);
+        ucp_wireup_replay_pending_requests(ep, &replay_q);
+    }
+}
+
+/*
+ * The requests from the pending queues of held lanes can follow the operations
+ * which the token purge reposted on the live lanes. Send them now: the failed
+ * lanes can take long to recover, or never recover. A closed endpoint sends
+ * them too, since they were issued before the close, and a failed endpoint
+ * cancels them.
+ */
+static void ucp_ep_tf_resume(ucp_ep_h ep)
+{
+    ucp_ep_recovery_arg_t *arg = ucp_ep_recovery_arg(ep);
+
+    if (!ucp_ep_tf_can_resume(arg)) {
+        return;
+    }
+
+    if ((ep->flags & UCP_EP_FLAG_FAILED) ||
+        !ucp_ep_err_mode_eq(ep, UCP_ERR_HANDLING_MODE_FAILOVER)) {
+        ucp_ep_tf_abort_pending(&arg->tf_pending_q, UCS_ERR_CANCELED);
+    } else {
+        ucp_ep_tf_replay(ep, arg);
+    }
+}
+
+static unsigned ucp_ep_tf_resume_progress(void *arg)
+{
+    ucp_ep_h ep         = arg;
+    ucp_worker_h worker = ep->worker;
+
+    UCS_ASYNC_BLOCK(&worker->async);
+    ucp_ep_tf_resume(ep);
+    UCS_ASYNC_UNBLOCK(&worker->async);
+    return 1;
+}
+
+int ucp_ep_tf_is_queued(ucp_ep_h ep, const ucp_request_t *req)
+{
+    ucp_ep_recovery_arg_t *arg = ucp_ep_recovery_arg(ep);
+    ucs_queue_iter_t iter;
+
+    if (arg == NULL) {
+        return 0;
+    }
+
+    for (iter = ucs_queue_iter_begin(&arg->tf_pending_q);
+         !ucs_queue_iter_end(&arg->tf_pending_q, iter);
+         iter = ucs_queue_iter_next(iter)) {
+        if (*iter == (const ucs_queue_elem_t*)&req->send.uct.priv) {
+            return 1;
+        }
+    }
+
+    return 0;
+}
+
 /* Complete an outstanding operation. Teardown must not allocate a repost. */
 static void
 ucp_ep_tf_outstanding_cancel_cb(const uct_ep_op_info_t *op_info, void *arg)
@@ -3260,6 +3483,10 @@ void ucp_ep_tf_lanes_purge_outstanding(ucp_ep_h ep, ucp_lane_map_t lanes,
         uct_ep_destroy(tf->uct_ep);
         ucp_ep_tf_lane_release(ep, tf);
     }
+
+    if (ucp_ep_tf_can_resume(ucp_ep_recovery_arg(ep))) {
+        ucp_ep_tf_resume_schedule(ep);
+    }
 }
 
 static void ucp_ep_tf_cleanup(ucp_ep_h ep)
@@ -3283,12 +3510,8 @@ static void ucp_ep_tf_cleanup(ucp_ep_h ep)
     }
 
     /* Every held lane is done, so pending requests can follow outstanding. */
-    if ((ep->flags & (UCP_EP_FLAG_FAILED | UCP_EP_FLAG_CLOSED)) ||
-        !ucp_ep_err_mode_eq(ep, UCP_ERR_HANDLING_MODE_FAILOVER)) {
-        ucp_ep_tf_abort_pending(&arg->tf_pending_q, UCS_ERR_CANCELED);
-    } else {
-        ucp_wireup_replay_pending_requests(ep, &arg->tf_pending_q);
-    }
+    ucp_ep_tf_drain_cancel(arg);
+    ucp_ep_tf_resume(ep);
 }
 
 static ucs_status_t
@@ -3528,6 +3751,7 @@ static unsigned ucp_ep_tf_purge_held_progress(void *arg)
 
     uct_ep_destroy(tf->uct_ep);
     ucp_ep_tf_lane_release(ep, tf);
+    ucp_ep_tf_resume(ep);
 
 out:
     UCS_ASYNC_UNBLOCK(&worker->async);
@@ -3538,6 +3762,10 @@ static int
 ucp_ep_tf_purge_remove_filter(const ucs_callbackq_elem_t *elem, void *arg)
 {
     ucp_ep_tf_purge_arg_t *purge_arg = elem->arg;
+
+    if (ucp_ep_tf_resume_filter(elem, arg)) {
+        return 1;
+    }
 
     if ((elem->cb == ucp_ep_tf_purge_held_progress) && (purge_arg->ep == arg)) {
         ucs_free(purge_arg);

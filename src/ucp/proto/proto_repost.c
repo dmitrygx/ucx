@@ -281,6 +281,26 @@ static ucp_request_t *ucp_proto_repost_origin_req(const ucp_request_t *req)
     return origin_req;
 }
 
+/* Nonzero if the origin request of an operation waits in the recovery queue.
+ * The replay restarts it, and its reset rewinds it, so it sends the data of the
+ * operation again: a repost would send that data twice, and its completion
+ * would count against the restarted request. */
+static int
+ucp_proto_repost_origin_is_queued(ucp_ep_h ep, const ucp_request_t *origin)
+{
+    if (!ucp_ep_tf_is_queued(ep, origin)) {
+        return 0;
+    }
+
+    /* The request has fragments left to send, so the operation does not
+     * complete it: it keeps the reference of its sender, or lent it to wait
+     * for its operations in flight */
+    ucs_assertv((origin->send.state.uct_comp.count > 1) ||
+                (ucp_ep_recovery_arg(ep)->tf_drain_req == origin),
+                "req %p count %d", origin, origin->send.state.uct_comp.count);
+    return 1;
+}
+
 static ucp_rkey_h ucp_proto_repost_origin_rkey(const ucp_request_t *origin)
 {
     ucp_operation_id_t op_id;
@@ -569,6 +589,7 @@ ucp_proto_repost_submit(ucp_ep_h ep, const uct_ep_op_info_t *op_info)
 {
     const ucp_proto_config_t *config;
     const ucp_proto_repost_priv_t *rpriv;
+    ucp_request_t *origin;
     ucp_request_t *req;
     ucs_status_t status;
 
@@ -587,10 +608,30 @@ ucp_proto_repost_submit(ucp_ep_h ep, const uct_ep_op_info_t *op_info)
         (op_info->comp->func == ucp_proto_repost_completion)) {
         req = ucs_container_of(op_info->comp, ucp_request_t,
                                               send.state.uct_comp);
+        origin = ucp_proto_repost_origin_req(req);
+        if ((origin != NULL) &&
+            ucp_proto_repost_origin_is_queued(ep, origin)) {
+            ucp_trace_req(req, "repost drop op %s, origin req %p is queued",
+                          uct_ep_operation_names[op_info->operation], origin);
+            ucp_proto_repost_abort(req, UCS_ERR_CANCELED);
+            return UCS_OK;
+        }
+
         ucp_trace_req(req, "repost restart op %s",
                       uct_ep_operation_names[op_info->operation]);
         ucp_proto_request_restart(req);
         return UCS_OK;
+    }
+
+    if ((op_info->field_mask & UCT_EP_OP_INFO_FIELD_COMP) &&
+        (op_info->comp != NULL)) {
+        origin = ucs_container_of(op_info->comp, ucp_request_t,
+                                  send.state.uct_comp);
+        if (ucp_proto_repost_origin_is_queued(ep, origin)) {
+            ucp_trace_req(origin, "drop op %s, the request is queued",
+                          uct_ep_operation_names[op_info->operation]);
+            return UCS_ERR_CANCELED;
+        }
     }
 
     config = ucp_proto_repost_config(ep);

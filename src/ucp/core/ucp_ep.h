@@ -564,6 +564,11 @@ typedef struct ucp_ep_recovery_arg {
      * outstanding operations are resolved,
      * outstanding re-posts also go here */
     ucs_queue_head_t        tf_pending_q;
+    /* The request at the head of tf_pending_q, whose operations in flight the
+     * replay waits for, or NULL. It lent the reference of its sender, and its
+     * completion callback is saved in tf_drain_func. */
+    ucp_request_t           *tf_drain_req;
+    uct_completion_callback_t tf_drain_func;
     /* LANES_ADDR reply waiting for error completions. Owned by wireup.
      * NULL when no reply is waiting. */
     void                    *tf_reply;
@@ -1186,6 +1191,13 @@ ucp_ep_tf_invalidate_uct_eps(ucp_ep_h ep, ucp_lane_map_t lanes);
 
 /** Nonzero when @a lane is held and still owns @a uct_ep. */
 int ucp_ep_tf_is_held(ucp_ep_h ep, ucp_lane_index_t lane, uct_ep_h uct_ep);
+
+
+/**
+ * Nonzero when @a req waits in the recovery queue of @a ep, to be sent when no
+ * held lane has outstanding operations left to purge.
+ */
+int ucp_ep_tf_is_queued(ucp_ep_h ep, const ucp_request_t *req);
 
 
 /**

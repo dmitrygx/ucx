@@ -12,7 +12,9 @@
 #include <uct/api/v2/uct_v2.h>
 
 
-/* Repost undelivered operation @a op_info. */
+/* Repost undelivered operation @a op_info. On error the caller completes the
+ * operation. An operation of a request which waits in the recovery queue
+ * returns UCS_ERR_CANCELED, since the replay sends its data again. */
 ucs_status_t ucp_proto_repost_submit(ucp_ep_h ep,
                                      const uct_ep_op_info_t *op_info);
 
