@@ -1303,7 +1303,12 @@ ucs_status_t uct_ud_ep_flush(uct_ep_h ep_h, unsigned flags,
 
     uct_ud_enter(iface);
 
-    if (ucs_unlikely(flags & UCT_FLUSH_FLAG_CANCEL)) {
+    /* The send completion of the ACK_REQ sent by the flush releases the
+     * packets acknowledged here. An endpoint which is not connected yet cannot
+     * send it, so its CREQ stays unacknowledged: the endpoint resends it until
+     * it is connected or times out */
+    if (ucs_unlikely(flags & UCT_FLUSH_FLAG_CANCEL) &&
+        uct_ud_ep_is_connected(ep)) {
         uct_ud_ep_reset_max_psn(ep);
         ep->tx.acked_psn = (uct_ud_psn_t)(ep->tx.psn - 1);
     }
