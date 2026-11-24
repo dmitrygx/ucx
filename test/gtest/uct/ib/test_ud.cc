@@ -106,6 +106,50 @@ public:
         return UCS_OK;
     }
 
+    static ucs_status_t drop_all(uct_ud_iface_t *iface, uct_ud_neth_t *neth)
+    {
+        return UCS_ERR_BUSY;
+    }
+
+    /* A creq which is being resent is released by the resend completion */
+    bool creq_in_window(entity *e)
+    {
+        bool found = false;
+        uct_ud_send_skb_t *skb;
+
+        uct_ud_enter(iface(e));
+        ucs_queue_for_each(skb, &ep(e)->tx.window, queue) {
+            if ((skb->neth->packet_type & UCT_UD_PACKET_FLAG_CTL) &&
+                (uct_ud_neth_get_dest_id(skb->neth) == UCT_UD_EP_NULL_ID) &&
+                !(skb->flags & UCT_UD_SEND_SKB_FLAG_RESENDING)) {
+                found = true;
+            }
+        }
+        uct_ud_leave(iface(e));
+        return found;
+    }
+
+    /* flush(CANCEL) when no creq resend is in flight, so that only the flush
+     * decides whether the creq stays in the window. The iface lock keeps the
+     * async thread from starting a resend meanwhile */
+    ucs_status_t flush_cancel_idle(entity *e)
+    {
+        ucs_time_t deadline = ucs::get_deadline(TEST_UD_LINGER_TIMEOUT_IN_SEC);
+        ucs_status_t status = UCS_ERR_TIMED_OUT;
+
+        do {
+            progress();
+            uct_ud_enter(iface(e));
+            if (ep(e)->tx.resend_count == 0) {
+                status = uct_ep_flush(e->ep(0), UCT_FLUSH_FLAG_CANCEL, NULL);
+            }
+            uct_ud_leave(iface(e));
+        } while ((status == UCS_ERR_TIMED_OUT) &&
+                 (ucs_get_time() < deadline));
+
+        return status;
+    }
+
     void connect_to_iface(unsigned index = 0)
     {
         m_e1->connect_to_iface(index, *m_e2);
@@ -441,6 +485,125 @@ UCS_TEST_SKIP_COND_P(test_ud, crep_drop2,
     }
     EXPECT_TRUE(ucs_queue_is_empty(&ep(m_e1)->tx.window));
     EXPECT_TRUE(ucs_queue_is_empty(&ep(m_e2)->tx.window));
+}
+
+/* check that creq is not left on tx window if a simultaneous creq connects the
+ * endpoint after flush(CANCEL).
+ * Use-case: no packet of m_e1 reaches m_e2. m_e1 cancels its operations while
+ * its creq is not acknowledged, and then receives the creq of m_e2.
+ * Check: m_e1 resends its crep, and both endpoints get connected.
+ */
+UCS_TEST_SKIP_COND_P(test_ud, creq_cancel_simultaneous_creq,
+                     !check_caps(UCT_IFACE_FLAG_AM_SHORT)) {
+    iface(m_e2)->rx.hook = drop_all;
+    m_e1->connect_to_iface(0, *m_e2);
+    ASSERT_EQ(2, ep(m_e1)->tx.psn);
+
+    /* m_e1 resends its creq for a while, as over a link which drops it */
+    short_progress_loop(500);
+    EXPECT_EQ(UCS_ERR_NO_RESOURCE, flush_cancel_idle(m_e1));
+
+    m_e2->connect_to_iface(0, *m_e1);
+    validate_connect(ep(m_e1), 0U);
+    /* A resend would start from the creq */
+    ASSERT_FALSE(creq_in_window(m_e1))
+            << "creq is on tx window of connected ep";
+
+    /* Let m_e1 resend its crep before m_e2 can receive it */
+    short_progress_loop(TEST_UD_PROGRESS_TIMEOUT);
+    iface(m_e2)->rx.hook = uct_ud_iface_null_hook;
+
+    validate_connect(ep(m_e2), 0U);
+    flush();
+    EXPECT_UCS_OK(tx(m_e1));
+    flush();
+}
+
+/* check that creq is not left on tx window if a crep connects the endpoint
+ * after flush(CANCEL).
+ * Use-case: m_e1 drops all packets of m_e2 while its creq is not acknowledged,
+ * cancels its operations, and then receives the resent crep of m_e2.
+ * Check: a resend of a later packet does not start from the creq.
+ */
+UCS_TEST_SKIP_COND_P(test_ud, creq_cancel_crep,
+                     !check_caps(UCT_IFACE_FLAG_AM_SHORT)) {
+    iface(m_e1)->rx.hook = drop_all;
+    m_e1->connect_to_iface(0, *m_e2);
+
+    /* m_e2 answers with a crep which m_e1 drops, both sides resend */
+    short_progress_loop(500);
+    EXPECT_EQ(UCS_ERR_NO_RESOURCE, flush_cancel_idle(m_e1));
+
+    iface(m_e1)->rx.hook = uct_ud_iface_null_hook;
+    validate_connect(ep(m_e1), 0U);
+    /* A resend would start from the creq */
+    ASSERT_FALSE(creq_in_window(m_e1))
+            << "creq is on tx window of connected ep";
+
+    /* m_e1 resends a packet which m_e2 drops */
+    iface(m_e2)->rx.hook = drop_all;
+    EXPECT_UCS_OK(tx(m_e1));
+    short_progress_loop(TEST_UD_PROGRESS_TIMEOUT);
+    iface(m_e2)->rx.hook = uct_ud_iface_null_hook;
+    flush();
+}
+
+/* A pending flush(CANCEL), as UCP uses to discard an endpoint */
+struct ud_pending_flush {
+    uct_pending_req_t super;
+    uct_completion_t  comp;
+    uct_ep_h          ep;
+    volatile uint32_t done;
+};
+
+static void ud_pending_flush_comp_cb(uct_completion_t *self)
+{
+    ucs_container_of(self, ud_pending_flush, comp)->done = 1;
+}
+
+static ucs_status_t ud_pending_flush_cb(uct_pending_req_t *self)
+{
+    ud_pending_flush *req = ucs_container_of(self, ud_pending_flush, super);
+    ucs_status_t status;
+
+    status = uct_ep_flush(req->ep, UCT_FLUSH_FLAG_CANCEL, &req->comp);
+    if (status == UCS_ERR_NO_RESOURCE) {
+        return UCS_ERR_NO_RESOURCE;
+    }
+
+    if (status != UCS_INPROGRESS) {
+        req->done = 1;
+    }
+    return UCS_OK;
+}
+
+/* check that a pending flush(CANCEL) completes when the peer answers the creq
+ * later.
+ * Use-case: m_e2 drops the creq of m_e1 until m_e1 cancels its operations and
+ * queues the flush on the pending queue.
+ * Check: m_e1 still resends its creq, gets connected, and the flush completes.
+ */
+UCS_TEST_SKIP_COND_P(test_ud, creq_cancel_pending_flush,
+                     !check_caps(UCT_IFACE_FLAG_AM_SHORT)) {
+    /* Outlives the test body: the request stays pending if the test fails */
+    static ud_pending_flush req;
+
+    iface(m_e2)->rx.hook = drop_all;
+    m_e1->connect_to_iface(0, *m_e2);
+    short_progress_loop(100);
+    EXPECT_EQ(UCS_ERR_NO_RESOURCE, flush_cancel_idle(m_e1));
+
+    req.super.func  = ud_pending_flush_cb;
+    req.comp.func   = ud_pending_flush_comp_cb;
+    req.comp.count  = 1;
+    req.comp.status = UCS_OK;
+    req.ep          = m_e1->ep(0);
+    req.done        = 0;
+    ASSERT_UCS_OK(uct_ep_pending_add(m_e1->ep(0), &req.super, 0));
+
+    iface(m_e2)->rx.hook = uct_ud_iface_null_hook;
+    wait_for_flag(&req.done, TEST_UD_LINGER_TIMEOUT_IN_SEC);
+    EXPECT_TRUE(req.done) << "pending flush(CANCEL) did not complete";
 }
 
 UCS_TEST_P(test_ud, crep_ack_drop) {
@@ -1439,6 +1602,29 @@ UCS_TEST_SKIP_COND_P(test_ud_peer_failure, send_from_purge_completion,
     EXPECT_NE(UCS_OK, comp.status);
     EXPECT_EQ(UCS_ERR_NO_RESOURCE, comp.send_status);
 }
+
+#if UCT_UD_EP_DEBUG_HOOKS
+/* An endpoint which is not connected yet still resends its creq after
+ * flush(CANCEL), so it times out if the peer does not answer */
+UCS_TEST_SKIP_COND_P(test_ud_peer_failure, creq_cancel_timeout,
+                     !check_caps(UCT_IFACE_FLAG_AM_SHORT))
+{
+    uct_ud_ep_t *ud_ep;
+
+    iface(m_e2)->rx.hook = test_ud::drop_all;
+    m_e1->connect_to_iface(1, *m_e2);
+    ud_ep = ep(m_e1, 1);
+    short_progress_loop(100);
+    wait_for_cond([ud_ep]() { return ud_ep->tx.resend_count == 0; },
+                  [this]() { progress(); });
+    EXPECT_EQ(UCS_ERR_NO_RESOURCE,
+              uct_ep_flush(m_e1->ep(1), UCT_FLUSH_FLAG_CANCEL, NULL));
+
+    wait_for_flag(&m_err_count, 10.0);
+    EXPECT_EQ(1, m_err_count);
+    iface(m_e2)->rx.hook = uct_ud_iface_null_hook;
+}
+#endif
 
 UCT_INSTANTIATE_UD_TEST_CASE(test_ud_peer_failure)
 
