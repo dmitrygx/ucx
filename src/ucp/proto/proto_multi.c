@@ -877,14 +877,12 @@ static int ucp_proto_multi_is_p2p_hairpin_lane(
         return 0;
     }
 
-    /* The device of the remote memory is known only by a local device under
-     * its root port, so check the redirected traffic of the lane device */
+    /* The remote memory is known only by a local device under its root port */
     sys_dev = ucp_proto_common_get_sys_dev(init_params, lane);
     return ((params->reg_mem_info.type != UCS_MEMORY_TYPE_UNKNOWN) &&
             ucs_topo_is_p2p_redirected(dst_local_sys_dev,
                                        params->reg_mem_info.sys_dev)) ||
-           (ucs_topo_sys_device_is_p2p_redirected(sys_dev) &&
-            ucs_topo_is_same_root_port(sys_dev, remote_mem_port_dev));
+           ucs_topo_is_p2p_redirected(sys_dev, remote_mem_port_dev);
 }
 
 /*

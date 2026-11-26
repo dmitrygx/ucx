@@ -28,6 +28,7 @@ extern "C" {
 #include <ucp/proto/proto_select.inl>
 #include <ucs/sys/math.h>
 #include <ucs/sys/topo/base/topo.h>
+#include <ucs/sys/topo/base/topo_int.h>
 #include <uct/base/uct_iface.h>
 }
 
