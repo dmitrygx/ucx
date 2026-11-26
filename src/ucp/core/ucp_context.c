@@ -1463,13 +1463,72 @@ ucp_add_tl_resource(ucp_context_h context, ucp_md_index_t md_index,
     return UCS_OK;
 }
 
+/* Whether a resource is a device which rc_gda reports per GPU, named after the
+ * GPU, on the system device of the NIC */
+static int ucp_tl_resource_is_gpu_device(const uct_tl_resource_desc_t *resource)
+{
+    return !strncmp(resource->dev_name, "cuda", 4);
+}
+
+/*
+ * Add the system devices shared by several network devices of a transport to
+ * the context: among the resources of a memory domain, e.g. the ports of a
+ * multi-port PCI function, or with another memory domain of the component,
+ * e.g. sub-functions of a PCI function. The devices which rc_gda reports per
+ * GPU are not network devices of their own. All the resources count, before the
+ * configuration selects them, so the processes of a host find the same system
+ * devices.
+ */
+static void
+ucp_add_shared_net_sys_devs(ucp_context_h context, ucp_md_index_t md_index,
+                            const uct_tl_resource_desc_t *tl_resources,
+                            unsigned num_tl_resources,
+                            ucp_sys_dev_map_t *cmpt_net_sys_dev_map)
+{
+    ucp_sys_dev_map_t md_net_sys_dev_map = 0;
+    ucp_sys_dev_map_t shared_sys_dev_map = 0;
+    const uct_tl_resource_desc_t *resource;
+    ucs_sys_device_t sys_dev;
+    unsigned i, j;
+
+    for (i = 0; i < num_tl_resources; ++i) {
+        resource = &tl_resources[i];
+        if ((resource->dev_type != UCT_DEVICE_TYPE_NET) ||
+            (resource->sys_device >= UCP_MAX_SYS_DEVICES) ||
+            ucp_tl_resource_is_gpu_device(resource)) {
+            continue;
+        }
+
+        for (j = 0; j < i; ++j) {
+            if ((tl_resources[j].sys_device == resource->sys_device) &&
+                !strcmp(tl_resources[j].tl_name, resource->tl_name) &&
+                strcmp(tl_resources[j].dev_name, resource->dev_name)) {
+                shared_sys_dev_map |= UCS_BIT(resource->sys_device);
+            }
+        }
+
+        md_net_sys_dev_map |= UCS_BIT(resource->sys_device);
+    }
+
+    shared_sys_dev_map |= md_net_sys_dev_map & *cmpt_net_sys_dev_map;
+    ucs_for_each_bit(sys_dev, shared_sys_dev_map) {
+        ucs_debug("md %s: system device %s is shared by several network "
+                  "devices", context->tl_mds[md_index].rsc.md_name,
+                  ucs_topo_sys_device_get_name(sys_dev));
+    }
+
+    context->shared_net_sys_dev_map |= shared_sys_dev_map;
+    *cmpt_net_sys_dev_map           |= md_net_sys_dev_map;
+}
+
 static ucs_status_t
 ucp_add_tl_resources(ucp_context_h context, ucp_md_index_t md_index,
                      const ucp_config_t *config,
                      const ucs_string_set_t *aux_tls, unsigned *num_resources_p,
                      ucs_string_set_t avail_devices[],
                      ucs_string_set_t *avail_tls, uint64_t dev_cfg_masks[],
-                     uint64_t *tl_cfg_mask, ucp_tl_info_array_t *all_rscs)
+                     uint64_t *tl_cfg_mask, ucp_tl_info_array_t *all_rscs,
+                     ucp_sys_dev_map_t *cmpt_net_sys_dev_map)
 {
     ucp_tl_md_t *md                 = &context->tl_mds[md_index];
     ucp_tl_info_entry_t *added_rscs = NULL;
@@ -1492,6 +1551,11 @@ ucp_add_tl_resources(ucp_context_h context, ucp_md_index_t md_index,
     if (num_tl_resources == 0) {
         ucs_debug("No tl resources found for md %s", md->rsc.md_name);
         goto free_resources;
+    }
+
+    if (md->attr.flags & UCT_MD_FLAG_REG) {
+        ucp_add_shared_net_sys_devs(context, md_index, tl_resources,
+                                    num_tl_resources, cmpt_net_sys_dev_map);
     }
 
     /* Collect the full (pre-filter) resource list for the transport tables */
@@ -1876,8 +1940,9 @@ ucp_add_component_resources(ucp_context_h context, ucp_rsc_index_t cmpt_index,
                             const ucs_string_set_t *aux_tls,
                             ucp_tl_info_array_t *all_rscs)
 {
-    const ucp_tl_cmpt_t *tl_cmpt = &context->tl_cmpts[cmpt_index];
-    size_t avail_mds             = config->max_component_mds;
+    const ucp_tl_cmpt_t *tl_cmpt      = &context->tl_cmpts[cmpt_index];
+    size_t avail_mds                  = config->max_component_mds;
+    ucp_sys_dev_map_t net_sys_dev_map = 0;
     uct_component_attr_t uct_component_attr;
     unsigned num_tl_resources;
     ucs_status_t status;
@@ -1924,7 +1989,7 @@ ucp_add_component_resources(ucp_context_h context, ucp_rsc_index_t cmpt_index,
         status = ucp_add_tl_resources(context, md_index, config, aux_tls,
                                       &num_tl_resources, avail_devices,
                                       avail_tls, dev_cfg_masks, tl_cfg_mask,
-                                      all_rscs);
+                                      all_rscs, &net_sys_dev_map);
         if (status != UCS_OK) {
             uct_md_close(context->tl_mds[md_index].md);
             goto out;
@@ -2061,8 +2126,8 @@ ucp_md_map_t ucp_context_select_reg_mds(ucp_context_h context,
             if ((context->tl_rscs[tl_idx].md_index == md_index) &&
                 (context->tl_rscs[tl_idx].tl_rsc.sys_device <
                  UCP_MAX_SYS_DEVICES) &&
-                (strncmp(context->tl_rscs[tl_idx].tl_rsc.dev_name,
-                         "cuda", 4) != 0)) {
+                !ucp_tl_resource_is_gpu_device(
+                        &context->tl_rscs[tl_idx].tl_rsc)) {
                 sys_dev_map |=
                     UCS_BIT(context->tl_rscs[tl_idx].tl_rsc.sys_device);
             }

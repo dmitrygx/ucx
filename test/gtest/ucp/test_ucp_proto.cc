@@ -43,6 +43,9 @@ protected:
 
     virtual void init() {
         modify_config("PROTO_ENABLE", "y");
+        /* Redirected peer-to-peer traffic separates the protocol estimation
+         * of remote keys on same-host endpoints */
+        modify_config("TOPO_PCI_P2P_PATH", "direct");
         ucp_test::init();
         sender().connect(&receiver(), get_ep_params());
     }

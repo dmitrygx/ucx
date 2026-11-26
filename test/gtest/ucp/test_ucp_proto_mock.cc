@@ -2342,6 +2342,28 @@ UCS_TEST_P(test_ucp_proto_mock_cuda_ipc, rndv_recv_unsupported_handle,
     EXPECT_TRUE(uses_cuda_ipc(data_vec)) << ::testing::PrintToString(data_vec);
 }
 
+/* Only network lanes keep the local device of their remote end, so the
+ * redirected peer-to-peer traffic does not drop the cuda_ipc lane */
+UCS_TEST_P(test_ucp_proto_mock_cuda_ipc, put_p2p_redirect, "ZCOPY_THRESH=1",
+           "TOPO_PCI_P2P_PATH=root")
+{
+    const ucp_ep_config_key_t &key = ucp_ep_config(sender().ep())->key;
+
+    for (ucp_lane_index_t lane = 0; lane < key.num_lanes; ++lane) {
+        if ((key.lanes[lane].rsc_index != UCP_NULL_RESOURCE) &&
+            (ucp_ep_get_tl_rsc(sender().ep(), lane)->dev_type !=
+             UCT_DEVICE_TYPE_NET)) {
+            EXPECT_EQ(UCS_SYS_DEVICE_ID_UNKNOWN,
+                      key.lanes[lane].dst_local_sys_dev)
+                    << "lane " << int(lane);
+        }
+    }
+
+    test_cuda_rma(UCP_OP_ID_PUT, {
+        {1, INF, "zero-copy", "cuda_ipc/cuda"},
+    });
+}
+
 UCP_INSTANTIATE_TEST_CASE_TLS_GPU_AWARE(test_ucp_proto_mock_cuda_ipc,
                                         shm_rc_ipc, "rc_x,cuda_ipc,rocm_ipc")
 
@@ -2702,6 +2724,99 @@ UCS_TEST_P(test_ucp_proto_mock_rcx_same_bdf_put,
 
 UCP_INSTANTIATE_TEST_CASE_TLS(test_ucp_proto_mock_rcx_same_bdf_put, rcx,
                               "rc_x")
+
+/* Mock devices of a transport on synthetic system devices, to check which of
+ * them the context finds shared by several network devices */
+class test_ucp_proto_mock_shared_sys_dev : public test_ucp_proto_mock {
+protected:
+    static ucs_sys_device_t synthetic_sys_dev(uint8_t function)
+    {
+        ucs_sys_device_t sys_dev = UCS_SYS_DEVICE_ID_UNKNOWN;
+        ucs_sys_bus_id_t bus_id;
+
+        bus_id.domain   = 0xfffc;
+        bus_id.bus      = 0xfc;
+        bus_id.slot     = 0x1f;
+        bus_id.function = function;
+        ASSERT_UCS_OK(ucs_topo_find_device_by_bus_id(&bus_id, &sys_dev));
+        return sys_dev;
+    }
+
+    static bool is_shared(const entity &e, ucs_sys_device_t sys_dev)
+    {
+        if (sys_dev >= UCP_MAX_SYS_DEVICES) {
+            UCS_TEST_SKIP_R("system devices beyond the supported ones");
+        }
+
+        return e.ucph()->shared_net_sys_dev_map & UCS_BIT(sys_dev);
+    }
+};
+
+class test_ucp_proto_mock_rcx_shared_sys_dev :
+    public test_ucp_proto_mock_shared_sys_dev {
+public:
+    test_ucp_proto_mock_rcx_shared_sys_dev()
+    {
+        mock_transport("rc_mlx5");
+    }
+
+    virtual void init() override
+    {
+        /* Two ports of one PCI function, two devices which rc_gda would report
+         * per GPU for one port, and a device of its own */
+        add_mock_iface_on_sys_device("mock_0:1", synthetic_sys_dev(0));
+        add_mock_iface_on_sys_device("mock_0:2", synthetic_sys_dev(0));
+        add_mock_iface_on_sys_device("cuda0-mock_1:1", synthetic_sys_dev(1));
+        add_mock_iface_on_sys_device("cuda1-mock_1:1", synthetic_sys_dev(1));
+        add_mock_iface("mock_2:1");
+        test_ucp_proto_mock::init();
+    }
+};
+
+/* The context finds the system devices shared by several network devices of a
+ * transport among all its devices, also the ones which UCX_NET_DEVICES leaves
+ * out, so the processes of a host find the same ones */
+UCS_TEST_P(test_ucp_proto_mock_rcx_shared_sys_dev, shared_net_sys_devs)
+{
+    modify_config("NET_DEVICES", "mock_0:1,mock_2:1");
+    entity &one_port = *create_entity();
+
+    for (const entity *e : {&sender(), &one_port}) {
+        EXPECT_TRUE(is_shared(*e, synthetic_sys_dev(0)));
+        EXPECT_FALSE(is_shared(*e, synthetic_sys_dev(1)));
+        EXPECT_FALSE(is_shared(*e, get_mock_sys_dev_by_name("mock_2:1")));
+    }
+}
+
+UCP_INSTANTIATE_TEST_CASE_TLS(test_ucp_proto_mock_rcx_shared_sys_dev, rcx,
+                              "rc_x")
+
+class test_ucp_proto_mock_tcp_shared_sys_dev :
+    public test_ucp_proto_mock_shared_sys_dev {
+public:
+    test_ucp_proto_mock_tcp_shared_sys_dev()
+    {
+        mock_transport("tcp");
+    }
+
+    virtual void init() override
+    {
+        /* Two network interfaces of one PCI function, e.g. a VLAN */
+        add_mock_iface_on_sys_device("mock_0", synthetic_sys_dev(2));
+        add_mock_iface_on_sys_device("mock_1", synthetic_sys_dev(2));
+        test_ucp_proto_mock::init();
+    }
+};
+
+/* TCP does not access registered memory, so it moves no data of other devices
+ * peer-to-peer, and its interfaces do not make a system device shared */
+UCS_TEST_P(test_ucp_proto_mock_tcp_shared_sys_dev, shared_net_sys_devs)
+{
+    EXPECT_FALSE(is_shared(sender(), synthetic_sys_dev(2)));
+}
+
+UCP_INSTANTIATE_TEST_CASE_TLS(test_ucp_proto_mock_tcp_shared_sys_dev, tcp,
+                              "tcp")
 
 class test_ucp_proto_mock_rcx_twins_get : public test_ucp_proto_mock_rcx_twins {
 protected:

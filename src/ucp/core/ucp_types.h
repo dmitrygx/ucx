@@ -382,7 +382,10 @@ enum {
     /* The token trailer of the LANES_ADDR messages */
     UCP_MIN_DST_VERSION_WIREUP_ADDR_TOKEN         = 24,
     /* The slow BW lanes are skipped during the pairwise selection */
-    UCP_MIN_DST_VERSION_WIREUP_SKIP_SLOW_LANES    = 24
+    UCP_MIN_DST_VERSION_WIREUP_SKIP_SLOW_LANES    = 24,
+    /* Same-host RMA_BW lanes of devices with redirected peer-to-peer traffic
+     * are selected the same way by both peers */
+    UCP_MIN_DST_VERSION_WIREUP_P2P_REDIRECT       = 24
 };
 
 
